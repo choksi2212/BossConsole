@@ -269,7 +269,6 @@ apiKeys.openapi(createApiKeyRoute, async (ctx) => {
         )
       }
       console.error("Error creating API key:", error)
-      console.error('Route error:', error)
       return ctx.json({ success: false, error: 'Internal server error' }, 500)
     }
 
@@ -290,7 +289,6 @@ apiKeys.openapi(createApiKeyRoute, async (ctx) => {
     )
   } catch (error) {
     console.error("Error creating API key:", error)
-    console.error('Route error:', error)
     return ctx.json({ success: false, error: 'Internal server error' }, 500)
   }
 })
@@ -363,7 +361,6 @@ apiKeys.openapi(listApiKeysRoute, async (ctx) => {
 
     if (error) {
       console.error("Error listing API keys:", error)
-      console.error('Route error:', error)
       return ctx.json({ success: false, error: 'Internal server error' }, 500)
     }
 
@@ -382,7 +379,6 @@ apiKeys.openapi(listApiKeysRoute, async (ctx) => {
     return ctx.json({ success: true, keys }, 200)
   } catch (error) {
     console.error("Error listing API keys:", error)
-    console.error('Route error:', error)
     return ctx.json({ success: false, error: 'Internal server error' }, 500)
   }
 })
@@ -512,7 +508,6 @@ apiKeys.openapi(deleteApiKeyRoute, async (ctx) => {
     )
   } catch (error) {
     console.error("Error revoking API key:", error)
-    console.error('Route error:', error)
     return ctx.json({ success: false, error: 'Internal server error' }, 500)
   }
 })

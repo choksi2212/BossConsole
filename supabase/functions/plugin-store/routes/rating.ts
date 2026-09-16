@@ -188,7 +188,6 @@ rating.openapi(getUserRatingRoute, async (ctx) => {
     }, 200)
   } catch (error) {
     console.error('Error getting user rating:', error)
-    console.error('Route error:', error)
     return ctx.json({ error: 'Internal server error' }, 500)
   }
 })
@@ -271,7 +270,6 @@ rating.openapi(deleteRatingRoute, async (ctx) => {
     return ctx.json({ success: true }, 200)
   } catch (error) {
     console.error('Error deleting rating:', error)
-    console.error('Route error:', error)
     return ctx.json({ error: 'Internal server error' }, 500)
   }
 })
@@ -356,7 +354,6 @@ rating.openapi(getPluginRatingsRoute, async (ctx) => {
     }, 200)
   } catch (error) {
     console.error('Error getting plugin ratings:', error)
-    console.error('Route error:', error)
     return ctx.json({ error: 'Internal server error' }, 500)
   }
 })

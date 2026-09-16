@@ -266,3 +266,15 @@ Deno.test("engine platform miss returns 404 listing available names", async () =
     assertEquals(body.available, ["boss-chromium-linux-x64.zip"])
   })
 })
+
+Deno.test("unexpected upstream exceptions return a generic 500", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = () => Promise.reject(new Error("private-upstream-host: secret diagnostic"))
+  try {
+    const res = await app.request("/latest-release?app=boss")
+    assertEquals(res.status, 500)
+    assertEquals(await res.json(), { error: "Internal server error" })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
