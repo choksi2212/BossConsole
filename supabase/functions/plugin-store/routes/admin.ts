@@ -107,7 +107,8 @@ admin.openapi(setPublishedRoute, async (ctx) => {
     return ctx.json({ success: true, pluginId, published }, 200)
   } catch (error) {
     console.error('Error in set published:', error)
-    return ctx.json({ error: (error as Error).message }, 500)
+    console.error('Route error:', error)
+    return ctx.json({ error: 'Internal server error' }, 500)
   }
 })
 
@@ -212,7 +213,8 @@ admin.openapi(deletePluginRoute, async (ctx) => {
     return ctx.json({ success: true, pluginId }, 200)
   } catch (error) {
     console.error('Error in delete plugin:', error)
-    return ctx.json({ error: (error as Error).message }, 500)
+    console.error('Route error:', error)
+    return ctx.json({ error: 'Internal server error' }, 500)
   }
 })
 
@@ -297,7 +299,8 @@ admin.openapi(setVerifiedRoute, async (ctx) => {
     return ctx.json({ success: true, pluginId, verified }, 200)
   } catch (error) {
     console.error('Error in set verified:', error)
-    return ctx.json({ error: (error as Error).message }, 500)
+    console.error('Route error:', error)
+    return ctx.json({ error: 'Internal server error' }, 500)
   }
 })
 

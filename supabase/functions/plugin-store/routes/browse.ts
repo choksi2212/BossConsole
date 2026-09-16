@@ -72,7 +72,8 @@ browse.openapi(listRoute, async (ctx) => {
     }, 200)
   } catch (error) {
     console.error('Error listing plugins:', error)
-    return ctx.json({ error: (error as Error).message }, 500)
+    console.error('Route error:', error)
+    return ctx.json({ error: 'Internal server error' }, 500)
   }
 })
 
@@ -148,7 +149,8 @@ browse.openapi(searchRoute, async (ctx) => {
     }, 200)
   } catch (error) {
     console.error('Error searching plugins:', error)
-    return ctx.json({ error: (error as Error).message }, 500)
+    console.error('Route error:', error)
+    return ctx.json({ error: 'Internal server error' }, 500)
   }
 })
 
@@ -246,7 +248,8 @@ browse.openapi(getPluginRoute, async (ctx) => {
     }, 200)
   } catch (error) {
     console.error('Error getting plugin:', error)
-    return ctx.json({ error: (error as Error).message }, 500)
+    console.error('Route error:', error)
+    return ctx.json({ error: 'Internal server error' }, 500)
   }
 })
 
@@ -295,7 +298,8 @@ browse.openapi(popularTagsRoute, async (ctx) => {
     return ctx.json({ tags }, 200)
   } catch (error) {
     console.error('Error getting popular tags:', error)
-    return ctx.json({ error: (error as Error).message }, 500)
+    console.error('Route error:', error)
+    return ctx.json({ error: 'Internal server error' }, 500)
   }
 })
 
