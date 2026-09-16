@@ -43,7 +43,39 @@ export interface AuthenticationCredential {
 }
 
 /**
- * Generates an authentication challenge for a user
+ * A syntactically valid challenge response that commits nothing: a fresh
+ * random challenge that is never stored, so /auth/complete can never
+ * verify against it, with an empty allowCredentials list so the client's
+ * credential request fails locally. Used for every pre-auth failure state
+ * (unknown email, no passkeys, lookup error) so they are indistinguishable
+ * from each other and from a challenge that was genuinely issued.
+ */
+function inertChallenge(sessionId?: string) {
+  return {
+    success: true as const,
+    challenge: generateChallenge(),
+    timeout: 60000,
+    rpId: getRpId(),
+    userVerification: 'preferred',
+    allowCredentials: [] as { id: string; type: string; transports: string[] }[],
+    sessionId,
+    error: undefined,
+  }
+}
+
+/**
+ * Generates an authentication challenge for a user.
+ *
+ * Enumeration-safe by construction (BossConsole#768): the three probeable
+ * states — unknown email, known email with no passkeys, and a real passkey
+ * user — must not be distinguishable by status code, body shape, or timing.
+ * The first two return the same inert challenge: a freshly generated random
+ * value that is never stored, with an empty allowCredentials list, so a
+ * prober gets a byte-for-byte plausible 200 for any email and the client's
+ * navigator.credentials.get() fails locally exactly as it would for a
+ * genuine no-credentials user. The real credential list is returned only
+ * when a passkey row actually exists; the ceremony (not this response) is
+ * what proves the caller owns it.
  */
 export const generateAuthChallenge = withErrorHandler(
   async (supabase: SupabaseClient, email: string, sessionId?: string) => {
@@ -53,11 +85,8 @@ export const generateAuthChallenge = withErrorHandler(
     const userResult = await findUserByEmail(supabase, email)
 
     if (!userResult.success || !userResult.user) {
-      console.error('User not found with email:', email)
-      return {
-        success: false,
-        error: 'User not found'
-      }
+      console.error('User lookup did not resolve to a user')
+      return inertChallenge(sessionId)
     }
 
     const userId = userResult.user.id
@@ -68,19 +97,13 @@ export const generateAuthChallenge = withErrorHandler(
 
     if (!passkeyResult.success) {
       console.error('Error fetching user passkeys:', passkeyResult.error)
-      return {
-        success: false,
-        error: 'Failed to fetch user credentials'
-      }
+      return inertChallenge(sessionId)
     }
 
     const userPasskeys = passkeyResult.passkeys || []
 
     if (userPasskeys.length === 0) {
-      return {
-        success: false,
-        error: 'No passkeys found for user'
-      }
+      return inertChallenge(sessionId)
     }
 
     // Generate and store challenge
