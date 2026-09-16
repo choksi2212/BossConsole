@@ -11,7 +11,7 @@
 -- production caller.
 
 begin;
-select plan(13);
+select plan(12);
 
 -- 1-4: the hardened functions carry an empty search_path, provable in
 -- pg_proc.proconfig (a text[] GUC list; a search_path-less function has
