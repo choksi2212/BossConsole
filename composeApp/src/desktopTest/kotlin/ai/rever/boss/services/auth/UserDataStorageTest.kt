@@ -133,8 +133,8 @@ class UserDataStorageTest {
         val loaded = UserDataStorage.loadUserData()
         assertTrue(loaded != null, "the record must still exist after concurrent saves")
         assertTrue(
-            (1..20).any { loaded?.email == "writer-$it@example.com" },
-            "the surviving record must be one of the concurrent saves' complete writes, got ${loaded?.email}",
+            (1..20).any { loaded.email == "writer-$it@example.com" },
+            "the surviving record must be one of the concurrent saves' complete writes, got ${loaded.email}",
         )
     }
 
