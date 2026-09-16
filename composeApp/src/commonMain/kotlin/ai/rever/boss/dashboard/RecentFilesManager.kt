@@ -1,6 +1,7 @@
 package ai.rever.boss.dashboard
 
 import ai.rever.boss.plugin.pathutils.BossDirectories
+import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.extractFileName
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
@@ -13,6 +14,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -59,6 +62,17 @@ object RecentFilesManager {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var saveJob: Job? = null
+
+    /**
+     * Serializes every read-modify-write of the recorded list. Each mutator
+     * (`recordFileOpen`, `removeFile`, `clearAll`) runs on its own `scope.launch`
+     * and rewrites the whole list from a read; `FileEventBus` fires one callback
+     * per opened file with no batching, so a multi-file open interleaves several
+     * of these. Unfenced, each writes back a list that lacks the others' entries,
+     * and the debounced save persists the loser. Same shape as the fixes for
+     * plugin storage (#506) and recent-project history (#714).
+     */
+    private val mutation = Mutex()
 
     /**
      * Every recorded file, including ones not currently on disk. **This is what is persisted.**
@@ -144,7 +158,7 @@ object RecentFilesManager {
                 // The recorded list, never the filtered view; see _allFiles.
                 val data = RecentFilesData(files = _allFiles.value)
                 val content = json.encodeToString(RecentFilesData.serializer(), data)
-                settingsFile.writeText(content)
+                settingsFile.atomicWriteText(content)
             } catch (e: Exception) {
                 recentFilesLogger.warn(LogCategory.FILE, "Error saving recent files", error = e)
             }
@@ -163,24 +177,26 @@ object RecentFilesManager {
         projectPath: String? = null,
     ) {
         scope.launch {
-            val fileName = filePath.extractFileName()
-            val newFile =
-                RecentFile(
-                    path = filePath,
-                    name = fileName,
-                    lastOpened = System.currentTimeMillis(),
-                    projectPath = projectPath,
-                )
+            mutation.withLock {
+                val fileName = filePath.extractFileName()
+                val newFile =
+                    RecentFile(
+                        path = filePath,
+                        name = fileName,
+                        lastOpened = System.currentTimeMillis(),
+                        projectPath = projectPath,
+                    )
 
-            // Remove existing entry for this path and add to front
-            // Over the recorded list, not the displayed one, so opening a file does not drop
-            // entries that are merely on an absent volume.
-            val currentFiles = _allFiles.value.toMutableList()
-            currentFiles.removeAll { it.path == filePath }
-            currentFiles.add(0, newFile)
+                // Remove existing entry for this path and add to front
+                // Over the recorded list, not the displayed one, so opening a file does not drop
+                // entries that are merely on an absent volume.
+                val currentFiles = _allFiles.value.toMutableList()
+                currentFiles.removeAll { it.path == filePath }
+                currentFiles.add(0, newFile)
 
-            // Trim to max size
-            setFiles(currentFiles.take(MAX_FILES))
+                // Trim to max size
+                setFiles(currentFiles.take(MAX_FILES))
+            }
             scheduleSave()
         }
     }
@@ -190,7 +206,9 @@ object RecentFilesManager {
      */
     fun removeFile(filePath: String) {
         scope.launch {
-            setFiles(_allFiles.value.filter { it.path != filePath })
+            mutation.withLock {
+                setFiles(_allFiles.value.filter { it.path != filePath })
+            }
             scheduleSave()
         }
     }
@@ -200,7 +218,9 @@ object RecentFilesManager {
      */
     fun clearAll() {
         scope.launch {
-            setFiles(emptyList())
+            mutation.withLock {
+                setFiles(emptyList())
+            }
             scheduleSave()
         }
     }
