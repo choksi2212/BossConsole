@@ -475,3 +475,53 @@ Deno.test("health endpoint responds", async () => {
   const res = await app.request("/crash-report/health")
   assertEquals(res.status, 200)
 })
+
+// (h) Repo ownership bound (BossConsole#774).
+//
+// plugins.homepage_url is publisher-controlled: any authenticated user can
+// publish or update a plugin and point it at an arbitrary GitHub repo, and
+// this function files issues with the server's GITHUB_TOKEN. Resolution must
+// therefore be bound to the allowed owner - an out-of-org homepage falls
+// back to DEFAULT_REPO instead of aiming the token elsewhere.
+
+Deno.test("publisher homepage pointing outside the allowed owner falls back to the default repo", async () => {
+  const stub = stubFetch({
+    storePlugins: { "evil.plugin": "https://github.com/victim-org/victim-repo" },
+  })
+  try {
+    const res = await post({ ...VALID_PAYLOAD, pluginId: "evil.plugin" })
+    assertEquals(res.status, 201)
+    const filed = (await res.json()).repo
+    assertEquals(filed, DEFAULT_REPO, "an out-of-org homepage must not steer the server token")
+    const creation = stub.recorded.find((r) => r.method === "POST" && r.url.endsWith("/issues"))
+    assert(creation!.url.includes("github.com/repos/risa-labs-inc/BossConsole-Releases"))
+  } finally {
+    stub.restore()
+  }
+})
+
+Deno.test("a system_plugins row pointing outside the allowed owner also falls back", async () => {
+  const stub = stubFetch({
+    systemPlugins: { "mistyped.system.plugin": "someone-else/some-repo" },
+  })
+  try {
+    const res = await post({ ...VALID_PAYLOAD, pluginId: "mistyped.system.plugin" })
+    assertEquals(res.status, 201)
+    assertEquals((await res.json()).repo, DEFAULT_REPO)
+  } finally {
+    stub.restore()
+  }
+})
+
+Deno.test("an in-org publisher homepage still resolves to that repo", async () => {
+  const stub = stubFetch({
+    storePlugins: { "jupyter-notebook": "https://github.com/risa-labs-inc/jupyter-notebook" },
+  })
+  try {
+    const res = await post({ ...VALID_PAYLOAD, pluginId: "jupyter-notebook" })
+    assertEquals(res.status, 201)
+    assertEquals((await res.json()).repo, "risa-labs-inc/jupyter-notebook")
+  } finally {
+    stub.restore()
+  }
+})
