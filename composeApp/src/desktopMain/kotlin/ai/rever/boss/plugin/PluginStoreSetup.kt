@@ -1316,6 +1316,30 @@ object PluginStoreSetup {
      * @return true if download was successful, false otherwise
      */
     private suspend fun downloadSystemPluginFromGitHub(plugin: SystemPluginInfo): Boolean {
+        // F1 (system-plugin download verification): `githubRepo` arrives
+        // verbatim from the remote `system_plugins` table, and this fallback
+        // path verifies no checksum or signature on the bytes it installs
+        // (the store path checks sha256 + store signature; this one checked
+        // only non-emptiness). Refuse fail-closed unless the row's repo is
+        // the one this host build pins for the pluginId - a rewritten or
+        // maliciously added row can no longer retarget the host at an
+        // arbitrary GitHub repo. The currently installed JAR, if any, stays
+        // on disk and the next launch retries the check, keeping the refusal
+        // loud instead of warn-and-allow.
+        val untrustedRepoReason =
+            SystemPluginManifestService.untrustedGithubRepoReason(plugin.pluginId, plugin.githubRepo)
+        if (untrustedRepoReason != null) {
+            logger.error(
+                LogCategory.SYSTEM,
+                "Refusing system-plugin download from untrusted GitHub repo",
+                mapOf(
+                    "pluginId" to plugin.pluginId,
+                    "repo" to plugin.githubRepo,
+                    "reason" to untrustedRepoReason,
+                ),
+            )
+            return false
+        }
         return withSystemPluginDownloadLock(plugin) {
             try {
                 val apiUrl = "https://api.github.com/repos/${plugin.githubRepo}/releases/latest"
