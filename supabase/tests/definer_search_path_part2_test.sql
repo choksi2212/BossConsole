@@ -11,25 +11,28 @@ begin;
 select plan(6);
 
 -- 1-3: each hardened function pins an empty search_path in pg_proc.proconfig.
--- any(proconfig) instead of proconfig[1] so a later-added SET clause cannot
--- push the pin out of position without tripping the assertion.
+-- Array containment (@>) instead of proconfig[1] so a later-added SET clause
+-- cannot push the pin out of position without tripping the assertion.
 select is(
-    ('search_path=""' = any((select proconfig from pg_proc
-      where oid = 'public.find_user_by_email(text)'::regprocedure))),
+    (select coalesce(p.proconfig @> ARRAY['search_path=""']::text[], false)
+      from pg_proc p
+     where p.oid = 'public.find_user_by_email(text)'::regprocedure),
     true,
     'find_user_by_email pins search_path to empty'
 );
 
 select is(
-    ('search_path=""' = any((select proconfig from pg_proc
-      where oid = 'public.handle_user_email_update()'::regprocedure))),
+    (select coalesce(p.proconfig @> ARRAY['search_path=""']::text[], false)
+      from pg_proc p
+     where p.oid = 'public.handle_user_email_update()'::regprocedure),
     true,
     'handle_user_email_update pins search_path to empty'
 );
 
 select is(
-    ('search_path=""' = any((select proconfig from pg_proc
-      where oid = 'public.safe_decrypt_recovery_codes(text)'::regprocedure))),
+    (select coalesce(p.proconfig @> ARRAY['search_path=""']::text[], false)
+      from pg_proc p
+     where p.oid = 'public.safe_decrypt_recovery_codes(text)'::regprocedure),
     true,
     'safe_decrypt_recovery_codes pins search_path to empty'
 );
