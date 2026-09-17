@@ -1,5 +1,7 @@
 package ai.rever.boss.plugin.sandbox.notification
 
+import ai.rever.boss.plugin.logging.BossLogger
+import ai.rever.boss.plugin.logging.LogCategory
 import ai.rever.boss.plugin.ui.BossThemeColors
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -21,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Error
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Warning
@@ -36,9 +39,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+private val toastLogger = BossLogger.forComponent("PluginToastHost")
 
 /**
  * Host composable for displaying plugin toast notifications.
@@ -85,6 +92,16 @@ fun PluginToastHost(
 }
 
 /**
+ * The text copied by a toast's copy button: the title and message on their own lines, or whichever
+ * is present. A plugin's toast is often where the user first sees an error or an id worth keeping,
+ * and it may be dismissed before they can act on it, so the whole toast is copyable in one click.
+ */
+internal fun toastClipboardText(message: ToastMessage): String =
+    listOf(message.title, message.message)
+        .filter { it.isNotBlank() }
+        .joinToString("\n")
+
+/**
  * Individual toast message composable.
  *
  * @param message The toast message to display
@@ -96,6 +113,7 @@ fun PluginToast(
     onDismiss: () -> Unit,
 ) {
     val (accentColor, icon) = toastAccent(message.type)
+    val clipboard = LocalClipboardManager.current
 
     Surface(
         modifier =
@@ -155,6 +173,25 @@ fun PluginToast(
                             fontWeight = FontWeight.Medium,
                         )
                     }
+                }
+            }
+
+            // Do not offer a destructive no-op: writing an empty string would erase the clipboard.
+            val clipboardText = toastClipboardText(message)
+            if (clipboardText.isNotEmpty()) {
+                IconButton(
+                    onClick = {
+                        runCatching { clipboard.setText(AnnotatedString(clipboardText)) }
+                            .onFailure { toastLogger.warn(LogCategory.UI, "Could not copy toast text", error = it) }
+                    },
+                    modifier = Modifier.size(24.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.ContentCopy,
+                        contentDescription = "Copy notification text",
+                        tint = BossThemeColors.TextMuted,
+                        modifier = Modifier.size(16.dp),
+                    )
                 }
             }
 
