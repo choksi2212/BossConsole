@@ -108,8 +108,23 @@ class McpPolicyEngine(
     private val _config = MutableStateFlow(loadConfig())
     val config: StateFlow<McpToolPolicyConfig> = _config.asStateFlow()
 
-    private val _sessionTrustedTools = MutableStateFlow<Set<String>>(emptySet())
-    val sessionTrustedTools: StateFlow<Set<String>> = _sessionTrustedTools.asStateFlow()
+    /**
+     * Session trust keyed by (toolName, providerId) pairs (BossConsole#823).
+     * Keying by name alone let one click on "trust for this session" pre-approve
+     * EVERY provider's same-named tool - a second plugin can ship its own
+     * `run_command` and inherit the trust silently. The pair is the identity
+     * every other engine surface already uses (providerRules, confirmInvocation,
+     * revocationVersion).
+     */
+    private val _sessionTrustedTools = MutableStateFlow<Set<Pair<String, String?>>>(emptySet())
+
+    /**
+     * The pair-keyed session-trust set, read-only. Display surfaces derive the
+     * name-only view themselves (`map { it.first }`) - a derived StateFlow here
+     * raced tests and cold collectors against the synchronously-updated pair set
+     * (the derived flow's initial value survives until a collector runs).
+     */
+    val sessionTrustedTools: StateFlow<Set<Pair<String, String?>>> = _sessionTrustedTools.asStateFlow()
 
     /** Capture before reading policy; a reset invalidates every older authorization. */
     internal fun revocationVersion(
@@ -140,7 +155,7 @@ class McpPolicyEngine(
             ) {
                 false
             } else {
-                if (grantSessionTrust) trustForSession(toolName)
+                if (grantSessionTrust) trustForSession(toolName, providerId)
                 true
             }
         }
@@ -186,7 +201,17 @@ class McpPolicyEngine(
         if (configuredProvider == McpPolicyAction.DENY) {
             return McpPolicyAction.DENY
         }
-        if (toolName in _sessionTrustedTools.value) {
+        if ((toolName to providerId) in _sessionTrustedTools.value) {
+            // Session trust is (toolName, providerId)-scoped (BossConsole#823):
+            // a trust granted for this exact provider's tool. A same-named
+            // tool from another provider does not match this pair and does
+            // not inherit the trust.
+            return McpPolicyAction.ALLOW
+        }
+        if (providerId == null && (toolName to null) in _sessionTrustedTools.value) {
+            // A trust granted WITHOUT provider context covers only a lookup that
+            // also has no provider (the old behavior's exact shape). A
+            // provider-scoped lookup never matches a providerless trust.
             return McpPolicyAction.ALLOW
         }
         if (configuredTool != null) return configuredTool
@@ -200,27 +225,39 @@ class McpPolicyEngine(
     }
 
     /**
-     * Trust [toolName] for the duration of this session only.
+     * Trust [toolName], contributed by [providerId], for the duration of this
+     * session only. Provider-scoped since BossConsole#823: the trust covers
+     * this provider's tool, and no other provider's same-named tool inherits it.
+     * A null [providerId] preserves the providerless-caller behavior (the trust
+     * matches any providerless lookup; provider-scoped lookups do not match it).
      * Session trust is not written to disk and clears upon app restart.
      */
-    fun trustForSession(toolName: String) {
-        _sessionTrustedTools.update { it + toolName }
+    fun trustForSession(
+        toolName: String,
+        providerId: String?,
+    ) {
+        _sessionTrustedTools.update { it + (toolName to providerId) }
         logger.info(
             LogCategory.SYSTEM,
             "Tool trusted for current session",
-            mapOf("tool" to toolName),
+            mapOf("tool" to toolName, "provider" to (providerId ?: "none")),
         )
     }
 
     /**
-     * Revoke session trust for [toolName].
+     * Revoke session trust for [toolName] as contributed by [providerId]
+     * (BossConsole#823). Only the exact pair's trust is revoked: another
+     * provider's separate trust for the same tool name is untouched.
      */
-    fun revokeSessionTrust(toolName: String) {
-        _sessionTrustedTools.update { it - toolName }
+    fun revokeSessionTrust(
+        toolName: String,
+        providerId: String?,
+    ) {
+        _sessionTrustedTools.update { it - (toolName to providerId) }
         logger.info(
             LogCategory.SYSTEM,
             "Revoked session trust for tool",
-            mapOf("tool" to toolName),
+            mapOf("tool" to toolName, "provider" to (providerId ?: "none")),
         )
     }
 
@@ -385,7 +422,12 @@ class McpPolicyEngine(
                 )
             if (outcome == McpProactivePolicyOutcome.Saved) {
                 changes.forEach { revocations[it.toolName] = revocationVersion(it.toolName) + 1 }
-                _sessionTrustedTools.update { trusted -> trusted - changes.map { it.toolName }.toSet() }
+                _sessionTrustedTools.update { trusted ->
+                    // Section policies replace durable rules for whole tools; the
+                    // same all-providers reset rationale as revokePersistedPolicy
+                    // applies (BossConsole#823).
+                    trusted.filterNot { entry -> entry.first in changes.map { it.toolName }.toSet() }.toSet()
+                }
             }
             outcome
         }
@@ -504,7 +546,11 @@ class McpPolicyEngine(
         synchronized(lock) {
             // Even a failed reset invalidates queued answers. The previous durable rule remains
             // visible on failure, but an older answer cannot restore trust behind this reset.
-            revokeSessionTrust(toolName)
+            // A persisted-policy reset invalidates the tool's session trust across ALL
+            // providers (BossConsole#823): the durable rule change is about the tool name,
+            // and leaving any provider's session trust alive would let an older answer
+            // restore what the operator just reset.
+            _sessionTrustedTools.update { trusted -> trusted.filterNot { it.first == toolName }.toSet() }
             val saved =
                 applyConfig(
                     key = toolName,

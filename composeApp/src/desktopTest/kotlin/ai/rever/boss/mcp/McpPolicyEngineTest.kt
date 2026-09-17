@@ -66,10 +66,10 @@ class McpPolicyEngineTest {
 
         assertEquals(McpPolicyAction.ASK, engine.policyFor("k8s_delete"))
 
-        engine.trustForSession("k8s_delete")
+        engine.trustForSession("k8s_delete", null)
         assertEquals(McpPolicyAction.ALLOW, engine.policyFor("k8s_delete"))
 
-        engine.revokeSessionTrust("k8s_delete")
+        engine.revokeSessionTrust("k8s_delete", null)
         assertEquals(McpPolicyAction.ASK, engine.policyFor("k8s_delete"))
 
         // Ensure file was never written
@@ -134,7 +134,7 @@ class McpPolicyEngineTest {
         // checks session trust before a non-DENY configured rule, so without also clearing trust
         // here, revoking only the persisted half would leave the call silently still auto-allowed.
         engine.setToolPolicy("run_command", McpPolicyAction.ALLOW)
-        engine.trustForSession("run_command")
+        engine.trustForSession("run_command", null)
         assertEquals(McpPolicyAction.ALLOW, engine.policyFor("run_command"))
 
         assertTrue(engine.revokePersistedPolicy("run_command"))
@@ -162,7 +162,7 @@ class McpPolicyEngineTest {
         // Constructed while the path is still absent, so this load sees no fault at all - the
         // write failure below has to be the only thing this test is actually exercising.
         val engine = McpPolicyEngine(policyFile = file, onFault = { reportedFault = it })
-        engine.trustForSession("helm_upgrade")
+        engine.trustForSession("helm_upgrade", null)
 
         // atomicWriteText creates missing parent directories, so the failure has to be at the
         // target itself: turning the policy file's own path into a directory means the atomic
@@ -183,7 +183,7 @@ class McpPolicyEngineTest {
         val engine = McpPolicyEngine(policyFile = file)
 
         // Give tool session trust
-        engine.trustForSession("danger_tool")
+        engine.trustForSession("danger_tool", null)
         assertEquals(McpPolicyAction.ALLOW, engine.policyFor("danger_tool"))
 
         // Set explicit rule to DENY

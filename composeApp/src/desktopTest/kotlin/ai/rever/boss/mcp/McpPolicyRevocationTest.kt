@@ -67,7 +67,7 @@ class McpPolicyRevocationTest {
                     val secondRequest = bus.pendingList.first { it.size == 2 }.first { it.id != firstRequest.id }
                     bus.approve(firstRequest.id, persistPolicy = true)
                     assertFalse(first.await().isError)
-                    engine.trustForSession("run_command")
+                    engine.trustForSession("run_command", null)
                     assertTrue(engine.setToolPolicy("docker_rm", McpPolicyAction.DENY))
 
                     // Deliver the old answer, then reset before its invocation coroutine resumes.
@@ -116,8 +116,8 @@ class McpPolicyRevocationTest {
                 val engine = McpPolicyEngine(file)
                 assertTrue(engine.setToolPolicy("run_command", action))
                 assertTrue(engine.setToolPolicy("docker_rm", McpPolicyAction.DENY))
-                engine.trustForSession("run_command")
-                engine.trustForSession("helm_upgrade")
+                engine.trustForSession("run_command", null)
+                engine.trustForSession("helm_upgrade", null)
                 val backup = dir.resolve("saved.json")
                 Files.move(file.toPath(), backup.toPath())
                 assertTrue(file.mkdir())
@@ -127,7 +127,7 @@ class McpPolicyRevocationTest {
                 assertIs<McpPolicyFault.PolicyPersistFailed>(engine.fault.value)
                 assertEquals(action, engine.config.value.rules["run_command"])
                 assertEquals(action, engine.policyFor("run_command"))
-                assertEquals(setOf("helm_upgrade"), engine.sessionTrustedTools.value)
+                assertEquals(setOf("helm_upgrade" to null), engine.sessionTrustedTools.value)
                 assertEquals(McpPolicyAction.DENY, engine.policyFor("docker_rm"))
                 assertEquals(action, McpPolicyEngine(backup).policyFor("run_command"))
                 assertEquals(McpPolicyAction.DENY, McpPolicyEngine(backup).policyFor("docker_rm"))

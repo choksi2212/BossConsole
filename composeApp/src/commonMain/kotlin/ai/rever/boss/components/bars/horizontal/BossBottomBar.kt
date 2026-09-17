@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.arkivanov.decompose.extensions.compose.subscribeAsState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -237,7 +238,12 @@ fun BossRightBottomBar() {
         )
     }
 
-    val trustedTools by McpToolRegistryImpl.policyEngine.sessionTrustedTools.collectAsState()
+    // Pair-keyed since #823: derive the name-only view for the count/label;
+    // the pair set itself is the policy engine's identity.
+    val trustedTools by
+        McpToolRegistryImpl.policyEngine.sessionTrustedTools
+            .map { trusted -> trusted.map { it.first }.toSet() }
+            .collectAsState(initial = emptySet())
     if (trustedTools.isNotEmpty()) {
         androidx.compose.material.TextButton(onClick = { McpToolRegistryImpl.policyEngine.clearSessionTrusts() }) {
             Text("Revoke MCP session trust (${trustedTools.size})", color = BossTheme.colors.alert)
