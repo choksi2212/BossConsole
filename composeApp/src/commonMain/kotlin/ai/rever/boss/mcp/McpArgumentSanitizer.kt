@@ -96,19 +96,28 @@ object McpArgumentSanitizer {
         }
 
     /**
-     * The value alternative accepts an optional HTTP auth scheme before the credential.
+     * Any HTTP auth schemes are consumed as part of the value, ahead of the quoted alternatives.
      *
-     * Without it, `[^\s&,;}]+` stops at the first space, so `Authorization: Bearer <token>`
+     * Without that, `[^\s&,;}]+` stops at the first space, so `Authorization: Bearer <token>`
      * captures the literal word `Bearer` as the value and emits `[REDACTED] <token>` - the label
      * masked, the credential intact. [bearer] cannot recover it either, because the word it keys
-     * on has already been consumed. Reading the scheme and the credential as one value keeps the
-     * whole header masked in a single pass, and covers `Basic`/`Token`/`Negotiate`, which fail the
-     * same way.
+     * on has already been consumed.
+     *
+     * Three details, each a measured leak rather than a precaution:
+     * - The scheme group repeats (`*`, not `?`). A client sending `Bearer Token <token>` otherwise
+     *   has only its first scheme word absorbed, the bare class takes the second, and the
+     *   credential survives exactly as before.
+     * - The scheme group sits BEFORE the quoted alternatives, because a real header quotes the
+     *   credential and not the scheme (`Bearer 'a b'`). Leaving the quoted branches first means
+     *   they never match that shape, the bare class takes `'a`, and the rest of the credential
+     *   survives.
+     * - `Basic`, `Token` and `Negotiate` have no rule of their own anywhere, so they leaked with
+     *   nothing to fall back on.
      */
     private val sensitiveAssignment =
         Regex(
             """(?i)(?:password|token|secret|api[_-]?key|authorization|credential)""" +
-                """\s*[:=]\s*(?:"[^"]*"|'[^']*'|(?:(?:Bearer|Basic|Token|Negotiate)\s+)?[^\s&,;}]+)""",
+                """\s*[:=]\s*(?:(?:Bearer|Basic|Token|Negotiate)\s+)*(?:"[^"]*"|'[^']*'|[^\s&,;}]+)""",
         )
     private val bearer = Regex("""(?i)Bearer\s+[^\s"',;}]+""")
 
