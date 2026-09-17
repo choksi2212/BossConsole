@@ -84,4 +84,36 @@ class UserDataStorageWizardTest {
             assertTrue(UserDataStorage.pendingWizardCompletedFile.exists())
             assertFalse(UserDataStorage.storageFile.exists())
         }
+
+    /**
+     * The logout generation fence (BossConsole#762, review follow-up on the merged #795):
+     * a save that entered before logout but acquires the lock only after clearUserData ran
+     * must NOT recreate user_data.json. Deterministic via the internal seam: hand the save
+     * the generation it *would have* captured before the interleaved clear.
+     */
+    @Test
+    fun `a save that acquires the lock only after logout cannot resurrect the cleared record`() =
+        runBlocking {
+            val user = UserInfo(id = "u1", email = "fenced@example.com", createdAt = "2026-09-17T00:00:00Z")
+            UserDataStorage.saveUserData(user)
+            assertTrue(UserDataStorage.storageFile.exists())
+
+            // The generation a save that entered BEFORE logout would have captured.
+            val staleGeneration = UserDataStorage.generationForTest()
+
+            // Logout runs to completion while the save is "waiting".
+            UserDataStorage.clearUserData()
+            assertFalse(UserDataStorage.storageFile.exists(), "logout deleted the record")
+
+            // The waiting save acquires the lock with its pre-logout generation: the fence must skip it.
+            UserDataStorage.doSaveUserData(user, authenticatedVia = null, generationAtEntry = staleGeneration)
+            assertFalse(
+                UserDataStorage.storageFile.exists(),
+                "a save entered before logout but executed after clearUserData must not recreate the record",
+            )
+
+            // A save entered AFTER logout (fresh generation) still works.
+            UserDataStorage.saveUserData(user)
+            assertEquals("fenced@example.com", UserDataStorage.loadUserData()?.email)
+        }
 }
