@@ -89,7 +89,8 @@ open class McpApprovalBus(
      * Suspends the calling coroutine until the operator answers via the UI
      * or [timeoutMs] elapses (in which case it fails closed).
      */
-    @Suppress("ReturnCount", "LongParameterList") // Overflow rejection before await; params mirror the McpApprovalRequest it builds.
+    // Overflow rejection before await; params mirror the McpApprovalRequest it builds.
+    @Suppress("ReturnCount", "LongParameterList")
     suspend fun requestApproval(
         toolName: String,
         providerId: String,
