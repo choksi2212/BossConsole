@@ -1,8 +1,13 @@
 package ai.rever.boss.performance
 
-import org.junit.jupiter.api.Assumptions.assumeFalse
+import org.junit.jupiter.api.Assertions.assertTimeoutPreemptively
+import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Files
+import java.nio.file.Path
+import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -14,10 +19,9 @@ import kotlin.test.fail
  * plugin showed 0 bytes and 0 threads. On Linux, procps reads `-M` as a security-label column, so
  * every plugin showed exactly 1 thread.
  *
- * The OS name is injected, so the dispatch and parsing cases assert the same thing on every
- * runner. The last case measures this test JVM through the real host path. It fails against the
- * old code on Windows and Linux runners and is only a regression guard on macOS, whose path this
- * change does not touch, so it is skipped there.
+ * The OS name and the `ps` runner are injected, so the dispatch and parsing cases assert the same
+ * thing on every runner. The last case measures this test JVM through the real host path on every
+ * platform, macOS included now that its `ps -M` layout is measured rather than assumed.
  */
 class PluginProcessMetricsTest {
     private val linuxStatus =
@@ -113,24 +117,143 @@ class PluginProcessMetricsTest {
     }
 
     /**
-     * The macOS parser's counting rule, which this change rewrites without changing.
-     *
-     * The fixture follows the column rule the parser documents (user and pid on a process's first
-     * line, pid first on each further thread line). It is not captured from a macOS machine.
+     * `ps -M -p 10881,10882` on macOS 26.6.2 (arm64), for two JVMs, with the thread rows shortened
+     * from 28 per pid to 3 and trailing spaces removed. Column layout is unchanged: thread rows
+     * repeat the pid and leave the user, terminal and command blank.
      */
+    private val macPsM =
+        """
+        USER     PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+        runner 10881   ??    0.0 S    20T   0:00.01   0:00.01 java S.java
+               10881         0.0 S    20T   0:00.01   0:00.00
+               10881         0.0 S    20T   0:00.07   0:00.41
+               10881         0.0 S    20T   0:00.00   0:00.00
+        runner 10882   ??    0.0 S    20T   0:00.00   0:00.00 java S.java
+               10882         0.0 S    20T   0:00.01   0:00.00
+               10882         0.0 S    20T   0:00.07   0:00.40
+               10882         0.0 S    20T   0:00.00   0:00.00
+        """.trimIndent()
+
     @Test
     fun `macOS ps -M lines are counted per pid, skipping the header and blank lines`() {
-        val output =
-            """
-            USER   PID   TT  %CPU STAT PRI     STIME     UTIME COMMAND
-            dev   4242 s000   0.0 S    31T   0:00.01   0:00.02 /usr/bin/java
-                  4242        0.0 S    31T   0:00.00   0:00.00
-                  4242        0.0 S    31T   0:00.00   0:00.00
+        assertEquals(mapOf(10881L to 4, 10882L to 4), PluginProcessMetrics.parseMacPsThreads(macPsM))
+        val firstPidThenBlankLines = macPsM.lines().take(5).joinToString("\n") + "\n\n"
+        assertEquals(mapOf(10881L to 4), PluginProcessMetrics.parseMacPsThreads(firstPidThenBlankLines))
+    }
 
-            dev   5151 s001   0.0 S    31T   0:00.01   0:00.02 java
-            """.trimIndent()
+    @Test
+    fun `macOS runs ps from bin, not from PATH, and combines both runs per pid`() {
+        val commands = mutableListOf<List<String>>()
 
-        assertEquals(mapOf(4242L to 3, 5151L to 1), PluginProcessMetrics.parseMacPsThreads(output))
+        val metrics =
+            PluginProcessMetrics.macMetrics(listOf(10881L, 10882L)) { _, command ->
+                commands += command
+                if ("-M" in command) macPsM else "10881 102736\n10882  78544\n"
+            }
+
+        assertEquals(
+            listOf(
+                listOf("/bin/ps", "-o", "pid=,rss=", "-p", "10881,10882"),
+                listOf("/bin/ps", "-M", "-p", "10881,10882"),
+            ),
+            commands,
+        )
+        assertEquals(
+            mapOf(
+                10881L to OsProcessMetrics(rssBytes = 102_736L * 1024, threadCount = 4),
+                10882L to OsProcessMetrics(rssBytes = 78_544L * 1024, threadCount = 4),
+            ),
+            metrics,
+        )
+    }
+
+    @Test
+    fun `a macOS pid neither ps run reports is left out rather than reported as zero`() {
+        val metrics =
+            PluginProcessMetrics.macMetrics(listOf(10881L, 99L)) { _, command ->
+                if ("-M" in command) macPsM else null
+            }
+
+        assertEquals(setOf(10881L), metrics.keys)
+        assertEquals(OsProcessMetrics(rssBytes = null, threadCount = 4), metrics.getValue(10881L))
+    }
+
+    /**
+     * A child that never exits is abandoned at the timeout and killed.
+     *
+     * The unbounded `waitFor()` this replaces blocked for the child's whole life, on the thread that
+     * collects the Performance panel's snapshots.
+     */
+    @Test
+    fun `a command that does not finish is abandoned at the timeout and killed`(
+        @TempDir dir: Path,
+    ) {
+        val marker = "HangsForever${System.nanoTime()}"
+        val source = dir.resolve("$marker.java")
+        Files.writeString(
+            source,
+            "public class $marker { public static void main(String[] a) throws Exception { Thread.sleep(120_000); } }",
+        )
+
+        val started = System.nanoTime()
+        var failed = false
+        assertTimeoutPreemptively(Duration.ofSeconds(60)) {
+            failed = BoundedCommand.run(listOf(javaBinary(), source.toString()), timeoutMillis = 2_000).isFailure
+        }
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+
+        assertTrue(failed, "a hung command returned output")
+        assertTrue(elapsedMs < 15_000, "abandoning the command took $elapsedMs ms")
+        val deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos()
+        while (liveChildrenRunning(marker) && System.nanoTime() < deadline) Thread.sleep(100)
+        assertFalse(liveChildrenRunning(marker), "the timed-out child is still running")
+    }
+
+    /**
+     * Output larger than any pipe buffer still arrives whole.
+     *
+     * `ps -M` output grows with thread count. Waiting before draining, the order that is safe for
+     * [ProcessFootprint]'s one-line-per-pid queries, would leave this child blocked on a full pipe
+     * until the timeout.
+     */
+    @Test
+    fun `output larger than the pipe buffer is read whole within the timeout`(
+        @TempDir dir: Path,
+    ) {
+        val bytes = 1_048_576
+        val source = dir.resolve("Floods.java")
+        Files.writeString(
+            source,
+            "public class Floods { public static void main(String[] a) { " +
+                "System.out.print(\"x\".repeat($bytes)); System.out.flush(); } }",
+        )
+
+        val result = BoundedCommand.run(listOf(javaBinary(), source.toString()), timeoutMillis = 60_000)
+
+        assertEquals(bytes, result.getOrThrow().length)
+    }
+
+    @Test
+    fun `a command that cannot start is a failure, not an exception`() {
+        assertTrue(BoundedCommand.run(listOf("boss-no-such-binary-${System.nanoTime()}"), 1_000).isFailure)
+    }
+
+    @Test
+    fun `a failing source is logged once, and again only after it has recovered`() {
+        val lines = mutableListOf<String>()
+        val log = FailureLog { lines += it }
+
+        log.failed("ps -M", IllegalStateException("timed out"))
+        log.failed("ps -M", IllegalStateException("timed out"))
+        log.failed("Windows working set", UnsatisfiedLinkError("psapi"))
+        log.succeeded("ps -M")
+        log.succeeded("ps -M")
+        log.failed("ps -M", IllegalStateException("timed out again"))
+
+        assertEquals(
+            listOf("ps -M failed: timed out", "Windows working set failed: psapi", "ps -M failed: timed out again"),
+            lines,
+        )
     }
 
     @Test
@@ -148,11 +271,6 @@ class PluginProcessMetricsTest {
      */
     @Test
     fun `this JVM reports its own memory and more than one thread`() {
-        val hostOs = System.getProperty("os.name").orEmpty()
-        assumeFalse(
-            hostOs.lowercase().startsWith("mac"),
-            "macOS keeps its existing ps query, which this change does not touch",
-        )
         val pid = ProcessHandle.current().pid()
 
         val metrics = assertNotNull(PluginProcessMetrics.query(listOf(pid))[pid], "no metrics for this JVM")
@@ -162,4 +280,21 @@ class PluginProcessMetricsTest {
         val threads = assertNotNull(metrics.threadCount, "thread count unreadable")
         assertTrue(threads > 1, "OS reported $threads threads for a running JVM")
     }
+
+    private fun javaBinary(): String =
+        ProcessHandle
+            .current()
+            .info()
+            .command()
+            .orElseThrow()
+
+    private fun liveChildrenRunning(marker: String): Boolean =
+        ProcessHandle.current().children().anyMatch { child ->
+            child.isAlive &&
+                child
+                    .info()
+                    .commandLine()
+                    .orElse("")
+                    .contains(marker)
+        }
 }
