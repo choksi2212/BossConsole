@@ -21,7 +21,14 @@
 -- qualification of the unqualified NOW() in handle_user_email_update. All
 -- table references were already schema-qualified.
 --
--- Not a live exploit today (the honest scoping in 20260916130000 applies:
+-- safe_decrypt_recovery_codes depends on public.decrypt_text keeping its own
+-- SET "search_path" TO 'public, pg_catalog, extensions' (20260914000000): a
+-- callee's SET clause overrides the caller's, so the empty path stops at the
+-- call boundary. If that pin is ever removed, the WHEN OTHERS handler would
+-- convert the resulting 42883 into a silent empty array for every user.
+--
+-- Not a live exploit today (the honest scoping in the sibling migration
+-- 20260916130000, BossConsole#773, applies:
 -- exploiting a mutable search_path needs CREATE on a searched schema, which
 -- the PostGREST roles lack). This closes the drift the repo's own
 -- convention and the Supabase linter demand, before a future CREATE grant
