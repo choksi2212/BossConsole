@@ -1,6 +1,7 @@
 package ai.rever.boss.dashboard
 
 import ai.rever.boss.plugin.pathutils.BossDirectories
+import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.extractFileName
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
@@ -13,6 +14,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -43,13 +46,22 @@ data class RecentFilesData(
  * Manages recently opened files for the Dashboard.
  * Persists to ~/.boss/recent-files.json
  *
- * Thread-safe: All file I/O operations run on Dispatchers.IO.
- * Uses StateFlow for reactive UI updates.
+ * Thread-safe: all file I/O runs on [Dispatchers.IO], every mutation of the recorded list is
+ * serialised by [mutationLock], and the file is replaced atomically. Uses StateFlow for reactive
+ * UI updates.
+ *
+ * The sibling [RecentBrowserPagesManager] had the same three defects and was fixed first; this
+ * class is kept deliberately parallel to it so the two do not drift again.
  */
 object RecentFilesManager {
     private const val MAX_FILES = 20
     private const val SAVE_DEBOUNCE_MS = 5000L // Debounce saves to max once per 5 seconds
-    private val settingsFile = BossDirectories.resolve("recent-files.json")
+
+    /**
+     * Redirected by [resetForTesting] for hermetic unit tests; production code never reassigns
+     * it, the same way the sibling [RecentBrowserPagesManager] does.
+     */
+    internal var settingsFile: File = BossDirectories.resolve("recent-files.json")
     private val json =
         Json {
             prettyPrint = false
@@ -58,6 +70,20 @@ object RecentFilesManager {
         }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /**
+     * Serialises read-modify-write over [_allFiles].
+     *
+     * Every public mutator used to read `_allFiles.value`, edit a copy, and write it back from a
+     * coroutine on the multi-threaded IO dispatcher. Two opens landing together - which is the
+     * normal case when a project restores several editors at startup - would both read the same
+     * list and the second write would silently discard the first file. A `MutableStateFlow.update`
+     * CAS loop is not usable here because a mutation has to leave *two* flows consistent and the
+     * CAS lambda can be retried; a lock is the form that keeps [setFiles] the single writer.
+     */
+    private val mutationLock = Mutex()
+
+    private val saveJobLock = Any()
     private var saveJob: Job? = null
 
     /**
@@ -80,58 +106,154 @@ object RecentFilesManager {
      * Replace the recorded list and re-derive the displayed one.
      *
      * Every mutation goes through here so the two can never drift - the defect being avoided is a
-     * caller updating the display and the save then writing the display back.
+     * caller updating the display and the save then writing the display back. Call only while
+     * holding [mutationLock]: the two flow writes are not one atomic step, so an unsynchronised
+     * caller can leave the displayed list derived from a list that is no longer recorded.
      */
     private fun setFiles(files: List<RecentFile>) {
         _allFiles.value = files
         _recentFiles.value = visibleFiles(files) { fileExists(it) }
     }
 
+    /**
+     * Apply [transform] to the recorded list under [mutationLock] and schedule a save if the
+     * list changed.
+     *
+     * The single entry point for user-driven mutation, so no caller can reintroduce the
+     * read-then-write race by touching [setFiles] directly. The startup merge is the one other
+     * path that holds [mutationLock]: its no-op baseline is the decoded file rather than the
+     * pre-merge list, so it decides its own save (see [loadAsync]).
+     */
+    private suspend fun mutate(transform: (List<RecentFile>) -> List<RecentFile>) {
+        val changed =
+            mutationLock.withLock {
+                val before = _allFiles.value
+                val after = transform(before)
+                if (after == before) {
+                    false
+                } else {
+                    setFiles(after)
+                    true
+                }
+            }
+        // A transform that changed nothing schedules nothing. RecentFile is a data class, so
+        // this is a value comparison.
+        if (changed) scheduleSave()
+    }
+
+    /**
+     * Retained so [resetForTesting] can cancel it: the init load reads [settingsFile] at
+     * execution time, and a test that re-points the file must not have the first load merge
+     * the real user's list into its hermetic state.
+     */
+    private var initialLoadJob: Job? = null
+
     init {
-        scope.launch {
-            loadAsync()
-        }
+        initialLoadJob =
+            scope.launch {
+                loadAsync()
+            }
     }
 
     /**
      * Load recent files from disk asynchronously.
+     *
+     * Returns whether the startup merge changed what is on disk, i.e. whether a save was
+     * scheduled. The no-op baseline is the decoded contents, not the pre-merge in-memory list:
+     * that list is empty until this point, so comparing the merge against it would call the
+     * ordinary launch "changed" and rewrite recent-files.json with its own contents on every
+     * start.
+     *
+     * Known limitation: the read and decode run before [mutationLock] is taken, so a
+     * `removeFile` or `clearAll` landing inside that window (milliseconds, at launch) is
+     * applied first, and the merge then reapplies the stale decoded contents until the next
+     * real mutation. Re-reading the file under the lock would close the window, but a slow
+     * disk would then hold the mutation lock for the whole read, which is the worse trade.
      */
-    private suspend fun loadAsync() =
+    internal suspend fun loadAsync(): Boolean =
         withContext(Dispatchers.IO) {
+            var persist = false
             try {
-                settingsFile.parentFile?.mkdirs()
+                if (!settingsFile.exists()) return@withContext false
 
-                if (settingsFile.exists()) {
-                    val content = settingsFile.readText()
-                    val data = json.decodeFromString<RecentFilesData>(content)
-                    // Hidden, not pruned: a file that is not on disk stops being offered (it
-                    // would open an empty editor - fileExists existed for exactly this and had no
-                    // callers) but stays in the recorded list, so an unmounted volume coming back
-                    // brings its entries with it. See _allFiles.
-                    setFiles(data.files)
-                    val present = _recentFiles.value
-                    recentFilesLogger.debug(
-                        LogCategory.FILE,
-                        "Loaded recent files",
-                        mapOf("count" to present.size, "hidden" to (data.files.size - present.size)),
-                    )
-                }
+                val content = settingsFile.readText()
+                val data = json.decodeFromString<RecentFilesData>(content)
+
+                // Merged, not assigned: the load is launched from `init` and races the first
+                // `recordFileOpen`, which the UI can issue as soon as a restored editor opens.
+                // Overwriting here dropped that file from the recorded list *and* from the save
+                // scheduled for it, so a file opened during startup was never remembered.
+                //
+                // Hidden, not pruned: a file that is not on disk stops being offered (it would
+                // open an empty editor - fileExists existed for exactly this and had no callers)
+                // but stays in the recorded list, so an unmounted volume coming back brings its
+                // entries with it. See _allFiles.
+                persist =
+                    mutationLock.withLock {
+                        val after = mergeRecorded(loaded = data.files, recorded = _allFiles.value, max = MAX_FILES)
+                        if (after != _allFiles.value) setFiles(after)
+                        after != data.files
+                    }
+                if (persist) scheduleSave()
+
+                val present = _recentFiles.value
+                recentFilesLogger.debug(
+                    LogCategory.FILE,
+                    "Loaded recent files",
+                    mapOf("count" to present.size, "hidden" to (_allFiles.value.size - present.size)),
+                )
             } catch (e: Exception) {
                 recentFilesLogger.warn(LogCategory.FILE, "Error loading recent files", error = e)
             }
+            persist
         }
+
+    /**
+     * Reset manager state for hermetic unit testing and redirect [settingsFile] to [testFile].
+     * Cancels the init load (it reads [settingsFile] at execution time) and any pending
+     * debounced save, clears both flows, and re-runs the load so the state matches [testFile].
+     * When [recorded] is given it is seeded after the load, so a test can observe the startup
+     * merge against a non-empty "recorded while the load was in flight" state.
+     * Tests must call this again with the real path before finishing, so the singleton is left
+     * where the app and other tests expect it.
+     */
+    internal suspend fun resetForTesting(
+        testFile: File,
+        recorded: List<RecentFile>? = null,
+    ) {
+        initialLoadJob?.cancel()
+        initialLoadJob = null
+        mutationLock.withLock {
+            settingsFile = testFile
+            _allFiles.value = emptyList()
+            _recentFiles.value = emptyList()
+        }
+        synchronized(saveJobLock) {
+            saveJob?.cancel()
+            saveJob = null
+        }
+        loadAsync()
+        if (recorded != null) {
+            mutationLock.withLock { setFiles(recorded) }
+        }
+    }
 
     /**
      * Save recent files to disk with debouncing.
      * Cancels any pending save and schedules a new one after SAVE_DEBOUNCE_MS.
      */
     private fun scheduleSave() {
-        saveJob?.cancel()
-        saveJob =
-            scope.launch {
-                delay(SAVE_DEBOUNCE_MS)
-                saveImmediately()
-            }
+        // Swap the debounce job under a lock: callers arrive from concurrent coroutines (an open
+        // and a removal racing), and an unsynchronised cancel-then-assign can overwrite the
+        // reference to a job that is still pending, leaving a timer nothing will ever cancel.
+        synchronized(saveJobLock) {
+            saveJob?.cancel()
+            saveJob =
+                scope.launch {
+                    delay(SAVE_DEBOUNCE_MS)
+                    saveImmediately()
+                }
+        }
     }
 
     /**
@@ -140,11 +262,14 @@ object RecentFilesManager {
     private suspend fun saveImmediately() =
         withContext(Dispatchers.IO) {
             try {
-                settingsFile.parentFile?.mkdirs()
                 // The recorded list, never the filtered view; see _allFiles.
                 val data = RecentFilesData(files = _allFiles.value)
                 val content = json.encodeToString(RecentFilesData.serializer(), data)
-                settingsFile.writeText(content)
+                // Atomic: `writeText` truncates the target and then streams into it, so a crash or
+                // a second writer arriving mid-write leaves JSON that fails to parse - and the
+                // load path swallows that as "no recent files", losing all twenty entries rather
+                // than one. atomicWriteText writes a unique sibling temp and moves it into place.
+                settingsFile.atomicWriteText(content)
             } catch (e: Exception) {
                 recentFilesLogger.warn(LogCategory.FILE, "Error saving recent files", error = e)
             }
@@ -163,25 +288,20 @@ object RecentFilesManager {
         projectPath: String? = null,
     ) {
         scope.launch {
-            val fileName = filePath.extractFileName()
             val newFile =
                 RecentFile(
                     path = filePath,
-                    name = fileName,
+                    name = filePath.extractFileName(),
                     lastOpened = System.currentTimeMillis(),
                     projectPath = projectPath,
                 )
 
-            // Remove existing entry for this path and add to front
-            // Over the recorded list, not the displayed one, so opening a file does not drop
-            // entries that are merely on an absent volume.
-            val currentFiles = _allFiles.value.toMutableList()
-            currentFiles.removeAll { it.path == filePath }
-            currentFiles.add(0, newFile)
-
-            // Trim to max size
-            setFiles(currentFiles.take(MAX_FILES))
-            scheduleSave()
+            // Remove existing entry for this path and add to front, over the recorded list rather
+            // than the displayed one, so opening a file does not drop entries that are merely on
+            // an absent volume.
+            mutate { current ->
+                (listOf(newFile) + current.filterNot { it.path == filePath }).take(MAX_FILES)
+            }
         }
     }
 
@@ -190,8 +310,7 @@ object RecentFilesManager {
      */
     fun removeFile(filePath: String) {
         scope.launch {
-            setFiles(_allFiles.value.filter { it.path != filePath })
-            scheduleSave()
+            mutate { current -> current.filterNot { it.path == filePath } }
         }
     }
 
@@ -200,8 +319,7 @@ object RecentFilesManager {
      */
     fun clearAll() {
         scope.launch {
-            setFiles(emptyList())
-            scheduleSave()
+            mutate { emptyList() }
         }
     }
 
@@ -224,3 +342,28 @@ internal fun visibleFiles(
     all: List<RecentFile>,
     exists: (path: String) -> Boolean,
 ): List<RecentFile> = all.filter { exists(it.path) }
+
+/**
+ * Combine the list read from disk with whatever was recorded in memory while that read was in
+ * flight, newest first, capped at [max].
+ *
+ * The startup load is not an assignment because it is not the only writer: `init` launches it, and
+ * `recordFileOpen` can land first when a project restores editors. A path present on both sides
+ * keeps the entry with the later `lastOpened`, which is the in-memory one in that race - the
+ * loaded copy is by definition the older open of the same file.
+ *
+ * Ordering is by `lastOpened` descending rather than by position, because the two inputs have no
+ * common order to preserve. That matches what the list means everywhere else: `recordFileOpen`
+ * stamps `currentTimeMillis` and inserts at the front, so recency order and timestamp order are
+ * the same thing.
+ */
+internal fun mergeRecorded(
+    loaded: List<RecentFile>,
+    recorded: List<RecentFile>,
+    max: Int,
+): List<RecentFile> =
+    (recorded + loaded)
+        .groupBy { it.path }
+        .map { (_, entries) -> entries.maxBy { it.lastOpened } }
+        .sortedByDescending { it.lastOpened }
+        .take(max)
