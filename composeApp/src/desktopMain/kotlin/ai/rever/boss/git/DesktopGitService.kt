@@ -84,7 +84,19 @@ actual object GitService {
     actual val stashList: StateFlow<List<GitStashInfo>> = _stashList.asStateFlow()
 
     private var currentProjectPath: String? = null
-    private var refreshJob: Job? = null
+
+    /**
+     * Serializes [refresh] and [clear] (BossConsole#813). The old code declared a
+     * `refreshJob` and cancelled it in both places, but nothing ever assigned a Job
+     * into it - the "cancel any pending refresh" comment described a no-op, so two
+     * concurrent refresh() calls (project open in one window, panel refresh in
+     * another) both ran in full and interleaved their writes to the shared git
+     * state, and a refresh that started before a project close kept writing after
+     * the close had zeroed everything. A mutex makes the refresh indivisible:
+     * the second caller waits and refreshes against the current project, and a
+     * clear cannot interleave with an in-flight refresh.
+     */
+    private val refreshMutex = Mutex()
 
     // How many git commands are in flight OR waiting on [gitCommandLock], and
     // the boolean view of it. The lock is process-wide, so a slow index-write
@@ -103,47 +115,49 @@ actual object GitService {
     }
 
     actual suspend fun refresh(projectPath: String) =
-        withContext(Dispatchers.IO) {
-            // Cancel any pending refresh
-            refreshJob?.cancel()
+        // Serialize the whole refresh (BossConsole#813): concurrent callers wait
+        // and then refresh against the current project, instead of interleaving
+        // their writes to the shared git state.
+        refreshMutex.withLock {
+            withContext(Dispatchers.IO) {
+                currentProjectPath = projectPath
+                _isLoading.value = true
+                _lastError.value = null
 
-            currentProjectPath = projectPath
-            _isLoading.value = true
-            _lastError.value = null
+                try {
+                    if (!_isGitAvailable.value) {
+                        _isGitRepository.value = false
+                        _currentBranch.value = null
+                        _localBranches.value = emptyList()
+                        _remoteBranches.value = emptyList()
+                        return@withContext
+                    }
 
-            try {
-                if (!_isGitAvailable.value) {
-                    _isGitRepository.value = false
-                    _currentBranch.value = null
-                    _localBranches.value = emptyList()
-                    _remoteBranches.value = emptyList()
-                    return@withContext
+                    // Check if directory is a git repository
+                    val isRepo = isGitRepo(projectPath)
+                    _isGitRepository.value = isRepo
+
+                    if (!isRepo) {
+                        _currentBranch.value = null
+                        _localBranches.value = emptyList()
+                        _remoteBranches.value = emptyList()
+                        return@withContext
+                    }
+
+                    // Get current branch (or short SHA for detached HEAD)
+                    _currentBranch.value = getCurrentBranchName(projectPath)
+
+                    // Get local branches
+                    _localBranches.value = getLocalBranchList(projectPath)
+
+                    // Get remote branches
+                    _remoteBranches.value = getRemoteBranchList(projectPath)
+                } catch (e: Exception) {
+                    _lastError.value = e.message
+                    logger.warn(LogCategory.SYSTEM, "Error refreshing git state", error = e)
+                } finally {
+                    _isLoading.value = false
                 }
-
-                // Check if directory is a git repository
-                val isRepo = isGitRepo(projectPath)
-                _isGitRepository.value = isRepo
-
-                if (!isRepo) {
-                    _currentBranch.value = null
-                    _localBranches.value = emptyList()
-                    _remoteBranches.value = emptyList()
-                    return@withContext
-                }
-
-                // Get current branch (or short SHA for detached HEAD)
-                _currentBranch.value = getCurrentBranchName(projectPath)
-
-                // Get local branches
-                _localBranches.value = getLocalBranchList(projectPath)
-
-                // Get remote branches
-                _remoteBranches.value = getRemoteBranchList(projectPath)
-            } catch (e: Exception) {
-                _lastError.value = e.message
-                logger.warn(LogCategory.SYSTEM, "Error refreshing git state", error = e)
-            } finally {
-                _isLoading.value = false
             }
         }
 
@@ -397,18 +411,22 @@ actual object GitService {
             }
         }
 
-    actual fun clear() {
-        refreshJob?.cancel()
-        currentProjectPath = null
-        _currentBranch.value = null
-        _isGitRepository.value = false
-        _localBranches.value = emptyList()
-        _remoteBranches.value = emptyList()
-        _lastError.value = null
-        _isLoading.value = false
-        _fileStatus.value = emptyList()
-        _commitLog.value = emptyList()
-        _stashList.value = emptyList()
+    actual suspend fun clear() {
+        // Serialize against an in-flight refresh (BossConsole#813): the old
+        // refreshJob?.cancel() here cancelled nothing, so a refresh started
+        // before the close kept writing git state after the close zeroed it.
+        refreshMutex.withLock {
+            currentProjectPath = null
+            _currentBranch.value = null
+            _isGitRepository.value = false
+            _localBranches.value = emptyList()
+            _remoteBranches.value = emptyList()
+            _lastError.value = null
+            _isLoading.value = false
+            _fileStatus.value = emptyList()
+            _commitLog.value = emptyList()
+            _stashList.value = emptyList()
+        }
     }
 
     actual fun getCurrentProjectPath(): String? = currentProjectPath

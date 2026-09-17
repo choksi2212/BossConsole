@@ -165,9 +165,11 @@ expect object GitService {
     ): GitOperationResult
 
     /**
-     * Clear Git state (when no project is selected).
+     * Clear Git state (when no project is selected). Suspending since
+     * BossConsole#813: the clear serializes against an in-flight refresh,
+     * so it must be callable from a coroutine.
      */
-    fun clear()
+    suspend fun clear()
 
     // ===== File Status & Staging =====
 
