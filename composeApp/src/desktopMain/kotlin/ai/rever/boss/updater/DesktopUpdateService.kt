@@ -46,7 +46,28 @@ internal fun validateUpdateAssetName(assetName: String) {
     }
 }
 
-actual class UpdateService {
+actual class UpdateService internal constructor(
+    /**
+     * Dedicated GitHub source used only to recover a download if the primary URL
+     * fails. Injectable so tests can point the fallback at a server they control.
+     */
+    private val gitHubSource: UpdateSource,
+    /**
+     * Where staged downloads land. Injectable so regression tests stage inside
+     * their own temp dir instead of the shared `boss-updates` staging directory
+     * a running app uses (BossConsole#797), the same injection idiom as
+     * [UpdateInstaller].validateDownloadFile.
+     */
+    private val stagingDir: File = defaultStagingDir(),
+) {
+    /**
+     * Matches the common `expect class UpdateService()` shape (expect/actual
+     * constructor matching does not consider default parameter values);
+     * production code gets the real GitHub Releases source and the shared
+     * staging directory.
+     */
+    actual constructor() : this(GitHubUpdateSource())
+
     private val logger = BossLogger.forComponent("UpdateService")
 
     /**
@@ -55,9 +76,6 @@ actual class UpdateService {
      * BOSS_UPDATE_PRIMARY_SOURCE for testing/rollback.
      */
     private val source: UpdateSource = buildSource()
-
-    /** Dedicated GitHub source used only to recover a download if the primary URL fails. */
-    private val gitHubSource = GitHubUpdateSource()
 
     private fun buildSource(): UpdateSource =
         when (UpdateSourceConfig.primarySource) {
@@ -203,13 +221,15 @@ actual class UpdateService {
         // for the same version — unless that's already the URL we just tried.
         //
         // The fallback fetches the SAME asset of the SAME version the UpdateInfo row
-        // describes, so the catalog's hash binds these bytes exactly as it binds the
-        // primary download's (the release pipeline publishes one artifact to both
-        // sources). Passing null here (BossConsole#797) meant the fallback installed
-        // with NO integrity check at all — on the path that only runs because a CDN
-        // was already misbehaving — and the staged installer later runs elevated. A
-        // genuine build difference between sources must fail loudly and fall back to
-        // a re-download, never install unverified.
+        // describes, so - when the catalog row carried a hash - the catalog's hash
+        // binds these bytes exactly as it binds the primary download's (the release
+        // pipeline publishes one artifact to both sources; a GitHub-only catalog row
+        // carries none and stays unverified on both paths, same as before). Passing
+        // null here (BossConsole#797) meant the fallback installed with NO integrity
+        // check at all on the path that only runs because a CDN was already
+        // misbehaving, and the staged installer later runs elevated. A genuine build
+        // difference between sources must fail loudly and fall back to a
+        // re-download, never install unverified.
         val gitHubUrl = gitHubAssetUrlFor(updateInfo.latestVersion)
         if (gitHubUrl != null && gitHubUrl != primaryUrl) {
             logger.warn(
@@ -231,7 +251,8 @@ actual class UpdateService {
     }
 
     /**
-     * Download [url] to a temp file, verifying [sha256] when provided. Returns the path or null.
+     * Download [url] to a temp file in [stagingDir], verifying [sha256] when
+     * provided. Returns the path or null.
      *
      * `internal` (not private) so the fallback-checksum regression test (BossConsole#797)
      * can drive the verification path directly against a local HTTP server, instead of
@@ -267,7 +288,7 @@ actual class UpdateService {
             // owner-only: this is where the installer artifact waits between
             // checksum verification and an elevated install, so another local user
             // must not be able to swap it (fails closed).
-            val tempDir = createRestrictedDir(defaultStagingDir())
+            val tempDir = createRestrictedDir(stagingDir)
 
             val downloadFile = File(tempDir, assetName)
             if (downloadFile.exists()) {
@@ -334,7 +355,18 @@ actual class UpdateService {
                     "actual" to (actualSha ?: ""),
                 ),
             )
-            downloadFile.delete()
+            val deleted = runCatching { downloadFile.delete() }.getOrDefault(false)
+            if (!deleted) {
+                // Not an install vector - the installer only uses the returned path,
+                // and the next attempt deletes before writing. But the KDoc above
+                // promises a discard, so a failed delete must be visible, not silent
+                // (a Windows AV scanner holding a freshly written MSI is the case).
+                logger.error(
+                    LogCategory.SYSTEM,
+                    "Mismatched update download could not be deleted from staging",
+                    mapOf("path" to downloadFile.absolutePath),
+                )
+            }
             return null
         }
         if (sha256 != null) {
@@ -354,8 +386,6 @@ actual class UpdateService {
             logger.warn(LogCategory.NETWORK, "Could not resolve GitHub fallback asset", error = e)
             null
         }
-
-    /** Compute the lowercase hex SHA-256 of [file]. */
 
     /**
      * Stream a download to [destFile], reporting throttled progress.

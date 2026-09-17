@@ -1,5 +1,6 @@
 package ai.rever.boss.updater
 
+import ai.rever.boss.updater.source.GitHubUpdateSource
 import ai.rever.boss.utils.sha256Of
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
@@ -46,7 +47,7 @@ class UpdateFallbackChecksumTest {
             exchange.responseBody.use { it.write(servedBytes) }
         }
         server.start()
-        service = UpdateService()
+        service = UpdateService(GitHubUpdateSource(), stagingDir())
     }
 
     @AfterEach
@@ -56,8 +57,8 @@ class UpdateFallbackChecksumTest {
 
     private fun url(): String = "http://127.0.0.1:${server.address.port}/asset"
 
-    /** The staging directory downloadFrom writes into (java.io.tmpdir/boss-updates). */
-    private fun stagingDir(): File = File(File(System.getProperty("java.io.tmpdir")), "boss-updates")
+    /** The per-test staging directory the service stages into (never the shared app dir). */
+    private fun stagingDir(): File = File(tempDir.toFile(), "staging")
 
     @Test
     fun `a fallback body whose hash mismatches the catalog is discarded, not staged`() {
