@@ -201,6 +201,15 @@ actual class UpdateService {
         // download URL is a Storage URL with no automatic recovery. If that download
         // fails (e.g. the bucket isn't public/reachable) recover via the GitHub asset
         // for the same version — unless that's already the URL we just tried.
+        //
+        // The fallback fetches the SAME asset of the SAME version the UpdateInfo row
+        // describes, so the catalog's hash binds these bytes exactly as it binds the
+        // primary download's (the release pipeline publishes one artifact to both
+        // sources). Passing null here (BossConsole#797) meant the fallback installed
+        // with NO integrity check at all — on the path that only runs because a CDN
+        // was already misbehaving — and the staged installer later runs elevated. A
+        // genuine build difference between sources must fail loudly and fall back to
+        // a re-download, never install unverified.
         val gitHubUrl = gitHubAssetUrlFor(updateInfo.latestVersion)
         if (gitHubUrl != null && gitHubUrl != primaryUrl) {
             logger.warn(
@@ -210,13 +219,19 @@ actual class UpdateService {
                     "asset" to updateInfo.assetName,
                 ),
             )
-            return downloadFrom(gitHubUrl, updateInfo.assetName, updateInfo.assetSize, sha256 = null, onProgress)
+            return downloadFrom(gitHubUrl, updateInfo.assetName, updateInfo.assetSize, sha256 = updateInfo.sha256, onProgress)
         }
         return null
     }
 
-    /** Download [url] to a temp file, verifying [sha256] when provided. Returns the path or null. */
-    private suspend fun downloadFrom(
+    /**
+     * Download [url] to a temp file, verifying [sha256] when provided. Returns the path or null.
+     *
+     * `internal` (not private) so the fallback-checksum regression test (BossConsole#797)
+     * can drive the verification path directly against a local HTTP server, instead of
+     * reproducing the full primary-failure + GitHub-resolution dance.
+     */
+    internal suspend fun downloadFrom(
         url: String,
         assetName: String,
         assetSize: Long,
