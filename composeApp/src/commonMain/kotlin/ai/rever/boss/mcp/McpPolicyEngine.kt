@@ -163,11 +163,20 @@ class McpPolicyEngine(
      * [providerId] is optional so existing callers that only ever checked a tool name (tests,
      * anything resolving policy before a provider is known) keep compiling; omitting it just
      * means step 2 and 5 never apply.
+     *
+     * [declaredReadOnly] carries the tool definition's own `readOnly` field when the caller
+     * has one (BossConsole#804). The mutating default must apply when **either** the provider
+     * declares the tool mutating (`declaredReadOnly == false`) **or** the name-based catalog
+     * says so - a name that dodges the suffix heuristic must not be what grants the lenient
+     * read-only class to a tool the provider itself calls mutating. Null (callers without a
+     * definition at hand) falls back to the catalog alone, preserving the old behavior for
+     * name-only resolution.
      */
     @Suppress("ReturnCount") // Ordered deny, trust, tool-rule, provider-rule and default precedence.
     fun policyFor(
         toolName: String,
         providerId: String? = null,
+        declaredReadOnly: Boolean? = null,
     ): McpPolicyAction {
         if (_fault.value is McpPolicyFault.PersistedPolicyUnreadable) return McpPolicyAction.DENY
         val configuredTool = _config.value.rules[toolName]
@@ -184,7 +193,9 @@ class McpPolicyEngine(
         if (configuredTool != null) return configuredTool
         if (configuredProvider == McpPolicyAction.ALLOW) return McpPolicyAction.ALLOW
         val risk = DefaultMcpRiskEvaluator().evaluateRisk(toolName, McpToolArgs(emptyMap())).level
-        return if (risk >= McpRiskLevel.HIGH || McpMutatingToolCatalog.isMutating(toolName)) {
+        // Fail-closed combination (BossConsole#804): provider declaration OR name catalog.
+        val mutating = declaredReadOnly == false || McpMutatingToolCatalog.isMutating(toolName)
+        return if (risk >= McpRiskLevel.HIGH || mutating) {
             _config.value.defaultMutatingAction
         } else {
             _config.value.defaultReadOnlyAction

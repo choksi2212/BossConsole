@@ -745,7 +745,10 @@ internal class McpToolRegistryCore(
                 ?: return McpToolResult("Unknown or disabled MCP tool: $toolName", isError = true)
         val args = parseArgs(arguments)
         val revocation = policyEngine.revocationVersion(toolName, tool.providerId)
-        val policy = policyEngine.policyFor(toolName, tool.providerId)
+        // Pass the provider's own readOnly declaration through (BossConsole#804): the
+        // mutating default must apply when the provider calls the tool mutating, even
+        // when its name dodges the catalog's suffix heuristic.
+        val policy = policyEngine.policyFor(toolName, tool.providerId, declaredReadOnly = tool.definition.readOnly)
         val startTime = System.nanoTime()
         var disposition = McpApprovalDisposition.AUTO_ALLOWED
         var result: McpToolResult? = null
@@ -963,6 +966,7 @@ internal class McpToolRegistryCore(
                             tool.providerId,
                             McpArgumentSanitizer.parseArguments(args.raw),
                             riskAssessment = DefaultMcpRiskEvaluator().evaluateRisk(tool.definition.name, args),
+                            declaredReadOnly = tool.definition.readOnly,
                         )
                 ) {
                     is McpApprovalDecision.Approved -> {

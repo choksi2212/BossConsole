@@ -57,6 +57,8 @@ data class McpApprovalRequest(
     val arguments: Map<String, Any?>,
     val timeoutMs: Long,
     val riskAssessment: McpRiskAssessment? = null,
+    /** The tool definition's own readOnly declaration (BossConsole#804). */
+    val declaredReadOnly: Boolean? = null,
     val requestedAt: Long = System.currentTimeMillis(),
     val deferred: CompletableDeferred<McpApprovalDecision> = CompletableDeferred(),
 )
@@ -94,6 +96,7 @@ open class McpApprovalBus(
         arguments: Map<String, Any?>,
         timeoutMs: Long = defaultTimeoutMs,
         riskAssessment: McpRiskAssessment? = null,
+        declaredReadOnly: Boolean? = null,
     ): McpApprovalDecision {
         val request =
             McpApprovalRequest(
@@ -102,6 +105,7 @@ open class McpApprovalBus(
                 arguments = McpArgumentSanitizer.sanitize(arguments),
                 timeoutMs = timeoutMs,
                 riskAssessment = riskAssessment,
+                declaredReadOnly = declaredReadOnly,
             )
 
         synchronized(lock) {

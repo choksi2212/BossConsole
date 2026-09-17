@@ -72,7 +72,13 @@ fun McpApprovalDialog(
 ) {
     val colors = BossTheme.colors
     val radii = BossTheme.radius
-    val isMutating = remember(request.toolName) { McpMutatingToolCatalog.isMutating(request.toolName) }
+    // Fail-closed combination (BossConsole#804): the provider's own readOnly
+    // declaration OR the name catalog - a mutating tool named like a read must
+    // still be labeled mutating to the operator.
+    val isMutating =
+        remember(request.toolName, request.declaredReadOnly) {
+            request.declaredReadOnly == false || McpMutatingToolCatalog.isMutating(request.toolName)
+        }
     var rejectionReason by remember(request.id) { mutableStateOf("") }
     var showReasonInput by remember(request.id) { mutableStateOf(false) }
 
