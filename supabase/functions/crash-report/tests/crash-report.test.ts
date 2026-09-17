@@ -494,7 +494,8 @@ Deno.test("publisher homepage pointing outside the allowed owner falls back to t
     const filed = (await res.json()).repo
     assertEquals(filed, DEFAULT_REPO, "an out-of-org homepage must not steer the server token")
     const creation = stub.recorded.find((r) => r.method === "POST" && r.url.endsWith("/issues"))
-    assert(creation!.url.includes("github.com/repos/risa-labs-inc/BossConsole-Releases"))
+    assert(creation, "expected an issue-creation call")
+    assert(creation.url.includes("github.com/repos/risa-labs-inc/BossConsole-Releases"))
   } finally {
     stub.restore()
   }
@@ -508,6 +509,9 @@ Deno.test("a system_plugins row pointing outside the allowed owner also falls ba
     const res = await post({ ...VALID_PAYLOAD, pluginId: "mistyped.system.plugin" })
     assertEquals(res.status, 201)
     assertEquals((await res.json()).repo, DEFAULT_REPO)
+    const creation = stub.recorded.find((r) => r.method === "POST" && r.url.endsWith("/issues"))
+    assert(creation, "expected an issue-creation call")
+    assert(creation.url.includes("github.com/repos/risa-labs-inc/BossConsole-Releases"))
   } finally {
     stub.restore()
   }
@@ -521,6 +525,41 @@ Deno.test("an in-org publisher homepage still resolves to that repo", async () =
     const res = await post({ ...VALID_PAYLOAD, pluginId: "jupyter-notebook" })
     assertEquals(res.status, 201)
     assertEquals((await res.json()).repo, "risa-labs-inc/jupyter-notebook")
+    const creation = stub.recorded.find((r) => r.method === "POST" && r.url.endsWith("/issues"))
+    assert(creation, "expected an issue-creation call")
+    assert(creation.url.includes("github.com/repos/risa-labs-inc/jupyter-notebook/issues"))
+  } finally {
+    stub.restore()
+  }
+})
+
+Deno.test("a look-alike owner does not satisfy the owner bound", async () => {
+  const stub = stubFetch({
+    storePlugins: { "lookalike.plugin": "https://github.com/risa-labs-inc-evil/victim-repo" },
+  })
+  try {
+    const res = await post({ ...VALID_PAYLOAD, pluginId: "lookalike.plugin" })
+    assertEquals(res.status, 201)
+    assertEquals((await res.json()).repo, DEFAULT_REPO)
+    const creation = stub.recorded.find((r) => r.method === "POST" && r.url.endsWith("/issues"))
+    assert(creation, "expected an issue-creation call")
+    assert(creation.url.includes("github.com/repos/risa-labs-inc/BossConsole-Releases"))
+  } finally {
+    stub.restore()
+  }
+})
+
+Deno.test("the allowed owner comparison is case-insensitive", async () => {
+  const stub = stubFetch({
+    storePlugins: { "mixed-case.plugin": "https://github.com/RISA-Labs-Inc/jupyter-notebook" },
+  })
+  try {
+    const res = await post({ ...VALID_PAYLOAD, pluginId: "mixed-case.plugin" })
+    assertEquals(res.status, 201)
+    assertEquals((await res.json()).repo, "RISA-Labs-Inc/jupyter-notebook")
+    const creation = stub.recorded.find((r) => r.method === "POST" && r.url.endsWith("/issues"))
+    assert(creation, "expected an issue-creation call")
+    assert(creation.url.includes("github.com/repos/RISA-Labs-Inc/jupyter-notebook/issues"))
   } finally {
     stub.restore()
   }

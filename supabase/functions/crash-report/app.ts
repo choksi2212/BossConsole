@@ -14,6 +14,9 @@
  *   1. system_plugins.github_repo            (owner/repo, system plugins)
  *   2. plugins.homepage_url                  (store plugins published from GitHub)
  *   3. fallback: risa-labs-inc/BossConsole-Releases (also for host crashes)
+ * The first two sources are accepted only when they resolve under the configured
+ * allowed GitHub owner; publisher-controlled homepages cannot steer the server
+ * token to another owner.
  * If filing in the plugin repo fails (repo gone, issues disabled), the report
  * falls back to the default repo rather than being lost.
  *
@@ -146,7 +149,8 @@ async function pgSelect(pathAndQuery: string): Promise<Record<string, unknown>[]
 // same owner so a mis-typed row cannot send reports out-of-org either.
 // Overridable by env for self-hosted deployments that legitimately host
 // plugin repos under a different org.
-const ALLOWED_REPO_OWNER = (Deno.env.get("CRASH_REPORT_ALLOWED_REPO_OWNER") ?? "risa-labs-inc").toLowerCase()
+const ALLOWED_REPO_OWNER = (Deno.env.get("CRASH_REPORT_ALLOWED_REPO_OWNER")?.trim() || "risa-labs-inc")
+  .toLowerCase()
 
 /** A repo the crash-report proxy may file into: shaped, and owned by the allowed org. */
 function isAllowedRepo(repo: string): boolean {

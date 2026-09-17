@@ -18,7 +18,7 @@ on:
       - 'supabase/migrations/**'
       - '.github/workflows/edge-functions.yml'
   pull_request:
-    branches: [ main ]
+    branches: [ main, dev ]
     paths:
       - 'supabase/functions/**'
       - 'supabase/migrations/**'
@@ -125,4 +125,30 @@ jobs:
       - name: 🧹 Lint
         # Gating, unlike the two jobs above: this function is new, so it starts
         # with no findings to grandfather. Keep it that way.
+        run: deno lint
+
+  crash-report:
+    name: 💥 Crash Report function — check & test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: supabase/functions/crash-report
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: 🦕 Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: 🔎 Type check
+        run: find . -name '*.ts' -print0 | sort -z | xargs -0 -r deno check
+
+      - name: 🧪 Tests
+        run: deno test --allow-env --allow-net --config deno.json
+
+      - name: 🧹 Lint (advisory)
+        # Existing tests use the repository's inline jsr: import convention.
+        continue-on-error: true
         run: deno lint
