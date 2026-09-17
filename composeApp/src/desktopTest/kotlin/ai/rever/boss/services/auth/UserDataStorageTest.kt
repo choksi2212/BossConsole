@@ -44,9 +44,11 @@ class UserDataStorageTest {
         email: String,
     ) = UserInfo(id = id, email = email, createdAt = "2026-09-16T00:00:00Z")
 
-    private fun recordFile(): File = File(File(File(System.getProperty("user.home")), ".boss"), "user_data.json")
+    private val bossDir: File = File(File(System.getProperty("user.home")), ".boss")
 
-    private fun pendingMarkerFile(): File = File(File(File(System.getProperty("user.home")), ".boss"), "pending_wizard_completed")
+    private fun recordFile(): File = File(bossDir, "user_data.json")
+
+    private fun pendingMarkerFile(): File = File(bossDir, "pending_wizard_completed")
 
     @BeforeTest
     fun cleanStore() {
@@ -81,7 +83,8 @@ class UserDataStorageTest {
             // *usually* holds cannot pass.
             repeat(50) {
                 val racedWizard = scope.launch { UserDataStorage.setPluginWizardCompleted(true) }
-                val racedSave = scope.launch { UserDataStorage.saveUserData(userInfo("user-1", "save-$it@example.com")) }
+                val racedSave =
+                    scope.launch { UserDataStorage.saveUserData(userInfo("user-1", "save-$it@example.com")) }
                 racedWizard.join()
                 racedSave.join()
 
@@ -91,7 +94,8 @@ class UserDataStorageTest {
                 // ...and the wizard flag survives the save's preserved-flag read.
                 assertTrue(
                     UserDataStorage.isPluginWizardCompleted(),
-                    "the wizard completion must survive a concurrent session save (the wizard would otherwise re-run every launch)",
+                    "the wizard completion must survive a concurrent session save " +
+                        "(the wizard would otherwise re-run every launch)",
                 )
             }
         }
@@ -126,7 +130,11 @@ class UserDataStorageTest {
             // A save entered AFTER logout (fresh generation) still works: the
             // fence must not have dead-locked the store for the next login.
             UserDataStorage.saveUserData(userInfo("user-2", "fresh-login@example.com"))
-            assertEquals("fresh-login@example.com", UserDataStorage.loadUserData()?.email, "a post-logout save with a fresh generation proceeds normally")
+            assertEquals(
+                "fresh-login@example.com",
+                UserDataStorage.loadUserData()?.email,
+                "a post-logout save with a fresh generation proceeds normally",
+            )
         }
     }
 
@@ -136,7 +144,10 @@ class UserDataStorageTest {
             // N saves racing each other: unfenced read-preserve-write loops can
             // revert each other's identity; the lock must make the final state
             // the last save to hold the lock, and every record must decode.
-            val writers = (1..20).map { n -> scope.launch { UserDataStorage.saveUserData(userInfo("user-$n", "writer-$n@example.com")) } }
+            val writers =
+                (1..20).map { n ->
+                    scope.launch { UserDataStorage.saveUserData(userInfo("user-$n", "writer-$n@example.com")) }
+                }
             writers.forEach { it.join() }
 
             val loaded = UserDataStorage.loadUserData()
@@ -164,8 +175,15 @@ class UserDataStorageTest {
                 tmp.writeText("{ \"id\": \"half-written")
                 // no move - the finally-path cleanup analog
 
-                assertTrue(record.readText() == original, "the committed record must be untouched while a temp write is in flight")
-                assertEquals("durable@example.com", UserDataStorage.loadUserData()?.email, "the committed record still decodes")
+                assertTrue(
+                    record.readText() == original,
+                    "the committed record must be untouched while a temp write is in flight",
+                )
+                assertEquals(
+                    "durable@example.com",
+                    UserDataStorage.loadUserData()?.email,
+                    "the committed record still decodes",
+                )
             } finally {
                 tmp.delete()
             }
@@ -188,7 +206,10 @@ class UserDataStorageTest {
                 UserDataStorage.isPluginWizardCompleted(),
                 "the pending marker alone reads as completed even with a truncated main record",
             )
-            assertTrue(pendingMarkerFile().exists(), "the flag was written to the pending marker, not lost to the decode failure")
+            assertTrue(
+                pendingMarkerFile().exists(),
+                "the flag was written to the pending marker, not lost to the decode failure",
+            )
 
             // The next session save rebuilds the record and merges the marker
             // instead of resetting it.
@@ -197,7 +218,11 @@ class UserDataStorageTest {
                 UserDataStorage.isPluginWizardCompleted(),
                 "the post-recovery save merges the pending marker instead of resetting the wizard flag",
             )
-            assertEquals("recovered@example.com", UserDataStorage.loadUserData()?.email, "the rebuilt record carries the new identity")
+            assertEquals(
+                "recovered@example.com",
+                UserDataStorage.loadUserData()?.email,
+                "the rebuilt record carries the new identity",
+            )
             assertFalse(pendingMarkerFile().exists(), "the merged marker is consumed by the save")
         }
     }

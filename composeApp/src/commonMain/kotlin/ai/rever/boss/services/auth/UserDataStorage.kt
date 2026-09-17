@@ -15,6 +15,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Persistent storage for user data to survive app restarts
@@ -117,7 +118,7 @@ object UserDataStorage {
      * interleaving - capture, clear, acquire - deterministically instead of
      * relying on coroutine scheduling.
      */
-    internal val clearGeneration = java.util.concurrent.atomic.AtomicLong()
+    internal val clearGeneration = AtomicLong()
 
     @Serializable
     data class StoredUserData(
@@ -149,6 +150,50 @@ object UserDataStorage {
     }
 
     /**
+     * The wizard-completion state a save should persist: the pre-login pending marker OR the
+     * status already in the stored record - either being true means completed. Both readers
+     * fail soft to false (a damaged marker or an undecodable legacy record must not block a
+     * save; the marker path is where a truncated record recovers, per the review follow-up).
+     */
+    private fun resolveWizardCompleted(): Boolean {
+        val pendingWizardCompleted =
+            if (pendingWizardCompletedFile.exists()) {
+                try {
+                    pendingWizardCompletedFile.readText().trim().toBoolean()
+                } catch (e: Exception) {
+                    logger.debug(
+                        LogCategory.AUTH,
+                        "Could not read pending wizard-completed marker - assuming false",
+                        mapOf("error" to e.toString()),
+                    )
+                    false
+                }
+            } else {
+                false
+            }
+
+        val existingWizardCompleted =
+            if (storageFile.exists()) {
+                try {
+                    val existingContent = storageFile.readText()
+                    val existingData = json.decodeFromString<StoredUserData>(existingContent)
+                    existingData.pluginWizardCompleted
+                } catch (e: Exception) {
+                    logger.debug(
+                        LogCategory.AUTH,
+                        "Could not read stored wizard status - assuming false",
+                        mapOf("error" to e.toString()),
+                    )
+                    false
+                }
+            } else {
+                false
+            }
+
+        return pendingWizardCompleted || existingWizardCompleted
+    }
+
+    /**
      * The save body with an explicit entry generation. `saveUserData` captures
      * the generation before locking; this internal seam exists so the
      * regression test can hand it the generation a save *would have* captured
@@ -173,44 +218,7 @@ object UserDataStorage {
                     return@withLock
                 }
                 try {
-                    // Check for pending wizard completed status (set before login)
-                    val pendingWizardCompleted =
-                        if (pendingWizardCompletedFile.exists()) {
-                            try {
-                                pendingWizardCompletedFile.readText().trim().toBoolean()
-                            } catch (e: Exception) {
-                                logger.debug(
-                                    LogCategory.AUTH,
-                                    "Could not read pending wizard-completed marker - assuming false",
-                                    mapOf("error" to e.toString()),
-                                )
-                                false
-                            }
-                        } else {
-                            false
-                        }
-
-                    // Preserve existing pluginWizardCompleted status if file exists
-                    val existingWizardCompleted =
-                        if (storageFile.exists()) {
-                            try {
-                                val existingContent = storageFile.readText()
-                                val existingData = json.decodeFromString<StoredUserData>(existingContent)
-                                existingData.pluginWizardCompleted
-                            } catch (e: Exception) {
-                                logger.debug(
-                                    LogCategory.AUTH,
-                                    "Could not read stored wizard status - assuming false",
-                                    mapOf("error" to e.toString()),
-                                )
-                                false
-                            }
-                        } else {
-                            false
-                        }
-
-                    // Use pending status OR existing status (either one being true means completed)
-                    val wizardCompleted = pendingWizardCompleted || existingWizardCompleted
+                    val wizardCompleted = resolveWizardCompleted()
 
                     val data =
                         StoredUserData(
@@ -222,7 +230,11 @@ object UserDataStorage {
                         )
                     val content = json.encodeToString(data)
                     storageFile.atomicWriteText(content)
-                    logger.debug(LogCategory.AUTH, "Saved user data", mapOf("email" to LogSanitizer.maskEmail(user.email)))
+                    logger.debug(
+                        LogCategory.AUTH,
+                        "Saved user data",
+                        mapOf("email" to LogSanitizer.maskEmail(user.email)),
+                    )
 
                     // Clean up pending file if it exists
                     if (pendingWizardCompletedFile.exists()) {
@@ -379,7 +391,8 @@ object UserDataStorage {
                     } catch (e: Exception) {
                         logger.warn(
                             LogCategory.AUTH,
-                            "Stored user data is not decodable; writing the wizard status to the pending marker instead",
+                            "Stored user data is not decodable; " +
+                                "writing the wizard status to the pending marker instead",
                             error = e,
                         )
                     }
