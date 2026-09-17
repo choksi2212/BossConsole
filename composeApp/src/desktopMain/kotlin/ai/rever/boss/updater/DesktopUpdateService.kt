@@ -219,7 +219,13 @@ actual class UpdateService {
                     "asset" to updateInfo.assetName,
                 ),
             )
-            return downloadFrom(gitHubUrl, updateInfo.assetName, updateInfo.assetSize, sha256 = updateInfo.sha256, onProgress)
+            return downloadFrom(
+                gitHubUrl,
+                updateInfo.assetName,
+                updateInfo.assetSize,
+                sha256 = updateInfo.sha256,
+                onProgress = onProgress,
+            )
         }
         return null
     }
@@ -272,29 +278,7 @@ actual class UpdateService {
             streamToFile(url, assetSize, downloadFile, onProgress)
 
             if (downloadFile.exists() && downloadFile.length() > 0) {
-                // Integrity check, NOT authenticity: the hash and URL come from the same
-                // app_releases row, so this guards against Storage/CDN corruption, not a
-                // compromised catalog. Update authenticity still rests on OS code-signing.
-                val actualSha = if (sha256 != null) sha256Of(downloadFile) else null
-                if (sha256 != null && !sha256.equals(actualSha, ignoreCase = true)) {
-                    logger.error(
-                        LogCategory.SYSTEM,
-                        "Update checksum mismatch; discarding download",
-                        mapOf(
-                            "asset" to assetName,
-                            "expected" to sha256,
-                            "actual" to (actualSha ?: ""),
-                        ),
-                    )
-                    downloadFile.delete()
-                    null
-                } else {
-                    if (sha256 != null) {
-                        logger.info(LogCategory.SYSTEM, "Update checksum verified", mapOf("asset" to assetName))
-                    }
-                    logger.info(LogCategory.SYSTEM, "Update downloaded successfully", mapOf("path" to downloadFile.absolutePath))
-                    downloadFile.absolutePath
-                }
+                verifyDownloadedAsset(downloadFile, assetName, sha256)
             } else {
                 logger.error(LogCategory.SYSTEM, "Download failed - file is empty or doesn't exist")
                 null
@@ -321,6 +305,43 @@ actual class UpdateService {
             logger.error(LogCategory.NETWORK, "Error downloading update", mapOf("error" to errorMessage))
             null
         }
+    }
+
+    /**
+     * The post-download gate both download paths share (BossConsole#797): verify the
+     * staged bytes against the catalog hash when one was provided, and only then
+     * hand the path to the caller for install.
+     *
+     * Integrity check, NOT authenticity: the hash and URL come from the same
+     * app_releases row, so this guards against Storage/CDN corruption and a tampered
+     * fallback hop, not a compromised catalog. Update authenticity still rests on OS
+     * code-signing. A mismatch is discarded and reported; a verified download (or a
+     * source that genuinely cannot describe a hash) is staged.
+     */
+    private fun verifyDownloadedAsset(
+        downloadFile: File,
+        assetName: String,
+        sha256: String?,
+    ): String? {
+        val actualSha = if (sha256 != null) sha256Of(downloadFile) else null
+        if (sha256 != null && !sha256.equals(actualSha, ignoreCase = true)) {
+            logger.error(
+                LogCategory.SYSTEM,
+                "Update checksum mismatch; discarding download",
+                mapOf(
+                    "asset" to assetName,
+                    "expected" to sha256,
+                    "actual" to (actualSha ?: ""),
+                ),
+            )
+            downloadFile.delete()
+            return null
+        }
+        if (sha256 != null) {
+            logger.info(LogCategory.SYSTEM, "Update checksum verified", mapOf("asset" to assetName))
+        }
+        logger.info(LogCategory.SYSTEM, "Update downloaded successfully", mapOf("path" to downloadFile.absolutePath))
+        return downloadFile.absolutePath
     }
 
     /** Resolve the GitHub Releases asset URL for [version] — the download-time backup. */
