@@ -123,17 +123,20 @@ class McpPolicyEngine(
      * [providerId] is the tool's contributing provider, so the DENY recheck evaluates the
      * same provider-aware policy the initial lookup did - a provider-wide DENY must hold at
      * this boundary too, or a queued approval captured before the DENY was saved would get a
-     * second look without it.
+     * second look without it. [declaredReadOnly] exists for the same reason: the recheck must
+     * classify the tool exactly as the initial lookup did, or the two ends of one invocation
+     * could disagree about whether the default that applies is the mutating one.
      */
     internal fun confirmInvocation(
         toolName: String,
         expectedRevocation: Long,
         grantSessionTrust: Boolean,
         providerId: String? = null,
+        declaredReadOnly: Boolean? = null,
     ): Boolean =
         synchronized(lock) {
             if (revocationVersion(toolName, providerId) != expectedRevocation ||
-                policyFor(toolName, providerId) == McpPolicyAction.DENY
+                policyFor(toolName, providerId, declaredReadOnly) == McpPolicyAction.DENY
             ) {
                 false
             } else {
@@ -158,16 +161,21 @@ class McpPolicyEngine(
      * 4. An explicit tool-specific rule that is not DENY (ALLOW or ASK) - more specific than
      *    [providerId]'s rule, so it wins when the two disagree and neither is a DENY.
      * 5. [providerId]'s own ALLOW - "trust every tool this plugin contributes."
-     * 6. The risk-based default.
+     * 6. The risk-based default: HIGH risk or mutating classification picks
+     *    [McpToolPolicyConfig.defaultMutatingAction], everything else the read-only default.
      *
      * [providerId] is optional so existing callers that only ever checked a tool name (tests,
      * anything resolving policy before a provider is known) keep compiling; omitting it just
-     * means step 2 and 5 never apply.
+     * means step 2 and 5 never apply. [declaredReadOnly] is the same story for the tool's own
+     * read-only declaration: when the caller has the definition in hand it passes
+     * `definition.readOnly` and a tool that declared side effects classifies as mutating
+     * whatever its name says (#804); without it the name-only catalog decides, as before.
      */
     @Suppress("ReturnCount") // Ordered deny, trust, tool-rule, provider-rule and default precedence.
     fun policyFor(
         toolName: String,
         providerId: String? = null,
+        declaredReadOnly: Boolean? = null,
     ): McpPolicyAction {
         if (_fault.value is McpPolicyFault.PersistedPolicyUnreadable) return McpPolicyAction.DENY
         val configuredTool = _config.value.rules[toolName]
@@ -184,7 +192,7 @@ class McpPolicyEngine(
         if (configuredTool != null) return configuredTool
         if (configuredProvider == McpPolicyAction.ALLOW) return McpPolicyAction.ALLOW
         val risk = DefaultMcpRiskEvaluator().evaluateRisk(toolName, McpToolArgs(emptyMap())).level
-        return if (risk >= McpRiskLevel.HIGH || McpMutatingToolCatalog.isMutating(toolName)) {
+        return if (risk >= McpRiskLevel.HIGH || McpMutatingToolCatalog.isMutating(toolName, declaredReadOnly)) {
             _config.value.defaultMutatingAction
         } else {
             _config.value.defaultReadOnlyAction
