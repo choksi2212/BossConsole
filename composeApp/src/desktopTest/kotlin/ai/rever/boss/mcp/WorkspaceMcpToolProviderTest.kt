@@ -447,14 +447,25 @@ class WorkspaceMcpToolProviderTest {
         runBlocking {
             val core = createTestCore()
             // projectPath is a destination (a terminal cwd), so it gets the strict gate:
-            // shell metacharacters and traversal are both refused.
-            // A slash-rooted Unix path is not absolute on Windows; use the native temp root
-            // so these assertions exercise the security gate, not the absolute-path gate.
+            // shell metacharacters and traversal are both refused. The strict character
+            // gate runs before the isAbsolute check (BossConsole#832), so the SAME
+            // dangerous input is refused with the same "Refusing to open" reason on every
+            // platform - on Windows a POSIX-style `/tmp...` is not java.io-absolute, and
+            // the old order surfaced the weaker message there instead. A slash-rooted
+            // Unix path is still not absolute on Windows, so the assertions use the
+            // native temp root to exercise the security gate, not the absolute-path gate.
             val projectRoot = workspaceDir.absolutePath.replace('\\', '/')
             val badProjectArgs = """{"workspaceId":"test-ws","projectPath":"$projectRoot;rm -rf /"}"""
             val projectResult = core.invoke("open_workspace", badProjectArgs)
             assertTrue(projectResult.isError)
             assertTrue(projectResult.text.contains("Refusing to open"), projectResult.text)
+
+            // The Windows-shaped form of the same attack: a drive-letter path with the
+            // metacharacter payload must get the identical strict-gate refusal.
+            val badWindowsArgs = """{"workspaceId":"test-ws","projectPath":"C:\\tmp;rm -rf C:\\"}"""
+            val windowsResult = core.invoke("open_workspace", badWindowsArgs)
+            assertTrue(windowsResult.isError)
+            assertTrue(windowsResult.text.contains("Refusing to open"), windowsResult.text)
 
             val badProjectTraversal = """{"workspaceId":"test-ws","projectPath":"$projectRoot/../etc"}"""
             val traversalResult = core.invoke("open_workspace", badProjectTraversal)
