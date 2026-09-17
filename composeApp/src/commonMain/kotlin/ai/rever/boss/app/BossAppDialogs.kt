@@ -344,7 +344,7 @@ internal fun BossAppDialogs(state: BossAppState) {
                             FluckTabInfo(
                                 id = "browser-${Random.nextLong()}",
                                 typeId = TabTypeId("fluck"),
-                                _title = "Loading...",
+                                _title = if (FluckTabInfo.isHomeUrl(path)) FluckTabInfo.HOME_TITLE else "Loading...",
                                 url = path,
                             )
                         place(tab)
