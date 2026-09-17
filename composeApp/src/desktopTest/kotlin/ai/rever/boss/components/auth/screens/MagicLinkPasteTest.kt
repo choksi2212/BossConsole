@@ -178,6 +178,106 @@ class MagicLinkPasteTest {
     }
 
     @Test
+    fun `a fragment after the type does not become part of it`() {
+        // Some mail clients append a fragment to every link they rewrite; `#_=_` is the one
+        // Facebook's rewriter is known for. It lands inside whichever parameter came last, so
+        // the charset check refuses a link that is otherwise exactly the covered shape.
+        assertReachesVerification("$verify?redirect_to=boss://auth/verify&token=$token&type=magiclink#_=_")
+    }
+
+    @Test
+    fun `a fragment after the token does not become part of it`() {
+        assertReachesVerification("$verify?type=signup&token=$token#", type = "signup")
+    }
+
+    @Test
+    fun `a link broken across lines by a plain-text mail client still reaches verification`() {
+        // This box exists for the path where boss:// is not delivered (#410), which is the
+        // plain-text copy - and plain-text clients wrap long URLs. trim() reaches the ends only.
+        val wrapped = encodedEmailLink()
+        val broken = wrapped.substring(0, 60) + System.lineSeparator() + wrapped.substring(60)
+        assertReachesVerification(broken)
+    }
+
+    @Test
+    fun `the boss passthrough hands the link on exactly as pasted`() {
+        // Whitespace removal sits deliberately below this branch. The passthrough forwards the
+        // link verbatim (apart from the leading/trailing copy noise the trim drops), and the routed
+        // hosts one can carry take values where a space means
+        // something (`boss://terminal?command=ls -la`, `boss://file?path=/My Notes/a.md`).
+        // Those hosts are dispatched instead of reaching deepLinkFlow, so the contract is pinned
+        // on a host that does reach it.
+        val spaced = "boss://auth/verify?token=$token&type=magiclink&note=two words"
+        assertEquals(spaced, paste("  $spaced  "))
+    }
+
+    @Test
+    fun `a link with no type at all verifies as a magic link`() {
+        // The `?: "magiclink"` default: every other fixture carries a type, so nothing reached it.
+        assertReachesVerification("$verify?token=$token")
+    }
+
+    @Test
+    fun `token_hash on the outer link is read, not only the nested one`() {
+        // The redirect function's own simple form (app.ts:171).
+        assertReachesVerification("$redirect?token_hash=$token&type=magiclink")
+    }
+
+    @Test
+    fun `an empty token is refused`() {
+        assertRefused("$verify?token=&type=magiclink")
+    }
+
+    @Test
+    fun `a token that lives only in the fragment is refused`() {
+        // Before the fragment strip, the query read kept everything after the first `?`, so this
+        // token - sitting past the `#` - was read as if it were in the query and sent to Supabase.
+        // The strip narrows that; pin it, since nothing else pins the narrowing.
+        assertRefused("$verify?a=1#&token=$token")
+    }
+
+    @Test
+    fun `a fragment a rewriter appended to the nested url is stripped by the recursion`() {
+        // The rewriter appends `#_=_` to the link it rewrote, and the link it rewrote here is the
+        // confirmation URL inside `url=`. `type` comes last, so without the strip the inner type
+        // decodes to `magiclink#_=_` and the charset check refuses: the test fails on exactly the
+        // mutation it names (delete `substringBefore('#')` from the read).
+        val inner = "$verify?redirect_to=boss://auth/verify&token=$token&type=magiclink#_=_"
+        val encodedInner =
+            inner
+                .replace("?", "%3f")
+                .replace("#", "%23")
+                .replace("&", "%26")
+                .replace("=", "%3d")
+                .replace(":", "%3a")
+                .replace("/", "%2f")
+        assertReachesVerification("$redirect?url=$encodedInner")
+    }
+
+    @Test
+    fun `a zero-width space inside the token does not defeat it`() {
+        // A rendered copy can carry U+200B where a line soft-broke; Char.isWhitespace does not
+        // reach it, so the strip names the invisible characters instead of relying on it.
+        assertReachesVerification("$verify?token=${token.substring(0, 32)}\u200B${token.substring(32)}&type=magiclink")
+    }
+
+    @Test
+    fun `a leading byte-order mark does not defeat the boss passthrough`() {
+        // A clipboard can put U+FEFF in front of the link, where trim() does not reach it; left
+        // there it would fail the passthrough and a routed link would be re-parsed and mangled.
+        val spaced = "boss://auth/verify?token=$token&type=magiclink&note=two words"
+        assertEquals(spaced, paste("\uFEFF" + spaced))
+    }
+
+    @Test
+    fun `a BOM followed by a space still reaches the boss passthrough`() {
+        // The near neighbour removePrefix missed: plain trim() stops at the BOM and leaves the
+        // space, so only a predicate trim that reaches both ends covers it.
+        val spaced = "boss://auth/verify?token=$token&type=magiclink&note=two words"
+        assertEquals(spaced, paste("\uFEFF " + spaced))
+    }
+
+    @Test
     fun `a pasted sign-in link is logged without its token`() {
         // DeepLinkHandler logs what it is given through maskUriParams, which masks a top-level token only.
         val dispatched = paste(encodedEmailLink())
