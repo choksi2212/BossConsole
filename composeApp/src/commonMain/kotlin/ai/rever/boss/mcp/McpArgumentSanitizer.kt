@@ -95,10 +95,20 @@ object McpArgumentSanitizer {
             }
         }
 
+    /**
+     * The value alternative accepts an optional HTTP auth scheme before the credential.
+     *
+     * Without it, `[^\s&,;}]+` stops at the first space, so `Authorization: Bearer <token>`
+     * captures the literal word `Bearer` as the value and emits `[REDACTED] <token>` - the label
+     * masked, the credential intact. [bearer] cannot recover it either, because the word it keys
+     * on has already been consumed. Reading the scheme and the credential as one value keeps the
+     * whole header masked in a single pass, and covers `Basic`/`Token`/`Negotiate`, which fail the
+     * same way.
+     */
     private val sensitiveAssignment =
         Regex(
             """(?i)(?:password|token|secret|api[_-]?key|authorization|credential)""" +
-                """\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s&,;}]+)""",
+                """\s*[:=]\s*(?:"[^"]*"|'[^']*'|(?:(?:Bearer|Basic|Token|Negotiate)\s+)?[^\s&,;}]+)""",
         )
     private val bearer = Regex("""(?i)Bearer\s+[^\s"',;}]+""")
 
