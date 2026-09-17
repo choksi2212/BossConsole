@@ -79,7 +79,12 @@ class RecentFilesConcurrencyTest {
             // list missing most of them.
             val opens = openedFiles.map { f -> scope.async { RecentFilesManager.recordFileOpen(f.path) } }
             opens.forEach { it.await() }
-            awaitPresence(openedFiles.last().path)
+            // Await EVERY entry, not just the last-listed one: recordFileOpen is
+            // fire-and-forget on the manager's own scope, so the wrapper await()
+            // proves nothing about the mutation landing. Waiting only for the
+            // last-listed file raced on CI (all 20 must be observed present, and
+            // completion order is not the list order).
+            openedFiles.forEach { f -> awaitPresence(f.path) }
 
             val recorded = RecentFilesManager.recentFiles.value
             assertEquals(
