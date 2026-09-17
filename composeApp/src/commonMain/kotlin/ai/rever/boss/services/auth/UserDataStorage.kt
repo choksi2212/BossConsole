@@ -104,6 +104,21 @@ object UserDataStorage {
      */
     private val io = Mutex()
 
+    /**
+     * Fences logout against in-flight saves (review follow-up on this PR): a
+     * `saveUserData` call that *entered* before logout but acquires the mutex
+     * only after `clearUserData()` ran would recreate `user_data.json` with
+     * the logged-out user's identity. The save captures the generation before
+     * acquiring the lock and re-checks it inside: a clear that happened while
+     * it waited invalidates the save, so the resurrection path is closed even
+     * when the lock alone cannot order the two.
+     *
+     * `internal` (not private) so the regression test can drive the exact
+     * interleaving - capture, clear, acquire - deterministically instead of
+     * relying on coroutine scheduling.
+     */
+    internal val clearGeneration = java.util.concurrent.atomic.AtomicLong()
+
     @Serializable
     data class StoredUserData(
         val id: String,
@@ -129,7 +144,34 @@ object UserDataStorage {
         authenticatedVia: String? = null,
     ) {
         withContext(Dispatchers.IO) {
+            doSaveUserData(user, authenticatedVia, clearGeneration.get())
+        }
+    }
+
+    /**
+     * The save body with an explicit entry generation. `saveUserData` captures
+     * the generation before locking; this internal seam exists so the
+     * regression test can hand it the generation a save *would have* captured
+     * before a logout interleaved, driving the capture-clear-acquire order
+     * deterministically without depending on coroutine scheduling.
+     */
+    internal suspend fun doSaveUserData(
+        user: UserInfo,
+        authenticatedVia: String?,
+        generationAtEntry: Long,
+    ) {
+        withContext(Dispatchers.IO) {
+            // A clear that ran while this save waited invalidates it, so a
+            // save entered before logout can no longer recreate the record
+            // after the delete.
             io.withLock {
+                if (generationAtEntry != clearGeneration.get()) {
+                    logger.debug(
+                        LogCategory.AUTH,
+                        "Skipping user data save: logout occurred while the save waited for the lock",
+                    )
+                    return@withLock
+                }
                 try {
                     // Check for pending wizard completed status (set before login)
                     val pendingWizardCompleted =
@@ -232,6 +274,9 @@ object UserDataStorage {
         withContext(Dispatchers.IO) {
             io.withLock {
                 try {
+                    // Bump the fence first so any save that captured an older
+                    // generation while waiting on this lock is invalidated.
+                    clearGeneration.incrementAndGet()
                     if (storageFile.exists()) {
                         storageFile.delete()
                         logger.debug(LogCategory.AUTH, "Cleared user data")
@@ -311,12 +356,19 @@ object UserDataStorage {
     suspend fun setPluginWizardCompleted(completed: Boolean) {
         withContext(Dispatchers.IO) {
             io.withLock {
-                try {
-                    if (storageFile.exists()) {
+                if (storageFile.exists()) {
+                    // Decode failure on a truncated legacy record must fall
+                    // through to the pending-marker path (review follow-up):
+                    // catching it here re-offers the marker merge, so the flag
+                    // is not lost to a file the old non-atomic writer left
+                    // half-written.
+                    var updated = false
+                    try {
                         val content = storageFile.readText()
                         val data = json.decodeFromString<StoredUserData>(content)
                         val updatedData = data.copy(pluginWizardCompleted = completed)
                         storageFile.atomicWriteText(json.encodeToString(updatedData))
+                        updated = true
                         logger.debug(
                             LogCategory.AUTH,
                             "Updated plugin wizard completion status",
@@ -324,14 +376,22 @@ object UserDataStorage {
                                 "completed" to completed,
                             ),
                         )
-                    } else {
-                        // File doesn't exist yet - store in a temporary pending file
-                        // This will be merged when saveUserData is called
+                    } catch (e: Exception) {
+                        logger.warn(
+                            LogCategory.AUTH,
+                            "Stored user data is not decodable; writing the wizard status to the pending marker instead",
+                            error = e,
+                        )
+                    }
+                    if (!updated) {
                         pendingWizardCompletedFile.parentFile?.mkdirs()
                         pendingWizardCompletedFile.atomicWriteText(completed.toString())
                     }
-                } catch (e: Exception) {
-                    logger.error(LogCategory.AUTH, "Error setting plugin wizard status", error = e)
+                } else {
+                    // File doesn't exist yet - store in a temporary pending file
+                    // This will be merged when saveUserData is called
+                    pendingWizardCompletedFile.parentFile?.mkdirs()
+                    pendingWizardCompletedFile.atomicWriteText(completed.toString())
                 }
             }
         }
