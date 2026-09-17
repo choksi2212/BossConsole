@@ -79,9 +79,21 @@ object RecentFilesManager {
      * normal case when a project restores several editors at startup - would both read the same
      * list and the second write would silently discard the first file. A `MutableStateFlow.update`
      * CAS loop is not usable here because a mutation has to leave *two* flows consistent and the
-     * CAS lambda can be retried; a lock is the form that keeps [setFiles] the single writer.
+     * CAS lambda can be retried; a lock is the form that keeps the recorded list single-writer.
      */
     private val mutationLock = Mutex()
+
+    /**
+     * Serialises the derive of [_recentFiles] from [_allFiles], and is deliberately *not*
+     * [mutationLock].
+     *
+     * The derive calls `File.exists()` once per entry - up to 20 - and on an unmounted or
+     * disconnected share, the exact case [_allFiles] exists for, each can block for seconds.
+     * Holding [mutationLock] across that queued every `recordFileOpen`, `removeFile` and
+     * `clearAll` behind one slow mount. The recorded list is read inside this lock, so the
+     * derive that finishes last is the one that read the freshest recorded list.
+     */
+    private val visibilityLock = Mutex()
 
     private val saveJobLock = Any()
     private var saveJob: Job? = null
@@ -103,16 +115,20 @@ object RecentFilesManager {
     val recentFiles: StateFlow<List<RecentFile>> = _recentFiles.asStateFlow()
 
     /**
-     * Replace the recorded list and re-derive the displayed one.
+     * Re-derive the displayed list from the recorded one.
      *
-     * Every mutation goes through here so the two can never drift - the defect being avoided is a
-     * caller updating the display and the save then writing the display back. Call only while
-     * holding [mutationLock]: the two flow writes are not one atomic step, so an unsynchronised
-     * caller can leave the displayed list derived from a list that is no longer recorded.
+     * Split out of the recorded write so the `File.exists()` calls happen outside [mutationLock];
+     * see [visibilityLock]. The displayed list therefore lags the recorded one for the length of
+     * the derive. That is not new - nothing re-derives between mutations either, so a file
+     * deleted outside BOSS already stays visible until the next mutation - the window is just
+     * wider. What must not happen is the reverse: the *recorded* list is what gets persisted
+     * (see [_allFiles]), and no caller may write [_recentFiles] into it.
      */
-    private fun setFiles(files: List<RecentFile>) {
-        _allFiles.value = files
-        _recentFiles.value = visibleFiles(files) { fileExists(it) }
+    private suspend fun refreshVisible() {
+        visibilityLock.withLock {
+            val recorded = _allFiles.value
+            _recentFiles.value = visibleFiles(recorded) { fileExists(it) }
+        }
     }
 
     /**
@@ -120,7 +136,7 @@ object RecentFilesManager {
      * list changed.
      *
      * The single entry point for user-driven mutation, so no caller can reintroduce the
-     * read-then-write race by touching [setFiles] directly. The startup merge is the one other
+     * read-then-write race by writing [_allFiles] directly. The startup merge is the one other
      * path that holds [mutationLock]: its no-op baseline is the decoded file rather than the
      * pre-merge list, so it decides its own save (see [loadAsync]).
      */
@@ -132,13 +148,16 @@ object RecentFilesManager {
                 if (after == before) {
                     false
                 } else {
-                    setFiles(after)
+                    _allFiles.value = after
                     true
                 }
             }
         // A transform that changed nothing schedules nothing. RecentFile is a data class, so
         // this is a value comparison.
-        if (changed) scheduleSave()
+        if (!changed) return
+        // Save first: it only arms a timer, while the derive can block on a slow mount.
+        scheduleSave()
+        refreshVisible()
     }
 
     /**
@@ -188,13 +207,16 @@ object RecentFilesManager {
                 // open an empty editor - fileExists existed for exactly this and had no callers)
                 // but stays in the recorded list, so an unmounted volume coming back brings its
                 // entries with it. See _allFiles.
-                persist =
+                val (recordedChanged, saveDue) =
                     mutationLock.withLock {
                         val after = mergeRecorded(loaded = data.files, recorded = _allFiles.value, max = MAX_FILES)
-                        if (after != _allFiles.value) setFiles(after)
-                        after != data.files
+                        val changed = after != _allFiles.value
+                        if (changed) _allFiles.value = after
+                        changed to (after != data.files)
                     }
+                persist = saveDue
                 if (persist) scheduleSave()
+                if (recordedChanged) refreshVisible()
 
                 val present = _recentFiles.value
                 recentFilesLogger.debug(
@@ -234,7 +256,8 @@ object RecentFilesManager {
         }
         loadAsync()
         if (recorded != null) {
-            mutationLock.withLock { setFiles(recorded) }
+            mutationLock.withLock { _allFiles.value = recorded }
+            refreshVisible()
         }
     }
 
@@ -334,9 +357,10 @@ object RecentFilesManager {
  *
  * Pure and separate so the hide-versus-prune rule is testable without driving the singleton's file
  * I/O. The other half of that rule - that the **recorded** list is what gets persisted - is
- * structural rather than tested: `saveImmediately` serialises `_allFiles`, and `setFiles` is the
- * only writer of either flow. If a future change makes `saveImmediately` read `_recentFiles`, an
- * absent volume becomes permanent deletion again and nothing here will catch it.
+ * structural rather than tested: `saveImmediately` serialises `_allFiles`, and `refreshVisible`
+ * is the only writer of `_recentFiles`. If a future change makes `saveImmediately` read
+ * `_recentFiles`, an absent volume becomes permanent deletion again and nothing here will catch
+ * it.
  */
 internal fun visibleFiles(
     all: List<RecentFile>,
