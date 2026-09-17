@@ -499,7 +499,7 @@ apiKeys.openapi(deleteApiKeyRoute, async (ctx) => {
 
     if (updateError) {
       console.error("Error revoking API key:", updateError)
-      return ctx.json({ success: false, error: updateError.message }, 500)
+      return ctx.json({ success: false, error: 'Internal server error' }, 500)
     }
 
     return ctx.json(

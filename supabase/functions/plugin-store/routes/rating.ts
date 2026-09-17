@@ -101,7 +101,7 @@ rating.openapi(rateRoute, async (ctx) => {
     console.error('Error rating plugin:', error)
     return ctx.json({ 
       success: false, 
-      error: 'Internal server error' 
+      error: 'Internal server error'
     }, 500)
   }
 })

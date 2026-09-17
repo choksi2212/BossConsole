@@ -196,7 +196,7 @@ publish.openapi(publishPluginRoute, async (ctx) => {
     console.error('Error publishing plugin:', error)
     return ctx.json({ 
       success: false, 
-      error: 'Internal server error' 
+      error: 'Internal server error'
     }, 500)
   }
 })
@@ -369,7 +369,7 @@ publish.openapi(publishVersionRoute, async (ctx) => {
     console.error('Error publishing version:', error)
     return ctx.json({ 
       success: false, 
-      error: 'Internal server error' 
+      error: 'Internal server error'
     }, 500)
   }
 })
@@ -589,7 +589,7 @@ publish.openapi(finalizeVersionRoute, async (ctx) => {
     console.error('Error finalizing version:', error)
     return ctx.json({ 
       success: false, 
-      error: 'Internal server error' 
+      error: 'Internal server error'
     }, 500)
   }
 })

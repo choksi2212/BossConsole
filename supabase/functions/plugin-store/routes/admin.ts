@@ -193,7 +193,7 @@ admin.openapi(deletePluginRoute, async (ctx) => {
 
     if (deleteError) {
       console.error('Error deleting plugin:', deleteError)
-      return ctx.json({ error: deleteError.message }, 500)
+      return ctx.json({ error: 'Internal server error' }, 500)
     }
 
     // Clean up JAR files from storage

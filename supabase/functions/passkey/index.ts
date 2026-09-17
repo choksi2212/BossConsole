@@ -73,7 +73,8 @@ app.post("/maintenance/cleanup", async (ctx) => {
   if (result.success) {
     return ctx.json({ message: "Cleanup completed successfully" }, 200)
   } else {
-    return ctx.json({ error: result.error }, 500)
+    console.error('Error cleaning up expired challenges:', result.error)
+    return ctx.json({ error: 'Internal server error' }, 500)
   }
 })
 
