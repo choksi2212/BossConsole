@@ -2,51 +2,91 @@
 -- (20260916130000).
 --
 -- Every SECURITY DEFINER function added since 20260802000000 carries
--- `SET search_path TO ''`; the three passkey lifecycle functions predated
--- that convention and resolved their table references through the
--- caller-influenced search_path. These assertions pin the closed form so a
--- future CREATE OR REPLACE cannot silently drop the clause again, and pin
--- the revoked client grants on clean_expired_passkey_challenges - the one
--- function on the list that was still anon/authenticated-executable with no
--- production caller.
+-- `SET search_path TO ''` plus fully-qualified references; the three passkey
+-- lifecycle functions predated that convention and resolved their table
+-- references through the caller-influenced search_path. These assertions
+-- pin the closed form so a future CREATE OR REPLACE cannot silently drop
+-- the clause again, and pin the revoked client grants on the cleanup RPC.
+--
+-- Review follow-ups pinned here as well: the nested-trigger chain
+-- (trigger_cleanup_expired_challenges and the bounded cleanup RPC it now
+-- delegates to) carries its own empty search_path, so the hardened
+-- create_mobile_registration_session can no longer abort registration on
+-- the 10% cleanup branch. Membership testing ('search_path=""' = any(...))
+-- is used throughout rather than positional proconfig indexing.
 
 begin;
-select plan(12);
+select plan(16);
 
--- 1-4: the hardened functions carry an empty search_path, provable in
--- pg_proc.proconfig (a text[] GUC list; a search_path-less function has
--- NULL proconfig). Any future leak of a non-empty path fails the equality.
+-- 1-4: the hardened functions carry an empty search_path.
 select is(
-    (select proconfig[1]
-       from pg_proc
+    (select proconfig from pg_proc
       where oid = 'public.clean_expired_passkey_challenges()'::regprocedure),
-    'search_path=""',
-    'clean_expired_passkey_challenges pins search_path to empty'
+    ARRAY['search_path=""'],
+    'clean_expired_passkey_challenges pins search_path to empty (bounded, SKIP LOCKED)'
 );
 
 select is(
-    (select proconfig[1]
-       from pg_proc
+    (select proconfig from pg_proc
       where oid = 'public.create_mobile_registration_session(text, text, text)'::regprocedure),
-    'search_path=""',
+    ARRAY['search_path=""'],
     'create_mobile_registration_session pins search_path to empty'
 );
 
 select is(
-    (select proconfig[1]
-       from pg_proc
+    (select proconfig from pg_proc
       where oid = 'public.get_session_status(text)'::regprocedure),
-    'search_path=""',
+    ARRAY['search_path=""'],
     'get_session_status pins search_path to empty'
 );
 
-select ok(
-    (select prosecdef from pg_proc
-      where oid = 'public.clean_expired_passkey_challenges()'::regprocedure),
-    'clean_expired_passkey_challenges is still SECURITY DEFINER (owner-privileged, unchanged intent)'
+select is(
+    (select proconfig from pg_proc
+      where oid = 'public.trigger_cleanup_expired_challenges()'::regprocedure),
+    ARRAY['search_path=""'],
+    'trigger_cleanup_expired_challenges pins search_path to empty (nested-trigger regression closed)'
 );
 
--- 5-9: the dead client grants are gone; the operational roles keep access.
+-- 5: membership form, robust to GUC list position: every function this
+-- migration hardened or introduced reports the empty search_path somewhere
+-- in proconfig.
+select is(
+    (select count(*)::int from pg_proc
+      where oid in (
+        'public.clean_expired_passkey_challenges()'::regprocedure,
+        'public.create_mobile_registration_session(text, text, text)'::regprocedure,
+        'public.get_session_status(text)'::regprocedure,
+        'public.trigger_cleanup_expired_challenges()'::regprocedure
+      )
+      and 'search_path=""' = any(proconfig)),
+    4,
+    'all four functions carry the empty search_path (membership test, order-independent)'
+);
+
+-- 6: the trigger chain no longer runs as DEFINER with a leaked empty path:
+-- the delegate is INVOKER, so an empty search_path cannot turn it into a
+-- definer-privileged primitive.
+select ok(
+    (select prosecdef from pg_proc
+      where oid = 'public.trigger_cleanup_expired_challenges()'::regprocedure) = false,
+    'trigger_cleanup_expired_challenges is SECURITY INVOKER'
+);
+
+-- 7-8: the bounded cleanup RPC executes under the closed path - the
+-- live-path proof for the trigger chain create_mobile_registration_session
+-- depends on.
+select lives_ok(
+    $$ select public.clean_expired_passkey_challenges() $$,
+    'the bounded cleanup RPC executes with the closed search_path'
+);
+
+select is(
+    (select proname from pg_proc where oid = 'public.clean_expired_passkey_challenges()'::regprocedure),
+    'clean_expired_passkey_challenges',
+    'the cleanup RPC resolves (present whether or not #572 has landed)'
+);
+
+-- 9-13: the dead client grants are gone; the operational role keeps access.
 select ok(
     not has_function_privilege('anon', 'public.clean_expired_passkey_challenges()', 'EXECUTE'),
     'anon can no longer execute the cleanup RPC'
@@ -54,7 +94,7 @@ select ok(
 
 select ok(
     not has_function_privilege('authenticated', 'public.clean_expired_passkey_challenges()', 'EXECUTE'),
-    'authenticated can no longer execute the cleanup RPC (nothing invokes it; the trigger inlines its own DELETE)'
+    'authenticated can no longer execute the cleanup RPC (nothing invokes it directly; the trigger inlines its own DELETE)'
 );
 
 select ok(
@@ -67,11 +107,10 @@ select ok(
     'service_role keeps EXECUTE for operational use'
 );
 
--- 10-13: the hardening must not have gone too far. get_session_status and
--- create_mobile_registration_session were both already revoked from
--- clients (20260910000000 / the 20260908030000-era sweep) - the edge
--- functions drive registration through the service role. What must hold
--- is that the *live* paths still execute with the closed search_path.
+-- 14-16: the hardened registration path still executes with the closed
+-- search_path. get_session_status and the cleanup RPC are the live-path
+-- proofs; the registration session itself needs a confirmed auth user, so
+-- its read side stands in.
 select ok(
     not has_function_privilege('anon', 'public.get_session_status(text)', 'EXECUTE'),
     'anon still cannot execute get_session_status (revoked by 20260910000000; unchanged here)'

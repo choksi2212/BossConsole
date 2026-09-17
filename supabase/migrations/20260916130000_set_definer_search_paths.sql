@@ -148,3 +148,44 @@ END;
 $$;
 
 ALTER FUNCTION "public"."get_session_status"("p_session_id" "text") OWNER TO "postgres";
+
+-- 4. The nested-trigger regression (review of this PR): the hardened
+-- create_mobile_registration_session above inserts under search_path = '',
+-- and passkey_challenges' AFTER INSERT trigger then runs
+-- trigger_cleanup_expired_challenges() - which had no local search_path and
+-- referenced passkey_challenges unqualified. Trigger functions inherit the
+-- invoking function's search_path, so the 10% cleanup branch inherited the
+-- empty path and aborted registration with relation-not-found.
+--
+-- Redefine the trigger chain to be self-contained and bounded, in the same
+-- shape as open #572 (20260911093022), so whichever lands second is a
+-- no-op textual replace of identical semantics:
+--
+--   - clean_expired_passkey_challenges(): bounded cleanup, 256 rows,
+--     FOR UPDATE SKIP LOCKED, SECURITY INVOKER, empty search_path. If #572
+--     has not landed, this defines it; when it has, this replaces it with
+--     the identical body.
+--   - trigger_cleanup_expired_challenges(): SECURITY INVOKER delegate with
+--     its own empty search_path, replacing the unbounded unqualified body -
+--     no probabilistic gate, since the RPC itself is bounded now.
+CREATE OR REPLACE FUNCTION "public"."clean_expired_passkey_challenges"() RETURNS "void"
+    LANGUAGE "sql" SECURITY INVOKER SET search_path TO ''
+    AS $$
+  DELETE FROM public.passkey_challenges WHERE id IN (
+    SELECT id FROM public.passkey_challenges WHERE expires_at <= pg_catalog.clock_timestamp()
+    ORDER BY expires_at LIMIT 256 FOR UPDATE SKIP LOCKED
+  );
+$$;
+
+ALTER FUNCTION "public"."clean_expired_passkey_challenges"() OWNER TO "postgres";
+
+CREATE OR REPLACE FUNCTION "public"."trigger_cleanup_expired_challenges"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY INVOKER SET search_path TO ''
+    AS $$
+BEGIN
+  PERFORM public.clean_expired_passkey_challenges();
+  RETURN NEW;
+END;
+$$;
+
+ALTER FUNCTION "public"."trigger_cleanup_expired_challenges"() OWNER TO "postgres";
