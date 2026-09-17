@@ -1,10 +1,12 @@
 package ai.rever.boss.orchestrator
 
 import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermission
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -118,5 +120,60 @@ class SnapshotManagerTest {
         assertEquals("proc-7", info.processId)
         assertTrue(info.sizeBytes > 0)
         assertTrue(info.timestamp > 0)
+    }
+
+    @Test
+    fun `save rejects path traversal process IDs`() {
+        assertFailsWith<IllegalArgumentException> {
+            manager.save("../../escape", "payload".toByteArray())
+        }
+        assertFailsWith<IllegalArgumentException> {
+            manager.save("../parent", "payload".toByteArray())
+        }
+        assertFailsWith<IllegalArgumentException> {
+            manager.save("sub/dir", "payload".toByteArray())
+        }
+        assertFailsWith<IllegalArgumentException> {
+            manager.save("invalid.", "payload".toByteArray())
+        }
+        assertFailsWith<IllegalArgumentException> {
+            manager.save("CON", "payload".toByteArray())
+        }
+    }
+
+    @Test
+    fun `loadLatest and listSnapshots reject traversal process IDs`() {
+        assertFailsWith<IllegalArgumentException> {
+            manager.loadLatest("../../escape")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            manager.listSnapshots("../../escape")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            manager.cleanup("../../escape")
+        }
+    }
+
+    @Test
+    fun `save restricts permissions to owner on posix filesystems`() {
+        manager.save("proc-perms", "secret-payload".toByteArray(), "secret description")
+        val snapshotsDir = java.io.File(tempDir, "snapshots/proc-perms")
+        val files = snapshotsDir.listFiles() ?: emptyArray()
+        assertTrue(files.isNotEmpty())
+
+        for (file in files) {
+            val path = file.toPath()
+            val hasPosix = path.fileSystem.supportedFileAttributeViews().contains("posix")
+            if (hasPosix) {
+                val perms = Files.getPosixFilePermissions(path)
+                val ownerOnly =
+                    setOf(
+                        PosixFilePermission.OWNER_READ,
+                        PosixFilePermission.OWNER_WRITE,
+                    )
+                val extraPerms = perms - ownerOnly
+                assertTrue(extraPerms.isEmpty(), "Expected owner-only permissions for ${file.name}, found: $perms")
+            }
+        }
     }
 }
