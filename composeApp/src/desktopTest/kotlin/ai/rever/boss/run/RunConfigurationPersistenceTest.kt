@@ -6,10 +6,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
+import java.nio.file.Files
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class RunConfigurationPersistenceTest {
@@ -62,4 +65,61 @@ class RunConfigurationPersistenceTest {
                 configs.forEach { RunConfigurationManager.removeConfiguration(it.id) }
             }
         }
+
+    @Test
+    fun `failed startup cleanup write preserves loaded configurations`() {
+        val file = Files.createTempFile("run-config-startup-", ".json").toFile()
+        val original =
+            RunConfiguration(
+                id = "keep-this-configuration",
+                name = "Main",
+                type = RunConfigurationType.MAIN_FUNCTION,
+                filePath = "/example/Main.kt",
+                lineNumber = 1,
+                language = Language.KOTLIN,
+                command = "",
+                workingDirectory = "",
+            )
+        val duplicate = original.copy(id = "duplicate-path")
+
+        try {
+            file.writeText(
+                Json.encodeToString(
+                    RunConfigurationSettings.serializer(),
+                    RunConfigurationSettings(configurations = listOf(original, duplicate)),
+                ),
+            )
+
+            val loaded =
+                RunConfigurationManager.loadSettingsFromFile(file) { target, _ ->
+                    // A failed write may have already damaged the file; the in-memory
+                    // result must survive either way.
+                    target.writeText("")
+                    error("Simulated cleanup write failure")
+                }
+
+            assertEquals(
+                listOf(original.id),
+                loaded.configurations.map { it.id },
+                "A failed cleanup write must not discard configurations loaded from disk",
+            )
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun `a malformed settings file still reaches the startup error handler`() {
+        val file = Files.createTempFile("run-config-malformed-", ".json").toFile()
+        try {
+            file.writeText("{ not json")
+            assertFailsWith<SerializationException> {
+                RunConfigurationManager.loadSettingsFromFile(file) { _, _ ->
+                    error("must not be reached")
+                }
+            }
+        } finally {
+            file.delete()
+        }
+    }
 }
