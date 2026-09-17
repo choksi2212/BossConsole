@@ -15,6 +15,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Persistent storage for user data to survive app restarts
@@ -91,6 +92,68 @@ object UserDataStorage {
             prettyPrint = true
         }
     private val logger = BossLogger.forComponent("UserDataStorage")
+
+    /**
+     * Fences logout against in-flight saves (BossConsole#762, review follow-up on the merged
+     * #795): a `saveUserData` call that *entered* before logout but acquires [fileLock] only
+     * after `clearUserData()` ran would recreate `user_data.json` with the logged-out user's
+     * identity - the mutex cannot order a caller that already passed it. The save captures the
+     * generation before acquiring the lock and re-checks it inside; a clear that happened while
+     * it waited invalidates the save, so the resurrection path is closed.
+     */
+    private val clearGeneration = AtomicLong()
+
+    /** Test seam: the generation a save entering now would capture. */
+    internal fun generationForTest(): Long = clearGeneration.get()
+
+    /**
+     * The save body with an explicit entry generation, so the fence's regression test can
+     * hand a save the generation it *would have* captured before a logout interleaved,
+     * driving the capture-clear-acquire order deterministically without coroutine scheduling.
+     */
+    internal suspend fun doSaveUserData(
+        user: UserInfo,
+        authenticatedVia: String?,
+        generationAtEntry: Long,
+    ) {
+        withContext(Dispatchers.IO) {
+            fileLock.withLock {
+                if (generationAtEntry != clearGeneration.get()) {
+                    logger.debug(
+                        LogCategory.AUTH,
+                        "Skipping user data save: logout occurred while the save waited for the lock",
+                    )
+                    return@withLock
+                }
+                try {
+                    val wizardCompleted = readPendingWizardFlag() || readStoredWizardFlag()
+                    val data =
+                        StoredUserData(
+                            id = user.id,
+                            email = user.email,
+                            createdAt = user.createdAt,
+                            authenticatedVia = authenticatedVia,
+                            pluginWizardCompleted = wizardCompleted,
+                        )
+                    val content = json.encodeToString(data)
+                    // Atomic: `writeText` truncates first, so a crash or a concurrent writer leaves a
+                    // half-written user_data.json. That parses as corrupt on the next launch, the user
+                    // is treated as logged out, and the plugin wizard runs again.
+                    storageFile.atomicWriteText(content)
+                    logger.debug(
+                        LogCategory.AUTH,
+                        "Saved user data",
+                        mapOf("email" to LogSanitizer.maskEmail(user.email)),
+                    )
+                    if (pendingWizardCompletedFile.exists()) {
+                        pendingWizardCompletedFile.delete()
+                    }
+                } catch (e: Exception) {
+                    logger.error(LogCategory.AUTH, "Error saving user data", error = e)
+                }
+            }
+        }
+    }
 
     /**
      * Serialises every read-modify-write of [storageFile].
@@ -175,41 +238,10 @@ object UserDataStorage {
         user: UserInfo,
         authenticatedVia: String? = null,
     ) {
-        withContext(Dispatchers.IO) {
-            fileLock.withLock {
-                try {
-                    // Either source being true means completed: the pending marker is written
-                    // before login, the stored flag after.
-                    val wizardCompleted = readPendingWizardFlag() || readStoredWizardFlag()
-
-                    val data =
-                        StoredUserData(
-                            id = user.id,
-                            email = user.email,
-                            createdAt = user.createdAt,
-                            authenticatedVia = authenticatedVia,
-                            pluginWizardCompleted = wizardCompleted,
-                        )
-                    val content = json.encodeToString(data)
-                    // Atomic: `writeText` truncates first, so a crash or a concurrent writer leaves a
-                    // half-written user_data.json. That parses as corrupt on the next launch, the user
-                    // is treated as logged out, and the plugin wizard runs again.
-                    storageFile.atomicWriteText(content)
-                    logger.debug(
-                        LogCategory.AUTH,
-                        "Saved user data",
-                        mapOf("email" to LogSanitizer.maskEmail(user.email)),
-                    )
-
-                    // Clean up pending file if it exists
-                    if (pendingWizardCompletedFile.exists()) {
-                        pendingWizardCompletedFile.delete()
-                    }
-                } catch (e: Exception) {
-                    logger.error(LogCategory.AUTH, "Error saving user data", error = e)
-                }
-            }
-        }
+        // The fence's generation capture happens inside the delegate, before its lock
+        // acquisition (BossConsole#762): a clear that runs while this save waits
+        // invalidates it, so a save entered before logout cannot recreate the record.
+        doSaveUserData(user, authenticatedVia, clearGeneration.get())
     }
 
     /**
@@ -251,6 +283,9 @@ object UserDataStorage {
         withContext(Dispatchers.IO) {
             fileLock.withLock {
                 try {
+                    // Bump the fence first so any save that captured an older
+                    // generation while waiting on this lock is invalidated.
+                    clearGeneration.incrementAndGet()
                     if (storageFile.exists()) {
                         storageFile.delete()
                         logger.debug(LogCategory.AUTH, "Cleared user data")
