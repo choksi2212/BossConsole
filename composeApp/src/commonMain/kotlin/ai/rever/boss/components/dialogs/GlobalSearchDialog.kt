@@ -975,6 +975,37 @@ internal fun listItemIndexFor(
 }
 
 /**
+ * Where each section's rows begin in [results], in the order [SearchResultsList] draws them.
+ *
+ * The sectioned view marks a row selected by comparing `section start + local index` against the
+ * selection's result index. The start must therefore be a value fixed BEFORE the `items` block is
+ * registered: that block is a composable lambda the `LazyColumn` runs only once its slot is
+ * composed - after this function's walk has finished - so a running offset mutated by the loop
+ * would be read by reference at row-composition time, holding the list's TOTAL count, and no row
+ * would ever compare equal to the selection. That was the missing highlight: the flat
+ * single-category view passes its index straight in and always lit up, while the sectioned "All"
+ * view - the one double-shift actually opens - never did, and Enter picked a row the user could
+ * not see marked.
+ *
+ * Like [listItemIndexFor], correct only while `getFilteredResults` groups by category ordinal:
+ * the walk mirrors the drawing loop (same enum order, same skips), and the two cannot drift
+ * without the section-starts test noticing.
+ */
+internal fun sectionStartsFor(results: List<SearchResult>): Map<SearchCategory, Int> {
+    val byCategory = results.groupBy { it.category }
+    val starts = LinkedHashMap<SearchCategory, Int>()
+    var offset = 0
+    for (category in SearchCategory.entries) {
+        if (category == SearchCategory.ALL) continue
+        val size = byCategory[category]?.size ?: 0
+        if (size == 0) continue
+        starts[category] = offset
+        offset += size
+    }
+    return starts
+}
+
+/**
  * Search results list with optional section headers.
  */
 @Composable
@@ -995,6 +1026,14 @@ private fun SearchResultsList(
             }
         }
 
+    // Each section's start in [results], fixed before the loop: the `items` lambdas below run
+    // after it, and a loop-mutated var captured by them would read the finished walk's total,
+    // never the section's start (see sectionStartsFor).
+    val sectionStarts =
+        remember(results, showSections) {
+            if (showSections) sectionStartsFor(results) else emptyMap()
+        }
+
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
@@ -1002,11 +1041,11 @@ private fun SearchResultsList(
     ) {
         if (showSections) {
             // Show results grouped by category with section headers
-            var globalIndex = 0
             for (category in SearchCategory.entries) {
                 if (category == SearchCategory.ALL) continue
                 val categoryResults = groupedResults[category] ?: continue
                 if (categoryResults.isEmpty()) continue
+                val sectionStart = sectionStarts.getValue(category)
 
                 // Section header
                 item(key = "header-$category") {
@@ -1016,8 +1055,7 @@ private fun SearchResultsList(
                 // Results in this section
                 items(categoryResults.size, key = { "$category-$it" }) { localIndex ->
                     val result = categoryResults[localIndex]
-                    val itemGlobalIndex = globalIndex + localIndex
-                    val isSelected = itemGlobalIndex == selectedIndex
+                    val isSelected = sectionStart + localIndex == selectedIndex
 
                     SearchResultItem(
                         result = result,
@@ -1025,8 +1063,6 @@ private fun SearchResultsList(
                         onClick = { onResultClick(result) },
                     )
                 }
-
-                globalIndex += categoryResults.size
 
                 // Spacer between sections
                 item(key = "spacer-$category") {

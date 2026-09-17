@@ -4,6 +4,8 @@ import ai.rever.boss.search.SearchCategory
 import ai.rever.boss.search.SearchResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * Pins [listItemIndexFor], which converts a selection's RESULT index into the `LazyColumn` item
@@ -93,5 +95,75 @@ class SearchResultListIndexTest {
             listOf(SearchCategory.TOOLS, SearchCategory.SETTINGS, SearchCategory.PAGES),
             results.map { it.category },
         )
+    }
+
+    // ==================== SECTION STARTS ====================
+    //
+    // [sectionStartsFor] is what finally pins the selected row's highlight in the sectioned
+    // view: a row is selected iff `start + localIndex == selectedIndex`, and a start read after
+    // the drawing walk finished (the old bug: a loop-mutated var captured by the lazy `items`
+    // lambda) is the list's total, so no row ever matched. These tests pin the walk itself.
+
+    @Test
+    fun `section starts are the first occurrence of each category`() {
+        // Layout the list draws: [TOOLS x2][SETTINGS x2][PAGES x1]
+        val results = listOf(tool("a"), tool("b"), setting("x"), setting("y"), page("p"))
+
+        assertEquals(
+            mapOf(
+                SearchCategory.TOOLS to 0,
+                SearchCategory.SETTINGS to 2,
+                SearchCategory.PAGES to 4,
+            ),
+            sectionStartsFor(results),
+        )
+    }
+
+    @Test
+    fun `each category's start equals its first index in the list`() {
+        // The sectioned view's selection math is only right if the start is where the block
+        // actually begins - i.e. where getFilteredResults' ordinal sort put it.
+        val results = listOf(tool("a"), setting("x"), page("p"), page("q"))
+
+        for ((category, start) in sectionStartsFor(results)) {
+            assertEquals(
+                results.indexOfFirst { it.category == category },
+                start,
+                "start of $category",
+            )
+        }
+    }
+
+    @Test
+    fun `section ranges cover every result index exactly once`() {
+        // `start + localIndex` must be a bijection onto 0..results.size: a gap means a row no
+        // selection can ever light, an overlap means two rows lighting for one selection.
+        val results = listOf(tool("a"), tool("b"), setting("x"), page("p"), page("q"))
+
+        val covered =
+            sectionStartsFor(results)
+                .flatMap { (category, start) ->
+                    (start until start + results.count { it.category == category }).toList()
+                }.sorted()
+
+        assertEquals(results.indices.toList(), covered, "ranges must tile the whole list")
+    }
+
+    @Test
+    fun `a category with no results gets no start`() {
+        // Only TOOLS and PAGES are present; SETTINGS must not appear, and PAGES' start must not
+        // be offset by a phantom settings block.
+        val results = listOf(tool("a"), page("p"))
+
+        val starts = sectionStartsFor(results)
+
+        assertEquals(2, starts.size)
+        assertFalse(starts.containsKey(SearchCategory.SETTINGS))
+        assertEquals(1, starts.getValue(SearchCategory.PAGES))
+    }
+
+    @Test
+    fun `an empty list has no sections`() {
+        assertTrue(sectionStartsFor(emptyList()).isEmpty())
     }
 }
