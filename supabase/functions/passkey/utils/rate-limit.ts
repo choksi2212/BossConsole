@@ -69,6 +69,11 @@ function evictExpired(now: number) {
   }
 }
 
+/** Exposed for tests: drops all limiter state so suites are isolated. */
+export function resetRateLimiter() {
+  buckets.clear()
+}
+
 /** Best-effort client identity from the edge's forwarded headers. */
 export function clientKey(headers: Headers): string {
   const forwarded = headers.get("x-forwarded-for")

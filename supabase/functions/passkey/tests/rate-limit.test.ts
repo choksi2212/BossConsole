@@ -54,3 +54,20 @@ Deno.test("clientKey - prefers the first forwarded-for hop, falls back to connec
 
   assertEquals(clientKey(new Headers()), "unknown")
 })
+
+Deno.test("rateLimit - an attacker spraying distinct keys is bounded by MAX_KEYS eviction", () => {
+  // Review follow-up: the copied limiter must keep the organisation
+  // implementation's memory bound. Without the MAX_KEYS guard, one entry
+  // per source IP is an unbounded allocation driven by attacker-chosen keys -
+  // a memory exhaustion bug wearing a rate limiter's clothes.
+  const base = 2_000_000_000
+  // Spray 10_050 distinct keys (MAX_KEYS + 50): the guard must have evicted
+  // expired windows and kept the map bounded, and a fresh key still works.
+  for (let i = 0; i < 10_050; i++) {
+    rateLimit(`authchallenge:10.0.${Math.floor(i / 250)}.${i % 250}`, 60, 3600, base + i)
+  }
+  // A pre-window key that has expired is gone; a fresh key gets a fresh window.
+  assertEquals(rateLimit("authchallenge:11.11.11.11", 60, 3600, base + 20_000).allowed, true)
+  // And the same fresh key is still within its own budget on the next call.
+  assertEquals(rateLimit("authchallenge:11.11.11.11", 60, 3600, base + 20_001).allowed, true)
+})

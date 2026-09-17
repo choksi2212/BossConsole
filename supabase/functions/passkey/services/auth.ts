@@ -114,10 +114,13 @@ export const generateAuthChallenge = withErrorHandler(
     })
 
     if (!storeResult.success) {
-      return {
-        success: false,
-        error: storeResult.error || 'Failed to store challenge'
-      }
+      console.error('Failed to store challenge:', storeResult.error)
+      // Inert, not a distinguishable failure (review follow-up): a
+      // success:false here is reachable only for an enrolled account (we got
+      // past the passkey lookup), which inverts the oracle - a prober learns
+      // the account is enrolled precisely when the store hiccups. Return the
+      // same inert challenge as the pre-auth failures instead.
+      return inertChallenge(sessionId)
     }
 
     // Build allowed credentials list
