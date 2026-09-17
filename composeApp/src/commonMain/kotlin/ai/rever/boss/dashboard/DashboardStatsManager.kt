@@ -66,6 +66,9 @@ object DashboardStatsManager {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var saveJob: Job? = null
 
+    /** Guards the debounce job swap in [scheduleSave]; see its KDoc. */
+    private val saveJobLock = Any()
+
     private val _stats = MutableStateFlow(DashboardStats())
     val stats: StateFlow<DashboardStats> = _stats.asStateFlow()
 
@@ -102,14 +105,22 @@ object DashboardStatsManager {
     /**
      * Save stats to disk with debouncing.
      * Cancels any pending save and schedules a new one after SAVE_DEBOUNCE_MS.
+     *
+     * The debounce job swap runs under a lock (review follow-up on this PR):
+     * callers arrive from concurrent coroutines, and an unsynchronized
+     * cancel-then-assign can drop the reference to a job that is still
+     * pending - letting a stale debounce persist an older stats snapshot
+     * last. Same shape as RecentBrowserPagesManager and RecentFilesManager.
      */
     private fun scheduleSave() {
-        saveJob?.cancel()
-        saveJob =
-            scope.launch {
-                delay(SAVE_DEBOUNCE_MS)
-                saveImmediately()
-            }
+        synchronized(saveJobLock) {
+            saveJob?.cancel()
+            saveJob =
+                scope.launch {
+                    delay(SAVE_DEBOUNCE_MS)
+                    saveImmediately()
+                }
+        }
     }
 
     /**

@@ -82,7 +82,11 @@ class RecentFilesConcurrencyTest {
             awaitPresence(openedFiles.last().path)
 
             val recorded = RecentFilesManager.recentFiles.value
-            assertEquals(openedFiles.size, recorded.size, "every interleaved open must survive, got ${recorded.size}: ${recorded.map { it.path }}")
+            assertEquals(
+                openedFiles.size,
+                recorded.size,
+                "every interleaved open must survive, got ${recorded.size}: ${recorded.map { it.path }}",
+            )
             openedFiles.forEach { f ->
                 assertTrue(
                     recorded.any { it.path == f.path },
@@ -122,6 +126,61 @@ class RecentFilesConcurrencyTest {
                 keptC.path in paths && keptB.path in paths,
                 "both the racing open's entry and the untouched entry must survive (got $paths)",
             )
+        }
+    }
+
+    @Test
+    fun `a cold-start load merges instead of overwriting an in-flight mutation`() {
+        runBlocking {
+            RecentFilesManager.clearAll()
+            awaitAbsence(openedFiles.first().path)
+
+            // A mutation lands first (as a cold-start open would): one entry
+            // is now recorded in memory and not yet on disk.
+            RecentFilesManager.recordFileOpen(openedFiles.first().path)
+            awaitPresence(openedFiles.first().path)
+
+            // Seed a stale disk snapshot the way the previous session left
+            // it: three OTHER files (real temp files, so the displayed list's
+            // File.exists() filter admits them), written before this process
+            // mutated.
+            val diskFiles =
+                (1..3).map { n ->
+                    File.createTempFile("race-disk-$n-", ".kt").apply { deleteOnExit() }
+                }
+            val home = File(System.getProperty("user.home"))
+            val recordFile = File(File(home, ".boss"), "recent-files.json")
+            recordFile.parentFile?.mkdirs()
+            // Serialize with the manager's own format (no hand-rolled JSON
+            // escaping of Windows paths).
+            val seedFiles =
+                diskFiles.map { f ->
+                    RecentFile(path = f.absolutePath, name = f.name, lastOpened = 1L)
+                }
+            val seedJson =
+                kotlinx.serialization.json.Json.encodeToString(
+                    RecentFilesData.serializer(),
+                    RecentFilesData(files = seedFiles),
+                )
+            recordFile.writeText(seedJson)
+
+            // The load runs after the mutation. Unfenced setFiles(data.files)
+            // would publish the stale disk list and drop the just-opened
+            // entry; the merge must keep both, with the in-memory entry
+            // winning by path.
+            RecentFilesManager.loadAsync()
+
+            val recorded = RecentFilesManager.recentFiles.value
+            assertTrue(
+                recorded.any { it.path == openedFiles.first().path },
+                "the in-flight mutation must survive the load (a stale disk snapshot must not overwrite it)",
+            )
+            diskFiles.forEach { disk ->
+                assertTrue(
+                    recorded.any { it.path == disk.path },
+                    "the load must still surface the previous session's untouched entry ${disk.path}",
+                )
+            }
         }
     }
 

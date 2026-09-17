@@ -64,6 +64,15 @@ object RecentFilesManager {
     private var saveJob: Job? = null
 
     /**
+     * Guards the debounce job swap in [scheduleSave]. Callers arrive from
+     * concurrent coroutines, and an unsynchronized cancel-then-assign can drop
+     * the reference to a job that is still pending - letting a stale debounce
+     * persist an older snapshot last. Same shape as the sibling
+     * RecentBrowserPagesManager, which added this lock for exactly that race.
+     */
+    private val saveJobLock = Any()
+
+    /**
      * Serializes every read-modify-write of the recorded list. Each mutator
      * (`recordFileOpen`, `removeFile`, `clearAll`) runs on its own `scope.launch`
      * and rewrites the whole list from a read; `FileEventBus` fires one callback
@@ -109,8 +118,20 @@ object RecentFilesManager {
 
     /**
      * Load recent files from disk asynchronously.
+     *
+     * The load merges into the mutation lock (review follow-up on this PR):
+     * reading with `setFiles(data.files)` outside the lock let a cold-start
+     * open or remove - already applied in memory - be overwritten by the
+     * stale disk snapshot the load then published. The loaded entries are
+     * merged with whatever the mutators already recorded, current in-memory
+     * entries winning by path (they are newer than the file by definition -
+     * the file was written before this process started mutating).
+     *
+     * `internal` (not private) so the regression test can drive a load
+     * deterministically against a seeded disk snapshot, instead of relying
+     * on the singleton's one-shot init load having been observed.
      */
-    private suspend fun loadAsync() =
+    internal suspend fun loadAsync() =
         withContext(Dispatchers.IO) {
             try {
                 settingsFile.parentFile?.mkdirs()
@@ -118,11 +139,24 @@ object RecentFilesManager {
                 if (settingsFile.exists()) {
                     val content = settingsFile.readText()
                     val data = json.decodeFromString<RecentFilesData>(content)
-                    // Hidden, not pruned: a file that is not on disk stops being offered (it
-                    // would open an empty editor - fileExists existed for exactly this and had no
-                    // callers) but stays in the recorded list, so an unmounted volume coming back
-                    // brings its entries with it. See _allFiles.
-                    setFiles(data.files)
+                    mutation.withLock {
+                        // Hidden, not pruned: a file that is not on disk stops being offered (it
+                        // would open an empty editor - fileExists existed for exactly this and had no
+                        // callers) but stays in the recorded list, so an unmounted volume coming back
+                        // brings its entries with it. See _allFiles.
+                        val recorded = _allFiles.value
+                        val merged =
+                            buildList {
+                                // Current in-memory entries win by path...
+                                addAll(recorded)
+                                // ...then any entries the disk had that this process has not
+                                // touched, preserving the disk order for the untouched tail.
+                                data.files.forEach { loaded ->
+                                    if (recorded.none { it.path == loaded.path }) add(loaded)
+                                }
+                            }
+                        setFiles(merged.take(MAX_FILES))
+                    }
                     val present = _recentFiles.value
                     recentFilesLogger.debug(
                         LogCategory.FILE,
@@ -140,12 +174,18 @@ object RecentFilesManager {
      * Cancels any pending save and schedules a new one after SAVE_DEBOUNCE_MS.
      */
     private fun scheduleSave() {
-        saveJob?.cancel()
-        saveJob =
-            scope.launch {
-                delay(SAVE_DEBOUNCE_MS)
-                saveImmediately()
-            }
+        // Swap the debounce job under a lock: callers arrive from concurrent
+        // coroutines, and an unsynchronized cancel-then-assign can drop the
+        // reference to a job that is still pending (letting a stale debounce
+        // persist an older snapshot last).
+        synchronized(saveJobLock) {
+            saveJob?.cancel()
+            saveJob =
+                scope.launch {
+                    delay(SAVE_DEBOUNCE_MS)
+                    saveImmediately()
+                }
+        }
     }
 
     /**
