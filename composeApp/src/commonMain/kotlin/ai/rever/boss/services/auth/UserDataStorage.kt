@@ -233,6 +233,31 @@ object UserDataStorage {
     }
 
     /**
+     * Flush pending user-data writes before the process exits.
+     *
+     * This object has no debounce - every save is a synchronous read-modify-write under
+     * [fileLock] - so unlike [ai.rever.boss.dashboard.RecentFilesManager.flushPendingSaves]
+     * there is no timer window a quit can fall inside and nothing buffered to force out.
+     * The seam still earns its place on the exit path: acquiring [fileLock] waits for a
+     * write that is already mid-flight to finish before returning, so the quit cannot cut
+     * down a half-written record. A write that has not started yet is not awaited - its
+     * caller awaits it in the normal flow - and keeping this beside the recent-files flush
+     * means a future debounced write here gets exit-safety without the quit path gaining a
+     * new step.
+     */
+    suspend fun flushPendingSaves() {
+        fileLock.withLock {
+            // Nothing is buffered: every write here is synchronous under this lock, so the
+            // wait itself is the contract - it lets an in-flight write finish first.
+            logger.debug(
+                LogCategory.AUTH,
+                "Flushed pending user-data saves on exit",
+                mapOf("present" to storageFile.exists()),
+            )
+        }
+    }
+
+    /**
      * Save user data to persistent storage
      *
      * Preserves the pluginWizardCompleted flag if it was previously set,
