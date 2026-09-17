@@ -50,4 +50,28 @@ class McpArgumentSanitizerAuthSchemeTest {
         // Regression guard: the scheme prefix is optional, so ordinary values keep working.
         assertFalse(command("psql --password=Bearerish").contains("Bearerish"))
     }
+
+    @Test
+    fun `a compound scheme chain is masked whole`() {
+        // Bearer Token abc123: the optional prefix matches the first scheme word and the bare
+        // class consumes the rest of the run, so nothing of the credential survives.
+        val out = command("curl -H 'Authorization: Bearer Token abc123secret'")
+        println("compound -> $out")
+        assertFalse(out.contains("abc123secret"), "compound scheme leaked: $out")
+    }
+
+    @Test
+    fun `a quoted credential is masked for both quoting styles`() {
+        // Assert on each HALF, not the whole string: the bare class used to take `'abc` and leave
+        // ` def'`, which a contains("abc def") check passes while the credential is still readable.
+        val single = command("""curl -H "Authorization: Bearer 'abc def'" """)
+        println("single-quoted -> $single")
+        assertFalse(single.contains("abc"), "single-quoted credential leaked: $single")
+        assertFalse(single.contains("def"), "single-quoted credential tail leaked: $single")
+
+        val double = command("""curl -H 'Authorization: Bearer "abc def"' """)
+        println("double-quoted -> $double")
+        assertFalse(double.contains("abc"), "double-quoted credential leaked: $double")
+        assertFalse(double.contains("def"), "double-quoted credential tail leaked: $double")
+    }
 }
