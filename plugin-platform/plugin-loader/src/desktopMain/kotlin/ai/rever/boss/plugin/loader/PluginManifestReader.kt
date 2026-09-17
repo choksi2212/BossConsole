@@ -6,16 +6,31 @@ import ai.rever.boss.plugin.logging.BossLogger
 import ai.rever.boss.plugin.logging.LogCategory
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.util.jar.JarEntry
 import java.util.jar.JarFile
 
 /**
  * Reads plugin manifests from JAR files.
  *
  * The manifest is expected at [PluginManifestConstants.MANIFEST_PATH]
- * (META-INF/boss-plugin/plugin.json) within the JAR.
+ * (META-INF/boss-plugin/plugin.json) within the JAR. Entries that inflate
+ * past [MAX_MANIFEST_BYTES] are rejected, bounding the read before any
+ * signature verification trusts the JAR.
  */
 object PluginManifestReader {
     private val logger = BossLogger.forComponent("PluginManifestReader")
+
+    /**
+     * Maximum uncompressed manifest size accepted from a JAR entry, in bytes.
+     *
+     * Shared with LocalPluginRepository in plugin-repository, which reads the
+     * same manifest entry to list and serve local plugin JARs, and mirrors
+     * DevPluginArtifacts.MAX_MANIFEST_BYTES in the app module; keep the caps in
+     * sync. Manifests are read before signature verification, so a zip-bomb
+     * `plugin.json` entry that inflates past this cap must be rejected here
+     * rather than being allowed to exhaust the heap.
+     */
+    const val MAX_MANIFEST_BYTES: Int = 512 * 1024
 
     /**
      * JSON parser with lenient settings for reading manifests.
@@ -57,10 +72,7 @@ object PluginManifestReader {
                             null,
                         )
 
-                val manifestContent =
-                    jar.getInputStream(manifestEntry).bufferedReader().use {
-                        it.readText()
-                    }
+                val manifestContent = readManifestContent(jar, manifestEntry)
 
                 parseManifest(manifestContent, jarPath)
             }
@@ -73,6 +85,31 @@ object PluginManifestReader {
             )
         }
     }
+
+    /**
+     * Reads the manifest JAR entry as UTF-8, refusing entries that inflate to
+     * more than [MAX_MANIFEST_BYTES] bytes. Bounding the read prevents a
+     * zip-bomb `plugin.json` from exhausting the heap before signature
+     * verification can reject the JAR.
+     *
+     * Shared with LocalPluginRepository in plugin-repository: every reader of
+     * this manifest entry must go through this bound, not only the signed
+     * load path, so an untrusted JAR cannot exhaust the heap via a scan of
+     * the local plugin directory.
+     */
+    fun readManifestContent(
+        jar: JarFile,
+        entry: JarEntry,
+    ): String =
+        jar.getInputStream(entry).use { stream ->
+            val bytes = stream.readNBytes(MAX_MANIFEST_BYTES + 1)
+            if (bytes.size > MAX_MANIFEST_BYTES) {
+                throw PluginManifestException(
+                    "Plugin manifest exceeds $MAX_MANIFEST_BYTES bytes at ${PluginManifestConstants.MANIFEST_PATH}",
+                )
+            }
+            bytes.toString(Charsets.UTF_8)
+        }
 
     /**
      * Parse a manifest from JSON content.
