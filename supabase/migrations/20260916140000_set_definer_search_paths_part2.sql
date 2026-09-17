@@ -1,10 +1,11 @@
 -- Close the search_path on the last SECURITY DEFINER functions still
 -- resolving through the caller-influenced path (BossConsole#772, part 2).
 --
--- 20260916130000 hardened the three passkey lifecycle functions; a live
--- catalog audit shows the rest of the pre-convention set was already
--- progressively hardened by later migrations (share_secret, unshare_secret,
--- get_secret_shares, handle_new_user all carry SET search_path TO '' today).
+-- The sibling migration 20260916130000 (BossConsole#773) covers the three
+-- passkey lifecycle functions; a live catalog audit shows the rest of the
+-- pre-convention set was already progressively hardened by later migrations
+-- (share_secret, unshare_secret, get_secret_shares, handle_new_user all
+-- carry SET search_path TO '' today).
 -- Exactly three remain, verified against the LIVE definitions in pg_proc
 -- (pg_get_functiondef), not the original 20251023 files - several of those
 -- functions were replaced since by org-support migrations, and hardening

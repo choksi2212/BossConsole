@@ -1,9 +1,10 @@
 -- pgTAP tests for the part-2 SECURITY DEFINER search_path hardening
 -- (20260916140000, BossConsole#772).
 --
--- 20260916130000 pinned the three passkey lifecycle functions; a live
--- catalog audit showed share_secret / unshare_secret / get_secret_shares /
--- handle_new_user were already hardened by later migrations. These
+-- 20260916130000 (BossConsole#773) pins the three passkey lifecycle
+-- functions; a live catalog audit showed share_secret / unshare_secret /
+-- get_secret_shares / handle_new_user were already hardened by later
+-- migrations. These
 -- assertions pin the three that remained, so a future CREATE OR REPLACE
 -- cannot silently drop the clause again.
 
