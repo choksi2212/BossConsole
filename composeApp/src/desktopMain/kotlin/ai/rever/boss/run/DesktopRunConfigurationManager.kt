@@ -21,7 +21,19 @@ import java.io.File
  */
 actual object RunConfigurationManager {
     private val logger = BossLogger.forComponent("RunConfigurationManager")
-    private val settingsFile = BossDirectories.resolve("run-configurations.json")
+
+    /**
+     * The production settings path, captured once so [resetForTesting] can restore it without
+     * re-deriving the literal at every call site.
+     */
+    private val defaultSettingsFile = BossDirectories.resolve("run-configurations.json")
+
+    /**
+     * Overridable so hermetic tests exercise the real read/write path without touching
+     * `~/.boss`. Restored by [resetForTesting] callers; production code never reassigns it.
+     */
+    @Volatile
+    internal var settingsFile: File = defaultSettingsFile
     private val json =
         Json {
             prettyPrint = true
@@ -58,11 +70,11 @@ actual object RunConfigurationManager {
     }
 
     /**
-     * Load settings synchronously on startup.
+     * Load settings synchronously on startup or test reset.
      * Note: Does NOT auto-select any configuration - user must explicitly select one.
      * Existing configs are deduplicated and names made unique.
      */
-    private fun loadSettingsSync() {
+    internal fun loadSettingsSync() {
         try {
             if (settingsFile.exists()) {
                 val cleanedSettings = loadSettingsFromFile(settingsFile)
@@ -77,6 +89,9 @@ actual object RunConfigurationManager {
                     ),
                 )
             } else {
+                // A missing file is not an error, but a reset must leave the manager empty
+                // rather than whatever a previous load (or test) left behind.
+                _currentSettings.value = RunConfigurationSettings()
                 logger.debug(LogCategory.SYSTEM, "No settings file found, starting with empty configurations")
             }
         } catch (e: Exception) {
@@ -86,13 +101,30 @@ actual object RunConfigurationManager {
     }
 
     /**
+     * Reset manager state and optionally redirect [settingsFile] to [testFile]; with no
+     * argument, restore [defaultSettingsFile]. Call only when no mutation is in flight - the
+     * load re-reads [settingsFile] without [settingsMutex] (see [loadSettingsFromFile]) - and
+     * always call with no argument before finishing, so the singleton is left where the app
+     * and other tests expect it.
+     */
+    internal fun resetForTesting(testFile: File? = null) {
+        settingsFile = testFile ?: defaultSettingsFile
+        _detectedConfigurations.value = emptyList()
+        _isScanning.value = false
+        _lastError.value = null
+        loadSettingsSync()
+    }
+
+    /**
      * Reads a file without changing the manager's state; startup is its production caller.
      *
-     * The optional cleanup write does not hold [settingsMutex]. That is safe only because the
-     * sole production caller runs from the object's init block, where the JVM class-initialisation
-     * lock still serialises every other thread's first use, so no mutator can be in flight.
-     * Any future caller (reload, file watcher, test running alongside the concurrency tests)
-     * must hold [settingsMutex] around the write or it can clobber newer persisted state.
+     * The optional cleanup write does not hold [settingsMutex]. That is safe only because
+     * every current caller runs with no mutation in flight: the production caller runs from
+     * the object's init block, where the JVM class-initialisation lock still serialises every
+     * other thread's first use, and the test caller [resetForTesting] is only ever invoked
+     * between tests (its KDoc states the same precondition).
+     * Any future caller (reload, file watcher) must hold [settingsMutex] around the write or
+     * it can clobber newer persisted state.
      */
     internal fun loadSettingsFromFile(
         file: File,
