@@ -34,7 +34,7 @@ class McpMutatingClassificationTest {
         assertEquals(
             McpPolicyAction.ASK,
             withDeclaration,
-            "a provider-declared mutating tool must get the mutating default (ASK) even when its name dodges the catalog",
+            "a provider-declared mutating tool gets the mutating default (ASK) despite a read-like name",
         )
     }
 
