@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 import java.util.UUID
 
@@ -144,6 +146,7 @@ class McpOperationLedger(
                 val chained = record.copy(hash = chainedHash, parentHash = chainHead)
                 rotateIfNeeded(file)
                 file.parentFile?.mkdirs()
+                createIfMissingWithOwnerOnlyPermissions(file)
                 file.appendText(json.encodeToString(chained) + "\n")
                 chainHead = chainedHash
                 return chained
@@ -156,6 +159,37 @@ class McpOperationLedger(
             }
         }
         return record
+    }
+
+    /**
+     * Creates the ledger file - when it does not exist yet - with owner-only permissions.
+     *
+     * The persisted rows carry sanitized-but-still-private operator data (file paths,
+     * URLs, commands passed to operator agents), so the file must never be readable by
+     * other local accounts. A plain `appendText` create inherits the process umask,
+     * which is typically 0644 - world-readable - on Linux. Creating the file via
+     * `Files.createFile` with an explicit rw------- mode attribute makes the ledger
+     * owner-only from its first byte, with no transient window between creation and a
+     * later chmod.
+     *
+     * Best-effort by design, like the other POSIX-permission call sites in this repo
+     * (`MicrokernelModePreference.writeModeFile`, `ContentSearchService.writeAtomically`):
+     * on a filesystem without a POSIX attribute view - Windows, where the per-user ACLs
+     * of the profile directory carry the protection instead - or after losing a
+     * cross-process create race, the append below simply creates or reuses the file
+     * with the platform default. A failed hardening attempt must never cost the
+     * audit record.
+     */
+    private fun createIfMissingWithOwnerOnlyPermissions(file: File) {
+        if (file.exists()) return
+        runCatching {
+            Files.createFile(
+                file.toPath(),
+                PosixFilePermissions.asFileAttribute(
+                    PosixFilePermissions.fromString("rw-------"),
+                ),
+            )
+        }
     }
 
     // Rotation walks numbered backups under a single write lock.
