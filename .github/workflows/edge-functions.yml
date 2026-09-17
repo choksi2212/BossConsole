@@ -10,7 +10,7 @@ name: ⚡ Edge Functions
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, dev ]
     paths:
       - 'supabase/functions/**'
       # The function's behaviour is coupled to the passkey migrations (columns,
@@ -146,9 +146,9 @@ jobs:
         run: find . -name '*.ts' -print0 | sort -z | xargs -0 -r deno check
 
       - name: 🧪 Tests
-        run: deno test --allow-env --allow-net --config deno.json
+        # The suite sets function secrets in-process and stubs every fetch;
+        # withholding --allow-net makes an accidentally unstubbed call fail.
+        run: deno test --allow-env --config deno.json
 
-      - name: 🧹 Lint (advisory)
-        # Existing tests use the repository's inline jsr: import convention.
-        continue-on-error: true
+      - name: 🧹 Lint
         run: deno lint

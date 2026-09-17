@@ -147,8 +147,8 @@ async function pgSelect(pathAndQuery: string): Promise<Record<string, unknown>[]
 // bound, a publisher could aim that token at an arbitrary repository
 // (BossConsole#774). Operator-curated system_plugins entries are held to the
 // same owner so a mis-typed row cannot send reports out-of-org either.
-// Overridable by env for self-hosted deployments that legitimately host
-// plugin repos under a different org.
+// Overridable by env for deployments that host plugin repos under a different
+// org. This changes plugin attribution only; DEFAULT_REPO remains project-owned.
 const ALLOWED_REPO_OWNER = (Deno.env.get("CRASH_REPORT_ALLOWED_REPO_OWNER")?.trim() || "risa-labs-inc")
   .toLowerCase()
 

@@ -9,7 +9,7 @@
  * Run: cd supabase/functions/crash-report && deno test --allow-env --config deno.json
  */
 
-import { assert, assertEquals } from "jsr:@std/assert"
+import { assert, assertEquals } from "@std/assert"
 // Import the app module (not index.ts, which calls Deno.serve) so no listener starts under test.
 import {
   allowRequest,
