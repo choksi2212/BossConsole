@@ -176,6 +176,48 @@ object SystemPluginManifestService {
             }
 
     /**
+     * The GitHub repos this host build pins for system-plugin auto-install,
+     * keyed by pluginId. Derived from [FALLBACK] - the last-shipped hardcoded
+     * set - so the pin list and the fallback can never drift: shipping a new
+     * system plugin in a host release pins its repo automatically.
+     */
+    fun pinnedSystemPluginRepos(): Map<String, String> = FALLBACK.associate { it.pluginId to it.githubRepo }
+
+    /**
+     * F1 (system-plugin download pinning): why a `system_plugins` row may NOT
+     * have its JAR auto-installed from GitHub, or `null` when it may.
+     *
+     * `github_repo` reaches `PluginStoreSetup.downloadSystemPluginFromGitHub`
+     * verbatim from the remote table ([mergeWithFallback] overrides only
+     * minVersion/enabled), and that download path verifies no checksum or
+     * signature on the bytes - only non-emptiness. The store path binds its
+     * bytes to a sha256 plus a store signature (RemotePluginRepository);
+     * this path historically had nothing, so a rewritten or maliciously
+     * added row could point the host at ANY GitHub repo and have it install
+     * those bytes.
+     *
+     * Fail closed: installable only when the pluginId is one this host ships
+     * AND the repo is exactly the pinned repo for it. Unknown pluginIds (rows
+     * added via table edit) and retargeted repos are refused - rolling a repo
+     * forward now takes a host release, same as changing [FALLBACK] itself.
+     * Owner/repo comparison ignores case and padding because GitHub serves
+     * those URLs identically; every other spelling loses.
+     */
+    fun untrustedGithubRepoReason(
+        pluginId: String,
+        githubRepo: String,
+    ): String? {
+        val pinned = pinnedSystemPluginRepos()[pluginId]
+        return when {
+            pinned == null ->
+                "pluginId '" + pluginId + "' is not shipped by this host build, so no GitHub repo is pinned for it"
+            pinned.trim().equals(githubRepo.trim(), ignoreCase = true) -> null
+            else ->
+                "githubRepo '" + githubRepo + "' is not the pinned repo '" + pinned + "' for pluginId '" + pluginId + "'"
+        }
+    }
+
+    /**
      * Merge remote rows over the built-in [FALLBACK] so a table edit can add
      * plugins, retarget repos, raise version floors, or disable optional
      * rows — but can never DROP a row this host build ships with, LOWER a
