@@ -71,6 +71,28 @@ For a bottom split use `panel: horizontal_split`. Reuse a pane across calls by p
 - Supabase + Edge Functions
 - BossTerm for terminal integration (bundled in the `terminal-tab` plugin)
 
+## Remote UI property patches are tri-state
+
+`WidgetDiffEngine` must distinguish three operations on a widget property: leave it alone, set it
+to a string, and remove it. An empty string cannot mean removal. It is a valid value for text,
+labels, selections and event ids, and the builder emits both omitted optional properties and
+present empty required properties.
+
+`DiffOperation.NodeUpdated.changedProperties` therefore carries assignments, while
+`removedProperties` carries deletes. The wire mirrors that split through additive
+`NodeUpdated.removed_properties`
+field 4, introduced with IPC 1.2.0. `apply` removes first and then applies changed values, so an
+explicit set wins if a malformed or hand-built patch names one key in both collections. Encoders
+sort removed keys for deterministic bytes. Older receivers safely ignore field 4; they retain a
+stale property until a full tree arrives, which is the existing failure rather than a new one.
+
+`NodeUpdated` is a manually implemented plain class rather than a data class now because
+`boss-ui-sdk` is published to external runtimes. Keep its original three-argument constructor,
+`component1` through `component3`, `copy`, and generated `copy$default` JVM descriptors. New code
+that needs to alter the removal set uses the four-argument constructor or
+`copyWithRemovedProperties`. `WidgetDiffEngineTest` reflects the old descriptors so a refactor
+cannot silently break an already-built runtime.
+
 ## Plugin dependencies are resolved at install time
 
 `plugin.json` `dependencies` used to be read in exactly one place -
