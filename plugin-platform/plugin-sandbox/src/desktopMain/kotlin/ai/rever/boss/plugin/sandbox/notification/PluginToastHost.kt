@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -54,6 +55,23 @@ private val toastLogger = BossLogger.forComponent("PluginToastHost")
  * second control saying the same thing would be noise.
  */
 internal fun shouldShowClearAllControl(toastCount: Int): Boolean = toastCount >= 2
+
+/**
+ * The line caps on a single toast's plugin-controlled text.
+ *
+ * A toast's `title`, `message`, and optional action label are plugin-controlled strings of unbounded
+ * length. Without caps, a single verbose toast - or, worse, a stack of [PluginToastState]'s `maxToasts`
+ * (3) INDEFINITE ones, which are dismissed only by hand - can grow past the parent content pane. The
+ * overflow is not cosmetic: a dismiss button pushed off-window cannot be clicked (BossConsole#154).
+ *
+ * These caps bound each toast's contribution to the stack independently of its width. The parent pane
+ * remains the actual measurement ceiling, so an unusually short pane can still require a broader
+ * scrolling or stack-layout solution. Detail text gets more lines than labels; all overflow ends in
+ * an ellipsis rather than growing the toast indefinitely.
+ */
+internal const val TOAST_TITLE_MAX_LINES = 2
+internal const val TOAST_MESSAGE_MAX_LINES = 6
+internal const val TOAST_ACTION_MAX_LINES = 1
 
 /**
  * Host composable for displaying plugin toast notifications.
@@ -185,12 +203,16 @@ fun PluginToast(
                     color = BossThemeColors.TextPrimary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = TOAST_TITLE_MAX_LINES,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
                     text = message.message,
                     color = BossThemeColors.TextSecondary,
                     fontSize = 12.sp,
+                    maxLines = TOAST_MESSAGE_MAX_LINES,
+                    overflow = TextOverflow.Ellipsis,
                 )
 
                 // Action button
@@ -207,6 +229,8 @@ fun PluginToast(
                             color = BossThemeColors.AccentColor,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Medium,
+                            maxLines = TOAST_ACTION_MAX_LINES,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
