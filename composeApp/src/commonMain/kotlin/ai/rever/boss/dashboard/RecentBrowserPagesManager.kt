@@ -459,7 +459,7 @@ object RecentBrowserPagesManager {
      * [getSuggestions] again, and recording it as dismissed as well only matters if it later
      * turns up as a padding suggestion, which is the same answer the user just gave.
      */
-    fun removePage(url: String) {
+    fun removePage(url: String): Job {
         // Applied on the caller's thread, not inside `scope.launch`. Both updates are in-memory
         // StateFlow writes, and `scheduleSave` launches its own debounced job, so the coroutine
         // bought nothing and cost the user a dispatch before the card disappeared.
@@ -475,7 +475,8 @@ object RecentBrowserPagesManager {
         // Immediately, not debounced: this is a user-initiated dismissal, and losing it to a quit
         // within the 5s window means the card returns and they dismiss it again. `removeMatchingPages`
         // already reasons about exactly this.
-        scope.launch { saveImmediately() }
+        val target = settingsFile
+        return scope.launch { saveImmediately(target) }
     }
 
     /**
