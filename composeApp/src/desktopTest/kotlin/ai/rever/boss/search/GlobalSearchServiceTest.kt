@@ -237,7 +237,13 @@ class GlobalSearchServiceTest {
      */
     private fun mixedUnion(): List<SearchResult> =
         listOf(
-            SearchResult.FileResult(name = "a.kt", path = "/a.kt", relativePath = "a.kt", score = 5, matchRanges = emptyList()),
+            SearchResult.FileResult(
+                name = "a.kt",
+                path = "/a.kt",
+                relativePath = "a.kt",
+                score = 5,
+                matchRanges = emptyList(),
+            ),
             SearchResult.ToolResult(panelId = "t2", label = "T2", score = 10),
             SearchResult.PageResult(url = "https://example.com", title = "Example", score = 10),
             SearchResult.SettingResult(
@@ -250,7 +256,13 @@ class GlobalSearchServiceTest {
                 highlightable = true,
                 score = 10,
             ),
-            SearchResult.FileResult(name = "b.kt", path = "/b.kt", relativePath = "b.kt", score = 99, matchRanges = emptyList()),
+            SearchResult.FileResult(
+                name = "b.kt",
+                path = "/b.kt",
+                relativePath = "b.kt",
+                score = 99,
+                matchRanges = emptyList(),
+            ),
             SearchResult.ToolResult(panelId = "t1", label = "T1", score = 10),
         )
 
