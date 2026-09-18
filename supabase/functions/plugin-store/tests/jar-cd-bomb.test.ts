@@ -127,3 +127,39 @@ Deno.test("a plugin.json entry declaring a multi-GB compressedSize is refused be
     globalThis.fetch = originalFetch
   }
 })
+
+function cdEntryWithUncompressed(compressedSize: number, uncompressedSize: number): number[] {
+  const name = Array.from(new TextEncoder().encode("META-INF/boss-plugin/plugin.json"))
+  return [
+    ...u32(0x02014b50), ...u16(20), ...u16(8), ...u16(0), ...u16(0),
+    ...u16(0), ...u16(0), ...u32(0), ...u32(compressedSize),
+    ...u32(uncompressedSize), ...u16(name.length), ...u16(0), ...u16(0),
+    ...u16(0), ...u16(0), ...u32(0),
+    ...u32(0),
+    ...name,
+  ]
+}
+
+Deno.test("a small compressed entry declaring a huge uncompressedSize is refused before inflating", async () => {
+  const evilUncompressed = 2 * 1024 * 1024 * 1024 // 2GB declared inflate target
+  const entry = cdEntryWithUncompressed(100, evilUncompressed)
+  const eocdBytes = eocd(0, entry.length)
+  const body = [...entry, ...eocdBytes]
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = fakeFetchWithJar(body, 0) as typeof fetch
+  try {
+    let threw = false
+    try {
+      await extractManifestFromRemoteJar("https://evil.example/deflate.jar")
+    } catch {
+      // The declared-size refusal fires before any inflate; a malformed tail
+      // failing even earlier is also acceptable - what must NOT happen is a
+      // multi-GB buffer or a successful parse of the crafted entry.
+      threw = true
+    }
+    assertEquals(threw, true, "the deflate-bomb entry must fail the extraction")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

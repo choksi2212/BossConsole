@@ -629,6 +629,7 @@ export async function extractManifestFromRemoteJar(
 
     const compressionMethod = cdView.getUint16(offset + 10, true)
     let compressedSize: number = cdView.getUint32(offset + 20, true)
+    let uncompressedSize: number = cdView.getUint32(offset + 24, true)
     const fileNameLength = cdView.getUint16(offset + 28, true)
     const extraFieldLength = cdView.getUint16(offset + 30, true)
     const commentLength = cdView.getUint16(offset + 32, true)
@@ -716,6 +717,15 @@ export async function extractManifestFromRemoteJar(
     if (compressionMethod === 0) {
       content = new TextDecoder().decode(fileData)
     } else if (compressionMethod === 8) {
+      // Deflate-bomb bound (#914): the CD's declared uncompressedSize is
+      // attacker-controlled, and a <30KB compressed entry can inflate to GBs.
+      // Refuse above the manifest bound up front, then enforce a hard counter
+      // on the actual decompressed bytes so a LYING size cannot OOM the isolate.
+      if (uncompressedSize > MAX_ENTRY_BYTES_DECLARED) {
+        throw new Error(
+          `plugin.json declares ${uncompressedSize} uncompressed bytes, above the ${MAX_ENTRY_BYTES_DECLARED}-byte manifest bound`
+        )
+      }
       const ds = new DecompressionStream("deflate-raw")
       const writer = ds.writable.getWriter()
       writer.write(fileData)
@@ -726,8 +736,14 @@ export async function extractManifestFromRemoteJar(
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        chunks.push(value)
         len += value.length
+        if (len > MAX_ENTRY_BYTES_DECLARED) {
+          await reader.cancel()
+          throw new Error(
+            `plugin.json inflated past the ${MAX_ENTRY_BYTES_DECLARED}-byte manifest bound`
+          )
+        }
+        chunks.push(value)
       }
       const result = new Uint8Array(len)
       let pos = 0

