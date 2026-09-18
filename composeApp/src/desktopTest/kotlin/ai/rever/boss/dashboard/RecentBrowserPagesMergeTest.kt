@@ -66,6 +66,17 @@ class RecentBrowserPagesMergeTest {
     }
 
     @Test
+    fun `an in-flight visit wins the title tie against the stored entry`() {
+        val stored = page("https://tie.dev", lastVisited = 900, title = "Stored title")
+        val inFlight = page("https://tie.dev", lastVisited = 900, title = "Fresh title")
+
+        val merged = mergeRecordedPages(loaded = listOf(stored), recorded = listOf(inFlight), max = 30)
+
+        assertEquals("Fresh title", merged.single().title)
+        assertEquals(2, merged.single().visitCount)
+    }
+
+    @Test
     fun `a favicon the racing visit lacked is taken from the stored entry`() {
         // recordPageVisit passes faviconCacheKey = null until the icon arrives, so without the
         // fallback a page would visibly lose its icon on every launch that races a visit.
@@ -101,5 +112,17 @@ class RecentBrowserPagesMergeTest {
     @Test
     fun `merging two empty lists is empty, not a crash`() {
         assertTrue(mergeRecordedPages(loaded = emptyList(), recorded = emptyList(), max = 30).isEmpty())
+    }
+
+    @Test
+    fun `a dismissal recorded while the load was in flight survives the load`() {
+        val merged =
+            mergeDismissedSuggestions(
+                loaded = setOf("stored", "obsolete"),
+                recorded = setOf("in-flight"),
+                allowed = setOf("stored", "in-flight"),
+            )
+
+        assertEquals(setOf("stored", "in-flight"), merged)
     }
 }

@@ -263,12 +263,17 @@ object RecentBrowserPagesManager {
                         _recentPages.updateAndGet { recorded ->
                             mergeRecordedPages(loaded = data.pages, recorded = recorded, max = MAX_PAGES)
                         }
-                    if (merged != data.pages) scheduleSave()
                     // Intersected with the current promo list: a file written before dismissals
                     // were bounded can hold an entry per page ever removed, and nothing else would
-                    // ever drop them.
-                    _dismissedSuggestions.value = data.dismissedSuggestions.toSet() intersect promoKeys
-                    logger.debug(LogCategory.SYSTEM, "Loaded recent pages", mapOf("count" to data.pages.size))
+                    // ever drop them. Merge rather than assign because removePage and clearAll run
+                    // on the caller thread and can record a dismissal while this read is in flight.
+                    val loadedDismissals = data.dismissedSuggestions.toSet() intersect promoKeys
+                    val mergedDismissals =
+                        _dismissedSuggestions.updateAndGet { recorded ->
+                            mergeDismissedSuggestions(loadedDismissals, recorded, promoKeys)
+                        }
+                    if (merged != data.pages || mergedDismissals != loadedDismissals) scheduleSave()
+                    logger.debug(LogCategory.SYSTEM, "Loaded recent pages", mapOf("count" to merged.size))
                 } else {
                     // Bootstrap from existing browser history if available
                     bootstrapFromBrowserHistory()
@@ -641,6 +646,13 @@ internal fun mergeRecordedPages(
         .map { (_, entries) -> entries.reduce(::combineVisits) }
         .sortedByDescending { it.lastVisited }
         .take(max)
+
+/** Preserve dismissals recorded while the persisted set was being read, bounded to current promos. */
+internal fun mergeDismissedSuggestions(
+    loaded: Set<String>,
+    recorded: Set<String>,
+    allowed: Set<String>,
+): Set<String> = (recorded + loaded) intersect allowed
 
 /** Fold two entries for the same url into one; see [mergeRecordedPages] for the rules. */
 private fun combineVisits(
