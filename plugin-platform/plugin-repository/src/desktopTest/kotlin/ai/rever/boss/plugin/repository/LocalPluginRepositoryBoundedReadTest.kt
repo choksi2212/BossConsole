@@ -32,7 +32,10 @@ class LocalPluginRepositoryBoundedReadTest {
     private fun pluginDirectory(): File = File(temporary, "plugins").apply { mkdirs() }
 
     /** Writes a plugin JAR into [directory] whose manifest entry holds [manifestText]. */
-    private fun manifestJar(directory: File, manifestText: String): File {
+    private fun manifestJar(
+        directory: File,
+        manifestText: String,
+    ): File {
         val jar = File(directory, "bounded-read.jar")
         JarOutputStream(jar.outputStream()).use { out ->
             out.putNextEntry(JarEntry(PluginManifestConstants.MANIFEST_PATH))
