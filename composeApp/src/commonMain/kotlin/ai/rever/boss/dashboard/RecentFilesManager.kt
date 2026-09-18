@@ -248,8 +248,10 @@ object RecentFilesManager {
         mutationLock.withLock {
             settingsFile = testFile
             _allFiles.value = emptyList()
-            _recentFiles.value = emptyList()
         }
+        // Keep refreshVisible as the only writer of the displayed flow. This orders the reset
+        // against a derive already holding visibilityLock without nesting the two locks.
+        refreshVisible()
         synchronized(saveJobLock) {
             saveJob?.cancel()
             saveJob = null
