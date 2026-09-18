@@ -165,7 +165,7 @@ object CLISecurityValidator {
             !command.hasHiddenDisplayCharacter()
 }
 
-private val HIDDEN_DISPLAY_CHARACTERS =
+internal val HIDDEN_DISPLAY_CHARACTERS =
     setOf(
         CharCategory.CONTROL,
         CharCategory.FORMAT,
@@ -187,12 +187,18 @@ internal fun String.hasHiddenDisplayCharacter(): Boolean {
     return hidden
 }
 
-/** Supplementary-plane `Cf` ranges used for musical formatting and invisible Unicode tags. */
+/** Supplementary-plane `Cf` ranges in the Unicode tables supported by this Kotlin target. */
 internal fun isSupplementaryFormatCharacter(
     high: Char,
     low: Char,
 ): Boolean {
     if (!high.isHighSurrogate() || !low.isLowSurrogate()) return false
     val codePoint = 0x10000 + ((high.code - 0xD800) shl 10) + (low.code - 0xDC00)
-    return codePoint in 0x1D173..0x1D17A || codePoint == 0xE0001 || codePoint in 0xE0020..0xE007F
+    return codePoint == 0x110BD ||
+        codePoint == 0x110CD ||
+        codePoint in 0x13430..0x1343F ||
+        codePoint in 0x1BCA0..0x1BCA3 ||
+        codePoint in 0x1D173..0x1D17A ||
+        codePoint == 0xE0001 ||
+        codePoint in 0xE0020..0xE007F
 }
