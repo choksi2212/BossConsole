@@ -596,6 +596,10 @@ internal fun BossAppDialogs(state: BossAppState) {
                         MenuActionsHandler.triggerCloseTab(windowId)
                     }
 
+                    KeymapActions.BROWSER_PRINT -> {
+                        MenuActionsHandler.triggerPrintBrowser(windowId)
+                    }
+
                     KeymapActions.BROWSER_RELOAD -> {
                         MenuActionsHandler.triggerReloadBrowser(windowId)
                     }
