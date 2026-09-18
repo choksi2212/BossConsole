@@ -3,6 +3,7 @@ package ai.rever.boss.mcp
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -49,6 +50,19 @@ class McpLedgerChainTest {
             isError = false,
             rawArgs = mapOf("path" to "/project"),
         )
+    }
+
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @Test
+    fun `canonical hash includes every non-chain record field`() {
+        val file = createTempLedgerFile()
+        val ledger = McpOperationLedger(ledgerFile = file)
+        record(ledger, "field-coverage")
+        val entry = storedRecords(file).single()
+        val descriptor = McpOperationRecord.serializer().descriptor
+        val fields = (0 until descriptor.elementsCount).map { descriptor.getElementName(it) }.toSet()
+        val canonical = Json.parseToJsonElement(entry.canonicalFormForHashing()) as JsonObject
+        assertEquals(fields - setOf("hash", "parentHash"), canonical.keys)
     }
 
     private fun verify(file: File): McpLedgerVerification = McpOperationLedger(ledgerFile = file).verifyChain()

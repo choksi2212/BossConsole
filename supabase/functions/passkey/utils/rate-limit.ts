@@ -79,15 +79,16 @@ export function resetRateLimiter() {
 }
 
 /**
- * Best-effort client identity from the edge's forwarded headers. XFF is
- * caller-controlled unless the request arrived through the Supabase gateway;
- * only there is its leftmost hop meaningful as a source address.
+ * Best-effort client identity. Prefer connecting headers supplied by the gateway.
+ * Forwarded headers are not authentication and can be spoofed without a trusted ingress.
  */
 export function clientKey(headers: Headers): string {
-  const forwarded = headers.get("x-forwarded-for")
-  if (forwarded) {
-    const first = forwarded.split(",")[0].trim()
-    if (first) return first
+  // Prefer gateway-provided identity to an XFF chain's potentially caller-supplied prefix.
+  // This remains a best-effort bucket key, not an authentication boundary.
+  for (const name of ["cf-connecting-ip", "x-real-ip"]) {
+    const value = headers.get(name)?.trim()
+    if (value) return value
   }
-  return headers.get("cf-connecting-ip") ?? headers.get("x-real-ip") ?? "unknown"
+  const first = headers.get("x-forwarded-for")?.split(",")[0].trim()
+  return first || "unknown"
 }

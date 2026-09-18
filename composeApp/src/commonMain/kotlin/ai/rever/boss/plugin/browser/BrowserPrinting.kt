@@ -7,7 +7,8 @@ import ai.rever.boss.keymap.model.ShortcutContext
 import ai.rever.boss.keymap.presets.KeymapPresets.claimsChord
 
 // Schedule printing after JavaScript evaluation returns: window.print can wait for the preview
-// to close. JxBrowser's Swing BrowserView installs DefaultPrintCallback.showPrintPreview().
+// to close. This runs in page context: a site overriding window.print can intercept it.
+// JxBrowser's Swing BrowserView installs DefaultPrintCallback.showPrintPreview().
 internal const val PRINT_BROWSER_SCRIPT = "window.setTimeout(() => window.print(), 0); undefined;"
 
 internal suspend fun printActiveBrowser(windowId: String) {

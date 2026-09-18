@@ -41,11 +41,13 @@ class ShortcutKeyUpInvocationTest {
                 hostBinding = binding,
             )
         AWTKeyboardInterceptor.pendingShortcuts[KeyEvent.VK_P] = pending
+        AWTKeyboardInterceptor.claimedKeys.add(KeyEvent.VK_P)
         AWTKeyboardInterceptor.cancelPendingNativePrint("another-window")
         assertEquals(pending, AWTKeyboardInterceptor.pendingShortcuts[KeyEvent.VK_P])
         AWTKeyboardInterceptor.cancelPendingNativePrint("native-print")
         assertNull(AWTKeyboardInterceptor.pendingShortcuts[KeyEvent.VK_P])
-        assertFalse(AWTKeyboardInterceptor.handleKeyReleased(keyEvent(KeyEvent.KEY_RELEASED, KeyEvent.VK_P)))
+        assertTrue(AWTKeyboardInterceptor.handleKeyReleased(keyEvent(KeyEvent.KEY_RELEASED, KeyEvent.VK_P)))
+        assertFalse(AWTKeyboardInterceptor.claimedKeys.contains(KeyEvent.VK_P))
     }
 
     @Test
