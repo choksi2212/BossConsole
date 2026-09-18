@@ -1,0 +1,60 @@
+937	OPEN	Mihir-Rabari	2026-09-18T10:53:11Z	fix(settings): persist keymap, zoom and workspace settings owner-only
+936	OPEN	Mihir-Rabari	2026-09-18T10:53:08Z	fix(updater): install only from the volume hdiutil reports, never a guessed glob
+935	OPEN	kshivang	2026-09-18T10:51:47Z	Integrate dev: security hardening, reliable persistence, and Home Favorites
+934	OPEN	KhushiTrivediii	2026-09-18T10:42:57Z	fix(security): re-validate stripped branch name in DesktopGitService.checkout (#919)
+933	MERGED	kshivang	2026-09-18T10:33:17Z	fix(home): display Home as the first Favorites tile
+932	OPEN	abhinavlenka	2026-09-18T10:28:17Z	fix(browser) : refuse javascript:/data: URLs in BrowserServiceImpl.navigate (#911)
+931	OPEN	Mihir-Rabari	2026-09-18T10:21:03Z	fix(browser): gate javascript: and unknown-scheme URLs before execution or logging
+930	OPEN	Mihir-Rabari	2026-09-18T10:21:00Z	fix(git): re-validate the remote-prefix-stripped checkout name before running git
+929	OPEN	KhushiTrivediii	2026-09-18T10:12:01Z	fix(security): atomic engine extraction swap and fail-fast macOS ditto in ChromiumAutoDownloader (#910)
+918	OPEN	Mihir-Rabari	2026-09-18T09:21:57Z	fix(auth): persist Supabase session tokens through an encrypted Settings backend
+917	OPEN	harshwardhan-singh-bais	2026-09-18T09:19:31Z	Feat/boss swarm
+916	OPEN	KhushiTrivediii	2026-09-18T08:57:31Z	fix(security): refuse prohibited schemes, redact URL credentials in logs, and fix reload state in BrowserServiceImpl (#911)
+913	CLOSED	Mihir-Rabari	2026-09-18T08:39:16Z	fix(deeplink): gate boss://plugin and boss://workspace dispatch on DeepLinkOrigin like boss://terminal
+909	CLOSED	KhushiTrivediii	2026-09-18T08:22:15Z	fix(#886): redact URI userinfo and curl -u credentials in McpArgumentSanitizer
+908	OPEN	Mihir-Rabari	2026-09-18T08:20:26Z	fix(plugin): verify api-claiming jars before ApiClassLoader installs them
+907	CLOSED	KhushiTrivediii	2026-09-18T08:15:38Z	fix(#873): validate processId, atomic writes, and POSIX 0600 permissions in SnapshotManager
+906	OPEN	Mihir-Rabari	2026-09-18T08:10:41Z	fix(supabase): harden the plugin-store edge function follow-ups
+905	CLOSED	KhushiTrivediii	2026-09-18T08:06:51Z	fix(#857): bound manifest entry reads to prevent OOM before signature verification
+904	OPEN	KhushiTrivediii	2026-09-18T08:03:31Z	fix(security): implement atomic save and canonical path validation in EditorServiceImpl (#885)
+903	OPEN	KhushiTrivediii	2026-09-18T07:54:55Z	fix(security): escalate CRITICAL risk on ALLOW paths so standing grants re-ask
+902	OPEN	Mihir-Rabari	2026-09-18T07:48:52Z	fix(mcp): confine workspace file paths and loaded layout paths
+901	OPEN	Mihir-Rabari	2026-09-18T07:48:50Z	fix(supabase): stop leaking raw error details from edge functions
+900	OPEN	Mihir-Rabari	2026-09-18T07:48:48Z	fix(mcp): re-ask argument-driven CRITICAL escalations under standing ALLOWs
+899	OPEN	dilatedtime	2026-09-18T07:43:16Z	fix(render): bound recovery allowances per incident
+898	OPEN	KhushiTrivediii	2026-09-18T07:39:03Z	fix(security): redact URI credentials, curl user flags, AWS keys, and PEM keys in McpArgumentSanitizer (#886)
+897	OPEN	ninja-lifts	2026-09-18T07:35:48Z	fix(logging): mask Supabase's current API key shapes
+894	OPEN	Mihir-Rabari	2026-09-18T07:34:51Z	test(auth): add UserDataStorage merge, clear, and race contract tests
+893	OPEN	Mihir-Rabari	2026-09-18T07:34:49Z	fix(mcp): classify v9.5.21 workspace tool family in risk evaluator
+892	OPEN	choksi2212	2026-09-18T06:59:13Z	fix(git): epoch-check the global project path against cross-window switches
+891	OPEN	choksi2212	2026-09-18T06:58:23Z	fix(security): confine editor-service saves to the user's home, resolve symlinks, and save atomically
+890	OPEN	nitininhouse	2026-09-18T06:56:54Z	fix(mcp): redact URI userinfo in MCP arguments by reusing the logging helper from #640
+889	CLOSED	choksi2212	2026-09-18T06:42:18Z	fix(security): confine editor-service saves to the user's home, resolve symlinks, and save atomically
+888	OPEN	ninja-lifts	2026-09-18T06:22:45Z	docs(browser): describe where secret auto-fill actually lives now
+887	CLOSED	KhushiTrivediii	2026-09-18T06:07:11Z	fix(security): enforce POSIX 0600 file perms, atomic writes, and bounded manifest reads (#860, #857)
+884	OPEN	ninja-lifts	2026-09-18T05:11:38Z	fix(browser): inject the field-detection script once per document
+883	CLOSED	KhushiTrivediii	2026-09-18T05:10:28Z	fix(security): harden SnapshotManager and SettingsServiceImpl persistence (#873, #871)
+882	CLOSED	choksi2212	2026-09-18T04:47:04Z	fix(git): epoch-check the global project path against cross-window switches
+881	CLOSED	KhushiTrivediii	2026-09-18T04:45:13Z	fix(mcp): sanitize workspaceId in open_workspace and close_workspace tools (#856, #862)
+880	OPEN	atharvgaur1845	2026-09-18T04:30:46Z	fix(mcp): keep workspace ids from selecting files outside the workspace directory
+879	CLOSED	KhushiTrivediii	2026-09-18T04:24:54Z	fix(security): prevent Authorization header token leaks and redact URI userinfo in McpArgumentSanitizer (#836)
+878	OPEN	KhushiTrivediii	2026-09-18T03:51:40Z	fix(git): serialize refresh and clear using refreshMutex in DesktopGitService (#813)
+877	MERGED	atharvgaur1845	2026-09-18T02:19:09Z	fix(secrets): stop clients importing ciphertext into rows they can decrypt
+876	MERGED	kshivang	2026-09-18T01:45:37Z	Integrate dev: browser printing, navigation, plugin fixes and persistence
+875	MERGED	ninja-lifts	2026-09-18T00:24:37Z	fix(browser): parse the focused field details as JSON, not with a regex
+874	MERGED	RohithPariki	2026-09-17T23:55:39Z	fix(orchestrator): confine snapshot paths and persist atomically with owner permissions (#873)
+872	MERGED	RohithPariki	2026-09-17T22:34:14Z	fix(settings): serialize mutations and persist atomically with owner permissions (#871)
+870	MERGED	RohithPariki	2026-09-17T22:14:49Z	fix(security): redact sensitive JWT tokens in Supabase realtime log lines (#855)
+869	OPEN	Vidhaankhare16	2026-09-17T22:04:39Z	fix(deep-link): gate boss://plugin action links on their origin
+868	MERGED	RohithPariki	2026-09-17T21:54:10Z	fix(persist): pin atomicWriteText permissions to owner-only and migrate stats and project writes (#860)
+867	MERGED	RohithPariki	2026-09-17T20:34:14Z	perf(ipc): Optimize MCP tool schema parsing with string-based cache
+866	CLOSED	aryanbajaj868	2026-09-17T20:19:38Z	fix(plugin): bound plugin.json entry reads to prevent pre-verification OOM
+865	CLOSED	aryanbajaj868	2026-09-17T20:12:55Z	Title: fix(plugin): bound plugin.json entry reads to prevent pre-verification OOM
+864	CLOSED	Antriksh1984	2026-09-17T19:26:26Z	fix(security): close two path-traversal holes in the workspace MCP tool
+863	MERGED	shivanshu-risa	2026-09-17T19:09:45Z	fix(search): highlight the selected row in the sectioned global search list
+861	CLOSED	Vidhaankhare16	2026-09-17T18:46:50Z	test(mcp): make the dangerous-path fixtures absolute on every platform
+859	MERGED	harshwardhan-singh-bais	2026-09-17T18:34:46Z	feat: added MCP operation ledger and CLI
+858	MERGED	Mihir-Rabari	2026-09-17T18:32:58Z	fix(plugin): bound the manifest entry reads before signature verification
+854	MERGED	Mihir-Rabari	2026-09-17T18:18:42Z	fix(plugin): verify system-plugin GitHub downloads before install
+853	CLOSED	Mihir-Rabari	2026-09-17T18:07:30Z	fix(mcp): create the operation ledger with owner-only permissions
+849	MERGED	Vidhaankhare16	2026-09-17T17:54:17Z	fix(deep-link): hold an external workspace link's terminal commands for confirmation
