@@ -448,12 +448,15 @@ class WorkspaceMcpToolProviderTest {
             val core = createTestCore()
             // projectPath is a destination (a terminal cwd), so it gets the strict gate:
             // shell metacharacters and traversal are both refused.
-            val badProjectArgs = """{"workspaceId":"test-ws","projectPath":"/tmp;rm -rf /"}"""
+            // A slash-rooted Unix path is not absolute on Windows; use the native temp root
+            // so these assertions exercise the security gate, not the absolute-path gate.
+            val projectRoot = workspaceDir.absolutePath.replace('\\', '/')
+            val badProjectArgs = """{"workspaceId":"test-ws","projectPath":"$projectRoot;rm -rf /"}"""
             val projectResult = core.invoke("open_workspace", badProjectArgs)
             assertTrue(projectResult.isError)
             assertTrue(projectResult.text.contains("Refusing to open"), projectResult.text)
 
-            val badProjectTraversal = """{"workspaceId":"test-ws","projectPath":"/tmp/../etc"}"""
+            val badProjectTraversal = """{"workspaceId":"test-ws","projectPath":"$projectRoot/../etc"}"""
             val traversalResult = core.invoke("open_workspace", badProjectTraversal)
             assertTrue(traversalResult.isError)
             assertTrue(traversalResult.text.contains("Refusing to open"), traversalResult.text)
