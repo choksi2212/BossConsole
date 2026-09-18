@@ -43,11 +43,14 @@ internal fun SpaceLoadApprovalDialog(
 internal fun spaceLoadApprovalMessage(request: PendingSpaceLoad): String =
     buildString {
         append("BOSS was asked from outside the app to load the Space \"")
-        append(request.workspace.name)
+        append(request.workspace.name.safeSpacePromptLabel())
         append("\" from:\n")
-        append(request.workspacePath)
+        append(request.workspacePath.safeSpacePromptLabel())
         append("\n\nIts terminal tabs would run these commands. Nothing has loaded or run. ")
         append("Confirm only if you recognise them:\n")
+        if (request.commands.any { command -> SPACE_COMMAND_PLACEHOLDERS.any(command::contains) }) {
+            append("\nPlaceholders in braces expand when the Space loads, so the shell may receive different text.\n")
+        }
         request.commands.forEachIndexed { index, command ->
             append("\n")
             append(index + 1)
@@ -55,3 +58,23 @@ internal fun spaceLoadApprovalMessage(request: PendingSpaceLoad): String =
             append(command)
         }
     }
+
+private const val SPACE_PROMPT_LABEL_MAX_LENGTH = 512
+
+/** Keeps untrusted Space metadata from forging or overwhelming the command confirmation copy. */
+private fun String.safeSpacePromptLabel(): String {
+    val visible =
+        map { character ->
+            if (character.category in HIDDEN_PROMPT_CHARACTERS) '\uFFFD' else character
+        }.joinToString("")
+    return if (visible.length <= SPACE_PROMPT_LABEL_MAX_LENGTH) {
+        visible
+    } else {
+        visible.take(SPACE_PROMPT_LABEL_MAX_LENGTH - 1) + "…"
+    }
+}
+
+private val HIDDEN_PROMPT_CHARACTERS = setOf(CharCategory.CONTROL, CharCategory.FORMAT)
+
+private val SPACE_COMMAND_PLACEHOLDERS =
+    setOf("{projectPath}", "{gitRemoteUrl}", "{currentFile}", "{claudeContinueFlag}")
