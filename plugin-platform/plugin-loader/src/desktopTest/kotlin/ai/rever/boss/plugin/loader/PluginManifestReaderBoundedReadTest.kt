@@ -1,6 +1,7 @@
 package ai.rever.boss.plugin.loader
 
 import java.io.File
+import java.io.InputStream
 import java.util.jar.JarEntry
 import java.util.jar.JarOutputStream
 import kotlin.test.AfterTest
@@ -9,6 +10,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 /**
  * Pins the bounded manifest read in [PluginManifestReader]: a `plugin.json`
@@ -113,5 +115,122 @@ class PluginManifestReaderBoundedReadTest {
             )
 
         assertEquals("com.example.bounded.read", manifest.pluginId)
+    }
+
+    /**
+     * A real zip-bomb regression fixture: the manifest entry claims
+     * [ZIP_BOMB_INFLATED_BYTES] of uncompressed data but occupies only a
+     * tiny compressed payload on disk (a repeated byte deflates ~1000:1),
+     * streamed into the JAR so the fixture never holds the inflated size.
+     * The reader must reject it within the byte bounds, not inflate it.
+     */
+    @Test
+    fun `a zip-bomb manifest entry is rejected within the byte bounds`() {
+        val jar = File.createTempFile("zip-bomb-manifest", ".jar")
+        tempJars.add(jar)
+        val chunk = ByteArray(CHUNK_BYTES) { 'x'.code.toByte() }
+        JarOutputStream(jar.outputStream()).use { out ->
+            out.putNextEntry(JarEntry("META-INF/boss-plugin/plugin.json"))
+            var remaining = ZIP_BOMB_INFLATED_BYTES
+            while (remaining > 0) {
+                val toWrite = minOf(CHUNK_BYTES, remaining)
+                out.write(chunk, 0, toWrite)
+                remaining -= toWrite
+            }
+            out.closeEntry()
+        }
+        assertTrue(
+            jar.length() < 16 * 1024 * 1024,
+            "the fixture must stay tiny on disk: ${jar.length()} bytes for $ZIP_BOMB_INFLATED_BYTES inflated",
+        )
+
+        val startedAt = System.nanoTime()
+        val error =
+            assertFailsWith<PluginManifestException> {
+                PluginManifestReader.readFromJar(jar.absolutePath)
+            }
+        val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
+
+        assertTrue(
+            error.message.orEmpty().contains("exceeds"),
+            "message should name the size cap: ${error.message}",
+        )
+        assertTrue(
+            elapsedMs < 5_000,
+            "rejection must happen at the cap, not after inflating $ZIP_BOMB_INFLATED_BYTES bytes; took ${elapsedMs}ms",
+        )
+    }
+
+    /**
+     * Pins the bound itself, not just the policy: the reader may never pull
+     * more than cap + 1 bytes from the stream. An unbounded
+     * readText-then-check-length implementation fails here deterministically
+     * (the stream refuses to serve past the cap) instead of passing because
+     * the fixture happened to fit in the heap.
+     */
+    @Test
+    fun `the reader never pulls more than cap plus one bytes from the stream`() {
+        val cap = PluginManifestReader.MAX_MANIFEST_BYTES
+        val stream = BoundedDemandStream(maxBytes = cap + 1)
+
+        val error =
+            assertFailsWith<PluginManifestException> {
+                PluginManifestReader.readBoundedManifest(stream)
+            }
+
+        assertTrue(
+            error.message.orEmpty().contains("exceeds"),
+            "message should name the size cap: ${error.message}",
+        )
+        assertEquals(
+            cap + 1,
+            stream.served,
+            "the reader must stop pulling at the cap, not drain the stream",
+        )
+    }
+
+    /**
+     * An effectively infinite stream of manifest bytes that fails the test
+     * the moment a reader asks for more than [maxBytes] bytes in total. A
+     * bounded reader stops at cap + 1; anything that keeps asking is an
+     * unbounded read.
+     */
+    private class BoundedDemandStream(
+        private val maxBytes: Int,
+    ) : InputStream() {
+        var served: Int = 0
+            private set
+
+        override fun read(): Int {
+            demand(1)
+            return 'x'.code
+        }
+
+        override fun read(
+            buffer: ByteArray,
+            offset: Int,
+            length: Int,
+        ): Int {
+            if (length == 0) return 0
+            demand(length)
+            buffer.fill('x'.code.toByte(), offset, offset + length)
+            return length
+        }
+
+        private fun demand(requested: Int) {
+            val total = served + requested
+            if (total > maxBytes) {
+                fail("unbounded read: the reader pulled $total bytes in total, more than the $maxBytes a bounded reader may ever request")
+            }
+            served = total
+        }
+    }
+
+    private companion object {
+        /** 1 GiB of inflated manifest data - comfortably over any plausible test heap. */
+        const val ZIP_BOMB_INFLATED_BYTES: Int = 1024 * 1024 * 1024
+
+        /** Chunk size used to stream the bomb into the JAR; the inflated size is never held. */
+        const val CHUNK_BYTES: Int = 1024 * 1024
     }
 }
