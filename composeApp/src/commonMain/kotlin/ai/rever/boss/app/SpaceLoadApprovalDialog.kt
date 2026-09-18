@@ -1,5 +1,6 @@
 package ai.rever.boss.app
 
+import ai.rever.boss.cli.HIDDEN_DISPLAY_CHARACTERS
 import ai.rever.boss.cli.isSupplementaryFormatCharacter
 import ai.rever.boss.components.dialogs.ConfirmationDialog
 import androidx.compose.runtime.Composable
@@ -74,7 +75,7 @@ private fun String.safeSpacePromptLabel(): String {
                     append('\uFFFD')
                     index += 2
                 } else {
-                    append(if (character.category in HIDDEN_PROMPT_CHARACTERS) '\uFFFD' else character)
+                    append(if (character.category in HIDDEN_DISPLAY_CHARACTERS) '\uFFFD' else character)
                     index++
                 }
             }
@@ -82,11 +83,16 @@ private fun String.safeSpacePromptLabel(): String {
     return if (visible.length <= SPACE_PROMPT_LABEL_MAX_LENGTH) {
         visible
     } else {
-        visible.take(SPACE_PROMPT_LABEL_MAX_LENGTH - 1) + "…"
+        val proposedEnd = SPACE_PROMPT_LABEL_MAX_LENGTH - 1
+        val safeEnd =
+            if (visible[proposedEnd - 1].isHighSurrogate() && visible[proposedEnd].isLowSurrogate()) {
+                proposedEnd - 1
+            } else {
+                proposedEnd
+            }
+        visible.take(safeEnd) + "…"
     }
 }
-
-private val HIDDEN_PROMPT_CHARACTERS = setOf(CharCategory.CONTROL, CharCategory.FORMAT)
 
 private val SPACE_COMMAND_PLACEHOLDERS =
     setOf("{projectPath}", "{gitRemoteUrl}", "{currentFile}", "{claudeContinueFlag}")
