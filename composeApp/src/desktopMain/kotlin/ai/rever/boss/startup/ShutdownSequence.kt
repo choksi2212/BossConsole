@@ -2,6 +2,7 @@ package ai.rever.boss.startup
 
 import ai.rever.boss.app.LastSessionCoordinator
 import ai.rever.boss.cache.HighQualityFaviconService
+import ai.rever.boss.dashboard.RecentBrowserPagesManager
 import ai.rever.boss.dashboard.RecentFilesManager
 import ai.rever.boss.performance.PerformanceMonitor
 import ai.rever.boss.plugin.PluginStoreSetup
@@ -48,6 +49,7 @@ object ShutdownSequence {
                 // before both writes are on disk.
                 runBlocking {
                     RecentFilesManager.flushPendingSaves()
+                    RecentBrowserPagesManager.flushPendingSaves()
                     UserDataStorage.flushPendingSaves()
                 }
             },

@@ -2640,6 +2640,11 @@ object FluckEngine {
      * dispatches through [ai.rever.boss.window.MenuActionsHandler] (zoom, N/T/W and
      * Shift+F/Shift+S) must be gated on this value; a new one added later must be too.
      *
+     * Print is a deliberate direct-browser exception: manual macOS testing found Cmd+P
+     * did not open preview through AWT alone. Its callback cancels a pending AWT print
+     * before invoking the page. This is best-effort suppression, not an ordering guarantee
+     * if the AWT release wins the native callback race. Do not copy it for other actions.
+     *
      * [JxBrowserConfig.renderingMode] is a `lazy` val, so this resolves once per process. That is
      * the right granularity: changing the mode needs the engine rebuilt, so it cannot change under
      * a running browser anyway.

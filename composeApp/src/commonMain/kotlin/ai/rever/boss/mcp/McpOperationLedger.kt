@@ -477,8 +477,8 @@ internal class McpLedgerStore(
      * writer and a verifier always agree on where a chain resumes.
      *
      * Best effort on purpose, because this runs on the write path, which must never throw. When the
-     * newest record cannot be read, the caller writes a record chained to genesis and [verify]
-     * reports the unreadable or malformed file rather than passing it.
+     * newest record cannot be read, recovery probes older rotations and uses genesis only
+     * when none can be read. [verify] still reports the unreadable file or broken adjacency.
      */
     fun lastChainHead(): String {
         for (position in 0..BACKUP_PROBE_LIMIT) {
