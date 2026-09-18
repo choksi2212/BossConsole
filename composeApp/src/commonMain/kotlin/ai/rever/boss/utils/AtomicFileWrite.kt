@@ -67,13 +67,10 @@ fun File.atomicWriteText(text: String) {
     val tmp = File.createTempFile("$name.", ".tmp", parentFile)
     try {
         if (Files.getFileAttributeView(tmp.toPath(), PosixFileAttributeView::class.java) != null) {
-            try {
-                Files.setPosixFilePermissions(tmp.toPath(), OWNER_ONLY_FILE_PERMISSIONS)
-            } catch (_: UnsupportedOperationException) {
-                // Non-POSIX filesystem
-            } catch (_: IOException) {
-                // Best-effort permission hardening
-            }
+            // Fail closed if a filesystem advertises POSIX permissions but refuses the
+            // restriction. Publishing the temp file anyway would defeat this helper's security
+            // contract for every state file that relies on it.
+            Files.setPosixFilePermissions(tmp.toPath(), OWNER_ONLY_FILE_PERMISSIONS)
         }
         tmp.writeText(text)
         atomicMoveFrom(tmp)
