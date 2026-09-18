@@ -2,10 +2,13 @@ package ai.rever.boss.orchestrator
 
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermission
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -30,6 +33,39 @@ class SnapshotManagerTest {
     fun `save returns a non-blank snapshot ID`() {
         val id = manager.save("proc-1", "hello".toByteArray())
         assertTrue(id.isNotBlank())
+    }
+
+    @Test
+    fun `construction fails when snapshots path is occupied by a file`() {
+        val occupiedDataDir = Files.createTempDirectory("boss-snap-occupied").toFile()
+        try {
+            java.io.File(occupiedDataDir, "snapshots").writeText("occupied")
+
+            assertFails { SnapshotManager(occupiedDataDir) }
+        } finally {
+            occupiedDataDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `concurrent first saves both succeed`() {
+        val executor = Executors.newFixedThreadPool(2)
+        val start = CountDownLatch(1)
+        try {
+            val saves =
+                listOf("first", "second").map { value ->
+                    executor.submit<String> {
+                        start.await()
+                        manager.save("proc-concurrent", value.toByteArray())
+                    }
+                }
+            start.countDown()
+
+            assertEquals(2, saves.map { it.get() }.distinct().size)
+            assertEquals(2, manager.listSnapshots("proc-concurrent").size)
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     @Test
@@ -171,9 +207,64 @@ class SnapshotManagerTest {
                         PosixFilePermission.OWNER_READ,
                         PosixFilePermission.OWNER_WRITE,
                     )
-                val extraPerms = perms - ownerOnly
-                assertTrue(extraPerms.isEmpty(), "Expected owner-only permissions for ${file.name}, found: $perms")
+                assertEquals(ownerOnly, perms, "Expected owner-only permissions for ${file.name}")
             }
         }
+        assertTrue(files.none { it.extension == "tmp" })
+    }
+
+    @Test
+    fun `read list and cleanup reject a symlinked process directory`() {
+        val outside = Files.createTempDirectory("snapshot-outside").toFile()
+        try {
+            java.io.File(outside, "1-external.snapshot").writeText("external")
+            val link = java.io.File(tempDir, "snapshots/proc-link").toPath()
+            try {
+                Files.createSymbolicLink(link, outside.toPath())
+            } catch (_: UnsupportedOperationException) {
+                return
+            } catch (_: java.nio.file.FileSystemException) {
+                return
+            }
+
+            assertFailsWith<IllegalArgumentException> {
+                manager.save("proc-link", "replacement".toByteArray())
+            }
+            assertFailsWith<IllegalArgumentException> { manager.loadLatest("proc-link") }
+            assertFailsWith<IllegalArgumentException> { manager.listSnapshots("proc-link") }
+            assertFailsWith<IllegalArgumentException> { manager.cleanup("proc-link") }
+            assertTrue(java.io.File(outside, "1-external.snapshot").exists())
+        } finally {
+            outside.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `snapshot and description symlinks are not followed`() {
+        manager.save("proc-files", "safe".toByteArray())
+        val processDir = java.io.File(tempDir, "snapshots/proc-files")
+        val outside = java.io.File(tempDir, "outside-secret").apply { writeText("secret") }
+        try {
+            Files.createSymbolicLink(
+                java.io.File(processDir, "9999999999999-external.snapshot").toPath(),
+                outside.toPath(),
+            )
+            val realSnapshot =
+                processDir
+                    .listFiles { file -> file.extension == "snapshot" }
+                    .orEmpty()
+                    .single { !Files.isSymbolicLink(it.toPath()) }
+            Files.createSymbolicLink(
+                java.io.File(processDir, "${realSnapshot.nameWithoutExtension}.desc").toPath(),
+                outside.toPath(),
+            )
+        } catch (_: UnsupportedOperationException) {
+            return
+        } catch (_: java.nio.file.FileSystemException) {
+            return
+        }
+
+        assertEquals("safe", manager.loadLatest("proc-files")?.decodeToString())
+        assertEquals("", manager.listSnapshots("proc-files").single().description)
     }
 }
