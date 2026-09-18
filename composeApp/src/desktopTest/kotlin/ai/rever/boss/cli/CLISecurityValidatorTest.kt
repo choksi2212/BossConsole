@@ -112,7 +112,9 @@ class CLISecurityValidatorTest {
     @Test
     fun `normalizeAndValidateUrl protocol branch remains a prefix check only`() {
         // The explicit-protocol branch returns before the bare-domain whitespace guard. Pin that
-        // legacy asymmetry so tightening it later is a deliberate compatibility decision.
+        // legacy asymmetry so tightening it later is a deliberate compatibility decision. These
+        // values are still refused downstream by URLHandlerService's UrlOpenValidation gate; this
+        // test records where validation lives rather than implying that BOSS opens these inputs.
         assertEquals(
             "https://example.com\nsecond line",
             CLISecurityValidator.normalizeAndValidateUrl("https://example.com\nsecond line"),
@@ -224,9 +226,9 @@ class CLISecurityValidatorTest {
         // The 32,768-character guard intentionally sits beyond real filesystem limits, so the
         // public result cannot distinguish the explicit guard from canonicalisation refusing the
         // same input. This verifies the honest observable contract rather than claiming to pin
-        // an unobservable constant. A long but representable path remains accepted, protecting
-        // against accidentally lowering the guard into the range of real inputs.
-        val representable = List(128) { "abc" }.joinToString("/")
+        // an unobservable constant. A roughly 500-character absolute path stays comfortably under
+        // macOS's 1,024-character PATH_MAX while catching the guard being lowered below this range.
+        val representable = "/" + List(128) { "abc" }.joinToString("/")
         assertTrue(CLISecurityValidator.isValidOpenTargetPath(representable))
         assertFalse(CLISecurityValidator.isValidOpenTargetPath("a".repeat(32_768)))
         assertFalse(CLISecurityValidator.isValidOpenTargetPath("a".repeat(32_769)))
