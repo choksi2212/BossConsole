@@ -53,6 +53,7 @@ data class RecentFilesData(
  * The sibling [RecentBrowserPagesManager] had the same three defects and was fixed first; this
  * class is kept deliberately parallel to it so the two do not drift again.
  */
+@Suppress("TooManyFunctions")
 object RecentFilesManager {
     private const val MAX_FILES = 20
     private const val SAVE_DEBOUNCE_MS = 5000L // Debounce saves to max once per 5 seconds
