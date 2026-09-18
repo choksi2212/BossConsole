@@ -50,6 +50,16 @@ class PluginUpdateIdentityVetTest {
     }
 
     @Test
+    fun `the vet is read-only - a refused jar stays on disk for the caller to discard`(
+        @TempDir tmp: File,
+    ) {
+        val jar = PluginJarTestFixtures.writeJar(tmp, "evil.jar", "com.evil.other-plugin", "1.0.0")
+        val refusal = PluginUpdateBridge.vetUpdateJarIdentity("com.example.my-plugin", jar.absolutePath)
+        assertNotNull(refusal)
+        assertEquals(true, jar.exists(), "the vet itself must not delete; activateUpdate discards")
+    }
+
+    @Test
     fun `a jar with no readable manifest is refused rather than loaded blind`(
         @TempDir tmp: File,
     ) {

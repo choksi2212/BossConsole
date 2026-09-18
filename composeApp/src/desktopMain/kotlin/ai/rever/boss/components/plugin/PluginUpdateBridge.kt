@@ -259,6 +259,11 @@ actual object PluginUpdateBridge {
         // already run by the time this is called, so a refusal here must fail
         // the update loudly rather than register whatever the jar declares.
         vetUpdateJarIdentity(pluginId, path)?.let { refusal ->
+            // The refused jar must not survive at its version-named, scannable
+            // path: the next launch's directory scan would register whatever id
+            // it declares (null-signature is warn-and-allowed during the #102
+            // rollout), so the identity attack would survive the session.
+            discardPartialDownload(File(path))
             return Result.failure(
                 Exception(
                     "The downloaded update did not declare itself as $pluginId ($refusal). Refusing to activate it.",
