@@ -100,18 +100,22 @@ object UserDataStorage {
      * identity - the mutex cannot order a caller that already passed it. The save captures the
      * generation before acquiring the lock and re-checks it inside; a clear that happened while
      * it waited invalidates the save, so the resurrection path is closed.
+     *
+     * This deliberately fails closed: a save for a new identity that entered before a lagging
+     * clear is skipped too. That window is small, and preserving logged-out identity is the more
+     * serious failure; the skip is therefore logged as a warning for diagnosis.
      */
     private val clearGeneration = AtomicLong()
 
-    /** Test seam: the generation a save entering now would capture. */
-    internal fun generationForTest(): Long = clearGeneration.get()
+    /** Test seam invoked after the production entry point captures the generation. */
+    internal var afterGenerationCaptureForTest: (suspend () -> Unit)? = null
 
     /**
      * The save body with an explicit entry generation, so the fence's regression test can
      * hand a save the generation it *would have* captured before a logout interleaved,
      * driving the capture-clear-acquire order deterministically without coroutine scheduling.
      */
-    internal suspend fun doSaveUserData(
+    private suspend fun doSaveUserData(
         user: UserInfo,
         authenticatedVia: String?,
         generationAtEntry: Long,
@@ -119,7 +123,7 @@ object UserDataStorage {
         withContext(Dispatchers.IO) {
             fileLock.withLock {
                 if (generationAtEntry != clearGeneration.get()) {
-                    logger.debug(
+                    logger.warn(
                         LogCategory.AUTH,
                         "Skipping user data save: logout occurred while the save waited for the lock",
                     )
@@ -241,7 +245,9 @@ object UserDataStorage {
         // The fence's generation capture happens inside the delegate, before its lock
         // acquisition (BossConsole#762): a clear that runs while this save waits
         // invalidates it, so a save entered before logout cannot recreate the record.
-        doSaveUserData(user, authenticatedVia, clearGeneration.get())
+        val generationAtEntry = clearGeneration.get()
+        afterGenerationCaptureForTest?.invoke()
+        doSaveUserData(user, authenticatedVia, generationAtEntry)
     }
 
     /**
