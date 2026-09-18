@@ -1,9 +1,12 @@
 package ai.rever.boss.orchestrator
 
+import ai.rever.boss.ipc.IpcAddressResolver
 import java.io.File
 import java.io.IOException
 import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermission
@@ -14,17 +17,21 @@ import java.util.UUID
  *
  * Layout: $dataDir/snapshots/{processId}/{timestamp}-{uuid}.snapshot
  * Optional description: $dataDir/snapshots/{processId}/{timestamp}-{uuid}.desc
+ *
+ * On POSIX filesystems, construction and writes fail closed when owner-only permissions cannot be applied.
  */
 class SnapshotManager(
     private val dataDir: File,
 ) {
     private val snapshotsRoot: File =
         File(dataDir, "snapshots").also {
-            it.mkdirs()
+            Files.createDirectories(it.toPath())
             applyPosixOwnerPermissions(it.toPath(), isDirectory = true)
         }
+    private val canonicalSnapshotsRoot: Path = snapshotsRoot.toPath().toRealPath()
 
     private fun validateProcessId(processId: String) {
+        IpcAddressResolver.validateProcessIdentifier(processId)
         val reserved = processId.substringBefore('.').matches(Regex("(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])"))
         val validFormat = processId.matches(Regex("[A-Za-z0-9_-][A-Za-z0-9._-]{0,199}"))
         require(validFormat && !processId.endsWith('.') && !reserved) {
@@ -32,18 +39,27 @@ class SnapshotManager(
         }
     }
 
-    private fun snapshotDir(processId: String): File {
+    private fun snapshotDir(
+        processId: String,
+        create: Boolean,
+    ): File? {
         validateProcessId(processId)
         val dir = File(snapshotsRoot, processId)
-        val canonicalRoot = snapshotsRoot.canonicalFile
-        val canonicalDir = dir.canonicalFile
-        require(canonicalDir.toPath().startsWith(canonicalRoot.toPath())) {
-            "Process directory escapes snapshots root"
+        val path = dir.toPath()
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+            if (!create) return null
+            try {
+                Files.createDirectory(path)
+            } catch (_: FileAlreadyExistsException) {
+                // A concurrent first save may have created it; verify the occupant below.
+            }
         }
-        if (!dir.exists()) {
-            dir.mkdirs()
-            applyPosixOwnerPermissions(dir.toPath(), isDirectory = true)
+        require(!Files.isSymbolicLink(path)) { "Process directory must not be a symbolic link" }
+        val realPath = path.toRealPath()
+        require(realPath.parent == canonicalSnapshotsRoot && Files.isDirectory(realPath, LinkOption.NOFOLLOW_LINKS)) {
+            "Process directory escapes snapshots root or is not a directory"
         }
+        if (create) applyPosixOwnerPermissions(realPath, isDirectory = true)
         return dir
     }
 
@@ -55,7 +71,7 @@ class SnapshotManager(
     ): String {
         val id = UUID.randomUUID().toString()
         val timestamp = System.currentTimeMillis()
-        val dir = snapshotDir(processId)
+        val dir = checkNotNull(snapshotDir(processId, create = true))
         val snapshotFile = File(dir, "$timestamp-$id.snapshot")
         atomicWriteFile(snapshotFile, data)
         if (description.isNotBlank()) {
@@ -67,22 +83,18 @@ class SnapshotManager(
 
     /** Return the bytes of the most recent snapshot, or null if none exist. */
     fun loadLatest(processId: String): ByteArray? {
-        validateProcessId(processId)
-        val dir = File(snapshotsRoot, processId)
-        if (!dir.exists() || !dir.isDirectory) return null
+        val dir = snapshotDir(processId, create = false) ?: return null
         return dir
-            .listFiles { f -> f.extension == "snapshot" && f.isFile }
+            .listFiles { f -> f.extension == "snapshot" && f.isRegularFileNoFollow() }
             ?.maxByOrNull { it.nameWithoutExtension.substringBefore("-").toLongOrNull() ?: 0L }
             ?.readBytes()
     }
 
     /** List all snapshots for [processId], most recent first. */
     fun listSnapshots(processId: String): List<SnapshotInfo> {
-        validateProcessId(processId)
-        val dir = File(snapshotsRoot, processId)
-        if (!dir.exists() || !dir.isDirectory) return emptyList()
+        val dir = snapshotDir(processId, create = false) ?: return emptyList()
         return dir
-            .listFiles { f -> f.extension == "snapshot" && f.isFile }
+            .listFiles { f -> f.extension == "snapshot" && f.isRegularFileNoFollow() }
             ?.map { file ->
                 val nameWithoutExt = file.nameWithoutExtension
                 val dashIdx = nameWithoutExt.indexOf('-')
@@ -94,7 +106,7 @@ class SnapshotManager(
                     processId = processId,
                     timestamp = timestamp,
                     sizeBytes = file.length(),
-                    description = if (descFile.exists() && descFile.isFile) descFile.readText() else "",
+                    description = if (descFile.isRegularFileNoFollow()) descFile.readText() else "",
                 )
             }?.sortedByDescending { it.timestamp }
             ?: emptyList()
@@ -105,17 +117,15 @@ class SnapshotManager(
         processId: String,
         keepLast: Int = 5,
     ) {
-        validateProcessId(processId)
-        val dir = File(snapshotsRoot, processId)
-        if (!dir.exists() || !dir.isDirectory) return
+        val dir = snapshotDir(processId, create = false) ?: return
         val snapshots =
             dir
-                .listFiles { f -> f.extension == "snapshot" && f.isFile }
+                .listFiles { f -> f.extension == "snapshot" && f.isRegularFileNoFollow() }
                 ?.sortedByDescending { it.nameWithoutExtension.substringBefore("-").toLongOrNull() ?: 0L }
                 ?: return
         snapshots.drop(keepLast).forEach { file ->
             file.delete()
-            File(dir, "${file.nameWithoutExtension}.desc").takeIf { it.exists() && it.isFile }?.delete()
+            File(dir, "${file.nameWithoutExtension}.desc").takeIf { it.isRegularFileNoFollow() }?.delete()
         }
     }
 
@@ -154,34 +164,31 @@ class SnapshotManager(
         }
     }
 
-    @Suppress("TooGenericExceptionCaught")
     private fun applyPosixOwnerPermissions(
         path: Path,
         isDirectory: Boolean,
     ) {
         if (!hasPosix(path)) return
-        try {
-            val perms =
-                if (isDirectory) {
-                    setOf(
-                        PosixFilePermission.OWNER_READ,
-                        PosixFilePermission.OWNER_WRITE,
-                        PosixFilePermission.OWNER_EXECUTE,
-                    )
-                } else {
-                    setOf(
-                        PosixFilePermission.OWNER_READ,
-                        PosixFilePermission.OWNER_WRITE,
-                    )
-                }
-            Files.setPosixFilePermissions(path, perms)
-        } catch (_: Exception) {
-            // Best effort on POSIX filesystems that disallow permission changes
-        }
+        val perms =
+            if (isDirectory) {
+                setOf(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE,
+                )
+            } else {
+                setOf(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                )
+            }
+        Files.setPosixFilePermissions(path, perms)
     }
 
     private fun hasPosix(path: Path): Boolean = path.fileSystem.supportedFileAttributeViews().contains("posix")
 }
+
+private fun File.isRegularFileNoFollow(): Boolean = Files.isRegularFile(toPath(), LinkOption.NOFOLLOW_LINKS)
 
 data class SnapshotInfo(
     val id: String,
