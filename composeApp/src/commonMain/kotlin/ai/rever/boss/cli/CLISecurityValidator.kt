@@ -153,8 +153,8 @@ object CLISecurityValidator {
      * [ai.rever.boss.utils.DeepLinkOrigin]: only a request the operator made
      * themselves runs without a prompt.
      *
-     * Control characters are rejected because the command is written into a
-     * shell followed by a single Enter — an embedded line break would submit
+     * Control, format, and Unicode line-separator characters are rejected
+     * because the command is written into a shell followed by a single Enter — an embedded line break would submit
      * further lines that nothing ever displayed, so keeping the command to one
      * line is what makes the text shown equal to the text that runs. The NUL
      * byte the previous check looked for is one of them.
@@ -162,5 +162,13 @@ object CLISecurityValidator {
     fun isValidCommand(command: String): Boolean =
         command.isNotBlank() &&
             command.length <= MAX_COMMAND_LENGTH &&
-            command.none { it.isISOControl() }
+            command.none { it.category in HIDDEN_COMMAND_CHARACTERS }
+
+    private val HIDDEN_COMMAND_CHARACTERS =
+        setOf(
+            CharCategory.CONTROL,
+            CharCategory.FORMAT,
+            CharCategory.LINE_SEPARATOR,
+            CharCategory.PARAGRAPH_SEPARATOR,
+        )
 }

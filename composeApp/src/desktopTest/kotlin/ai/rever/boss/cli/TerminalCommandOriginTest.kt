@@ -113,6 +113,9 @@ class TerminalCommandOriginTest {
         assertFalse(CLISecurityValidator.isValidCommand(""))
         // A line break would submit lines the operator was never shown.
         assertFalse(CLISecurityValidator.isValidCommand("echo hi\r\nwhoami"))
+        // Format controls can make the reviewed text render differently from what runs.
+        assertFalse(CLISecurityValidator.isValidCommand("echo safe\u202Etxt"))
+        assertFalse(CLISecurityValidator.isValidCommand("echo safe\u2028whoami"))
     }
 
     @Test
