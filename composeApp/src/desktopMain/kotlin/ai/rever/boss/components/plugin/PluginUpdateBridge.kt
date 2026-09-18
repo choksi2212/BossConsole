@@ -168,9 +168,7 @@ actual object PluginUpdateBridge {
                 mgr.updatePlugin(
                     pluginId = pluginId,
                     downloadPath = targetPath,
-                    unloadPlugin = { id ->
-                        if (deferHotReload) Result.success(Unit) else manager.uninstallPlugin(id, force = true).map { }
-                    },
+                    unloadPlugin = { id -> vettedUnload(id, targetPath, deferHotReload, manager) },
                     loadPlugin = { path ->
                         activateUpdate(pluginId, path, manager, deferHotReload)
                     },
@@ -206,6 +204,31 @@ actual object PluginUpdateBridge {
             ai.rever.boss.plugin.PluginJarReconciler
                 .reconcilePluginDir(pluginDir, pluginIds = setOf(pluginId))
         }.onFailure { logger.warn(LogCategory.SYSTEM, "Post-update plugin reconcile failed", error = it) }
+    }
+
+    /**
+     * The unload step of an admitted update, gated on the identity vet running
+     * BEFORE the force-unload (#927's prescribed placement): a refusal throws,
+     * which aborts the swap with the running plugin still loaded for the
+     * session, while the failure path discards the downloaded jar. The
+     * activateUpdate vet stays as belt-and-braces.
+     */
+    private suspend fun vettedUnload(
+        id: String,
+        targetPath: String,
+        deferHotReload: Boolean,
+        manager: DynamicPluginManager,
+    ): Result<Unit> {
+        vetUpdateJarIdentity(id, targetPath)?.let { refusal ->
+            throw IllegalStateException(
+                "Refusing the update swap: the downloaded jar is not $id ($refusal); the running plugin stays loaded.",
+            )
+        }
+        return if (deferHotReload) {
+            Result.success(Unit)
+        } else {
+            manager.uninstallPlugin(id, force = true).map { }
+        }
     }
 
     /**
