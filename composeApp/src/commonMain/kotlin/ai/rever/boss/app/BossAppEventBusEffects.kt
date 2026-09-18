@@ -1230,6 +1230,7 @@ private suspend fun loadRequestedSpace(
                     "External Space load refused: another is awaiting confirmation",
                     mapOf("path" to event.workspacePath),
                 )
+                StatusMessageManager.showMessage("Space not loaded: another Space is awaiting confirmation")
             }
         }
 
@@ -1239,6 +1240,7 @@ private suspend fun loadRequestedSpace(
                 "External Space load refused: its terminal commands cannot all be shown for confirmation",
                 mapOf("path" to event.workspacePath, "commands" to commands.size),
             )
+            StatusMessageManager.showMessage("Space not loaded: its terminal commands cannot be confirmed safely")
         }
     }
 }
