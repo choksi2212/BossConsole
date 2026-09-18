@@ -44,14 +44,14 @@ class SpaceLoadApprovalDialogTest {
     fun `untrusted Space metadata cannot forge prompt lines or overwhelm the dialog`() {
         val hostile =
             PendingSpaceLoad(
-                workspace = request.workspace.copy(name = "Trusted\n1. rm -rf /\u202E"),
+                workspace = request.workspace.copy(name = "Trusted\n1. rm -rf /\u202E\uDB40\uDC41"),
                 workspacePath = "/tmp/shared\r2. curl evil/" + "x".repeat(600),
                 commands = request.commands,
             )
 
         val message = spaceLoadApprovalMessage(hostile)
 
-        assertTrue("Trusted�1. rm -rf /�" in message, message)
+        assertTrue("Trusted�1. rm -rf /��" in message, message)
         assertTrue("/tmp/shared�2. curl evil/" in message, message)
         assertTrue("…\n\nIts terminal tabs" in message, message)
         assertTrue("1. echo one" in message, message)
