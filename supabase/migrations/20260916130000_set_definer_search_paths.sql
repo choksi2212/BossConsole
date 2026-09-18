@@ -24,9 +24,10 @@
 -- function in this repo already does.
 --
 -- The same migration closes a second axis on
--- clean_expired_passkey_challenges: it is still EXECUTE-granted to anon and
--- authenticated (20251023000014_grants.sql:232-234; the 20260908030000 sweep
--- stripped only anon/PUBLIC). Nothing invokes it - the probabilistic trigger
+-- clean_expired_passkey_challenges: its original client grants included anon
+-- and authenticated (20251023000014_grants.sql:232-234); the 20260908030000
+-- sweep already stripped PUBLIC/anon, leaving authenticated. Nothing invokes
+-- it - the probabilistic trigger
 -- trigger_cleanup_expired_challenges (20251023000007) inlines its own
 -- DELETE rather than calling the RPC, and no edge function or client code
 -- references it - so the client grants are dead weight on a SECURITY
@@ -34,13 +35,16 @@
 --
 -- Why this is safe
 -- ----------------
--- Each CREATE OR REPLACE below carries the original body verbatim with two
--- mechanical changes only: the SET search_path TO '' clause, and schema
+-- The three RPCs below carry their original bodies verbatim with two mechanical
+-- changes only: the SET search_path TO '' clause, and schema
 -- qualification of the table references (auth.users, public.passkey_challenges,
 -- pg_catalog.now). Signatures, return types, logic, owners and comments are
--- byte-identical in intent. The trigger-invoked cleanup paths run as the
--- table owner and are unaffected. The edge functions call these via the
--- service role, which keeps EXECUTE throughout.
+-- byte-identical in intent. The trigger function additionally becomes SECURITY
+-- DEFINER: passkey_challenges has no client DELETE policy, so an INVOKER trigger
+-- silently cleans nothing on client inserts. Its fixed body has no parameters
+-- or dynamic SQL and deletes only stored rows whose expires_at is already past,
+-- so the caller cannot influence which rows qualify. The out-of-repo mobile
+-- client reaches the RPCs through the service role, which keeps EXECUTE.
 --
 -- Deliberately out of scope: the secret-share and recovery-code SECURITY
 -- DEFINER functions have larger bodies with authorization logic that
@@ -175,3 +179,6 @@ END;
 $$;
 
 ALTER FUNCTION "public"."trigger_cleanup_expired_challenges"() OWNER TO "postgres";
+
+REVOKE ALL ON FUNCTION "public"."trigger_cleanup_expired_challenges"()
+    FROM PUBLIC, anon, authenticated;

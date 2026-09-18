@@ -8,46 +8,41 @@
 -- pin the closed form so a future CREATE OR REPLACE cannot silently drop
 -- the clause again, and pin the revoked client grants on the cleanup RPC.
 --
--- Review follow-ups pinned here as well: the nested-trigger chain
--- (trigger_cleanup_expired_challenges and the bounded cleanup RPC it now
--- delegates to) carries its own empty search_path, so the hardened
--- create_mobile_registration_session can no longer abort registration on
--- the 10% cleanup branch. Membership testing ('search_path=""' = any(...))
--- is used throughout rather than positional proconfig indexing.
+-- Review follow-ups pinned here as well: the self-contained nested trigger
+-- carries its own empty search_path and a qualified DELETE, so the hardened
+-- create_mobile_registration_session cannot abort registration on the 10%
+-- cleanup branch.
 
 begin;
-select plan(16);
+select plan(20);
 
--- 1-4: the hardened functions carry an empty search_path.
-select is(
-    (select proconfig from pg_proc
+-- 1-4: the hardened functions carry an empty search_path. Membership checks
+-- remain stable if another per-function GUC is added later.
+select ok(
+    (select 'search_path=""' = any(proconfig) from pg_proc
       where oid = 'public.clean_expired_passkey_challenges()'::regprocedure),
-    ARRAY['search_path=""'],
     'clean_expired_passkey_challenges pins search_path to empty'
 );
 
-select is(
-    (select proconfig from pg_proc
+select ok(
+    (select 'search_path=""' = any(proconfig) from pg_proc
       where oid = 'public.create_mobile_registration_session(text, text, text)'::regprocedure),
-    ARRAY['search_path=""'],
     'create_mobile_registration_session pins search_path to empty'
 );
 
-select is(
-    (select proconfig from pg_proc
+select ok(
+    (select 'search_path=""' = any(proconfig) from pg_proc
       where oid = 'public.get_session_status(text)'::regprocedure),
-    ARRAY['search_path=""'],
     'get_session_status pins search_path to empty'
 );
 
-select is(
-    (select proconfig from pg_proc
+select ok(
+    (select 'search_path=""' = any(proconfig) from pg_proc
       where oid = 'public.trigger_cleanup_expired_challenges()'::regprocedure),
-    ARRAY['search_path=""'],
     'trigger_cleanup_expired_challenges pins search_path to empty (nested-trigger regression closed)'
 );
 
--- 5: membership form, robust to GUC list position: every function this
+-- 5: every function this
 -- migration hardened or introduced reports the empty search_path somewhere
 -- in proconfig.
 select is(
@@ -72,6 +67,18 @@ select ok(
     'trigger_cleanup_expired_challenges is SECURITY DEFINER with a closed path'
 );
 
+select ok(
+    (select prosecdef from pg_proc
+      where oid = 'public.clean_expired_passkey_challenges()'::regprocedure) = true,
+    'clean_expired_passkey_challenges remains SECURITY DEFINER'
+);
+
+select alike(
+    pg_get_functiondef('public.trigger_cleanup_expired_challenges()'::regprocedure),
+    '%DELETE FROM public.passkey_challenges%',
+    'the trigger resolves its table without the search_path'
+);
+
 -- 7-8: the cleanup RPC executes under the closed path and retains all three
 -- lifecycle rules from its original body.
 select lives_ok(
@@ -83,6 +90,12 @@ select alike(
     pg_get_functiondef('public.clean_expired_passkey_challenges()'::regprocedure),
     '%status IN (%failed%, %expired%)%',
     'the cleanup RPC retains failed and expired session cleanup'
+);
+
+select alike(
+    pg_get_functiondef('public.clean_expired_passkey_challenges()'::regprocedure),
+    '%status = %expired%%status = %in_progress%%',
+    'the cleanup RPC retains stale in-progress session expiration'
 );
 
 -- 9-13: the dead client grants are gone; the operational role keeps access.
@@ -106,10 +119,19 @@ select ok(
     'service_role keeps EXECUTE for operational use'
 );
 
--- 14-16: the hardened registration path still executes with the closed
--- search_path. get_session_status and the cleanup RPC are the live-path
--- proofs; the registration session itself needs a confirmed auth user, so
--- its read side stands in.
+-- The hardened registration path executes through its AFTER INSERT trigger
+-- with the closed search_path.
+insert into auth.users (id, email, email_confirmed_at)
+values ('f0000000-0000-4000-8000-0000000009c1', 'passkey@definer.test', pg_catalog.now());
+
+select setseed(0);
+select lives_ok(
+    $$ select public.create_mobile_registration_session(
+           'passkey@definer.test', 'challenge-probe', 'session-probe') $$,
+    'the hardened registration RPC survives its AFTER INSERT cleanup trigger'
+);
+
+-- The grants and read path remain unchanged.
 select ok(
     not has_function_privilege('anon', 'public.get_session_status(text)', 'EXECUTE'),
     'anon still cannot execute get_session_status (revoked by 20260910000000; unchanged here)'
