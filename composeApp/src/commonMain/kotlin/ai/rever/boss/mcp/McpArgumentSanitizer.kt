@@ -95,29 +95,17 @@ object McpArgumentSanitizer {
             }
         }
 
-    /**
-     * Any HTTP auth schemes are consumed as part of the value, ahead of the quoted alternatives.
-     *
-     * Without that, `[^\s&,;}]+` stops at the first space, so `Authorization: Bearer <token>`
-     * captures the literal word `Bearer` as the value and emits `[REDACTED] <token>` - the label
-     * masked, the credential intact. [bearer] cannot recover it either, because the word it keys
-     * on has already been consumed.
-     *
-     * Three details, each a measured leak rather than a precaution:
-     * - The scheme group repeats (`*`, not `?`). A client sending `Bearer Token <token>` otherwise
-     *   has only its first scheme word absorbed, the bare class takes the second, and the
-     *   credential survives exactly as before.
-     * - The scheme group sits BEFORE the quoted alternatives, because a real header quotes the
-     *   credential and not the scheme (`Bearer 'a b'`). Leaving the quoted branches first means
-     *   they never match that shape, the bare class takes `'a`, and the rest of the credential
-     *   survives.
-     * - `Basic`, `Token` and `Negotiate` have no rule of their own anywhere, so they leaked with
-     *   nothing to fall back on.
-     */
+    /** Authorization is special: consume generic scheme words before the credential value. */
+    private val authorizationHeader =
+        Regex(
+            """(?i)authorization[ \t]*[:=][ \t]*""" +
+                """(?:[A-Za-z][A-Za-z0-9._~+/-]*[ \t]+){0,3}(?:"[^"]*"|'[^']*'|[^\s&,;}]+)""",
+        )
+
     private val sensitiveAssignment =
         Regex(
-            """(?i)(?:password|token|secret|api[_-]?key|authorization|credential)""" +
-                """\s*[:=]\s*(?:(?:Bearer|Basic|Token|Negotiate)\s+)*(?:"[^"]*"|'[^']*'|[^\s&,;}]+)""",
+            """(?i)(?:password|token|secret|api[_-]?key|credential)""" +
+                """\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s&,;}]+)""",
         )
     private val bearer = Regex("""(?i)Bearer\s+[^\s"',;}]+""")
 
@@ -125,5 +113,6 @@ object McpArgumentSanitizer {
         text
             .replace(credentialShapePattern, "[REDACTED]")
             .replace(sensitiveAssignment, "[REDACTED]")
+            .replace(authorizationHeader, "[REDACTED]")
             .replace(bearer, "Bearer [REDACTED]")
 }
