@@ -286,19 +286,26 @@ class BossMcpCommand : CliktCommand(name = "mcp") {
         }
         val outcome =
             when (ledgerAction) {
-                "verify" -> McpLedgerCli.verify(ledgerFile, json)
+                "verify" -> {
+                    McpLedgerCli.verify(ledgerFile, json)
+                }
 
-                "tail" -> McpLedgerCli.tail(ledgerFile, ledgerLines, ledgerQuery(), json)
+                "tail" -> {
+                    McpLedgerCli.tail(ledgerFile, ledgerLines, ledgerQuery(), json)
+                }
 
-                "search" -> McpLedgerCli.search(ledgerFile, ledgerLimit, ledgerQuery(), json)
+                "search" -> {
+                    McpLedgerCli.search(ledgerFile, ledgerLimit, ledgerQuery(), json)
+                }
 
-                else -> fail(
-                    "Unknown ledger action: '$ledgerAction'. Supported actions: verify, tail, search",
-                )
+                else -> {
+                    fail(
+                        "Unknown ledger action: '$ledgerAction'. Supported actions: verify, tail, search",
+                    )
+                }
             }
         when (outcome) {
             is McpLedgerOutcome.Ok -> echo(outcome.text)
-
             is McpLedgerOutcome.Failed -> fail(outcome.message)
         }
     }
@@ -323,7 +330,10 @@ class BossMcpCommand : CliktCommand(name = "mcp") {
         )
     }
 
-    private fun ledgerTime(raw: String?, endOfDay: Boolean): Long? {
+    private fun ledgerTime(
+        raw: String?,
+        endOfDay: Boolean,
+    ): Long? {
         if (raw.isNullOrBlank()) return null
         return McpLedgerCli.parseTime(raw, endOfDay)
             ?: fail("Cannot read time '$raw'. Use epoch milliseconds, YYYY-MM-DD, or ISO-8601.")

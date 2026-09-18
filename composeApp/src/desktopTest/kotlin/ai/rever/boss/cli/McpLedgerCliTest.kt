@@ -59,8 +59,7 @@ class McpLedgerCliTest {
 
     private fun okText(outcome: McpLedgerOutcome): String = assertIs<McpLedgerOutcome.Ok>(outcome).text
 
-    private fun failureMessage(outcome: McpLedgerOutcome): String =
-        assertIs<McpLedgerOutcome.Failed>(outcome).message
+    private fun failureMessage(outcome: McpLedgerOutcome): String = assertIs<McpLedgerOutcome.Failed>(outcome).message
 
     private fun toolNames(json: String): List<String> =
         Json
@@ -68,7 +67,60 @@ class McpLedgerCliTest {
             .jsonObject
             .getValue("records")
             .jsonArray
-            .map { it.jsonObject.getValue("toolName").jsonPrimitive.content }
+            .map {
+                it.jsonObject
+                    .getValue("toolName")
+                    .jsonPrimitive.content
+            }
+
+    @Test
+    fun `verify rejects a directory passed as the ledger file`() {
+        val file = createTempLedgerFile()
+
+        val message = failureMessage(McpLedgerCli.verify(file.parentFile.absolutePath, json = false))
+
+        assertTrue(message.contains("No MCP operation ledger"), message)
+    }
+
+    @Test
+    fun `verify distinguishes an empty ledger from stripped hash history`() {
+        val file = createTempLedgerFile().apply { writeText("") }
+
+        val message = failureMessage(McpLedgerCli.verify(file.absolutePath, json = false))
+
+        assertTrue(message.contains("ledger is empty"), message)
+    }
+
+    @Test
+    fun `verify identifies an all legacy ledger as an upgrade state`() {
+        val file = createTempLedgerFile()
+        file.writeText(
+            """{"id":"legacy","timestamp":1,"toolName":"tool_old","providerId":"provider",""" +
+                """"policyApplied":"ALLOW","approvalDisposition":"AUTO_ALLOWED","durationMs":1,""" +
+                """"isError":false,"sanitizedArgs":{}}""" + "\n",
+        )
+
+        val message = failureMessage(McpLedgerCli.verify(file.absolutePath, json = false))
+
+        assertTrue(message.contains("every record predates integrity tracking"), message)
+        assertTrue(message.contains("1 record(s) carry no hash"), message)
+    }
+
+    @Test
+    fun `backup only history remains readable but verification fails closed`() {
+        val file = createTempLedgerFile()
+        val ledger = McpOperationLedger(ledgerFile = file, maxFileSizeBytes = 200L, maxBackupIndex = 3)
+        repeat(12) { index -> record(ledger, "tool_$index") }
+        assertTrue(File(file.absolutePath + ".1").exists(), "a rotation should exist")
+        file.delete()
+
+        val tail = okText(McpLedgerCli.tail(file.absolutePath, 50, McpLedgerQuery(), json = true))
+        val verification = failureMessage(McpLedgerCli.verify(file.absolutePath, json = false))
+
+        assertTrue(toolNames(tail).isNotEmpty(), "surviving backup records must remain readable")
+        assertTrue(verification.contains("INCOMPLETE"), verification)
+        assertTrue(verification.contains("${file.name} missing"), verification)
+    }
 
     @Test
     fun `tail reads the durable file rather than the in-memory ring buffer`() {
@@ -82,7 +134,15 @@ class McpLedgerCliTest {
         val text = okText(McpLedgerCli.tail(file.absolutePath, 5, McpLedgerQuery(), json = true))
 
         assertEquals(listOf("tool_9", "tool_8", "tool_7", "tool_6", "tool_5"), toolNames(text))
-        assertEquals(10, Json.parseToJsonElement(text).jsonObject.getValue("matched").jsonPrimitive.content.toInt())
+        assertEquals(
+            10,
+            Json
+                .parseToJsonElement(text)
+                .jsonObject
+                .getValue("matched")
+                .jsonPrimitive.content
+                .toInt(),
+        )
     }
 
     @Test
@@ -195,11 +255,29 @@ class McpLedgerCliTest {
         record(ledger, "tool_1")
 
         val text = okText(McpLedgerCli.tail(file.absolutePath, 1, McpLedgerQuery(), json = true))
-        val entry = Json.parseToJsonElement(text).jsonObject.getValue("records").jsonArray.first().jsonObject
+        val entry =
+            Json
+                .parseToJsonElement(text)
+                .jsonObject
+                .getValue("records")
+                .jsonArray
+                .first()
+                .jsonObject
 
-        assertEquals(64, entry.getValue("hash").jsonPrimitive.content.length)
+        assertEquals(
+            64,
+            entry
+                .getValue("hash")
+                .jsonPrimitive.content.length,
+        )
         assertEquals(file.name, entry.getValue("file").jsonPrimitive.content)
-        assertEquals(1, entry.getValue("line").jsonPrimitive.content.toInt())
+        assertEquals(
+            1,
+            entry
+                .getValue("line")
+                .jsonPrimitive.content
+                .toInt(),
+        )
     }
 
     @Test

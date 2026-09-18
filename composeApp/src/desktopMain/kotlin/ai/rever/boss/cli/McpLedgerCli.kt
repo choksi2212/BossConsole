@@ -32,9 +32,13 @@ import java.util.Locale
  * `boss mcp ledger tail` into another tool cannot be handed a failure report as if it were data.
  */
 internal sealed interface McpLedgerOutcome {
-    data class Ok(val text: String) : McpLedgerOutcome
+    data class Ok(
+        val text: String,
+    ) : McpLedgerOutcome
 
-    data class Failed(val message: String) : McpLedgerOutcome
+    data class Failed(
+        val message: String,
+    ) : McpLedgerOutcome
 }
 
 /** The filters `tail` and `search` share, already parsed and validated by the caller. */
@@ -72,8 +76,11 @@ internal object McpLedgerCli {
      * An intact chain is a success; a break, and a ledger that could not be read or fully covered,
      * are both failures, because "we could not check it" must never be reported as "it is fine".
      */
-    @Suppress("TooGenericExceptionCaught") // Any read failure must be reported, never passed over.
-    fun verify(fileOverride: String?, json: Boolean): McpLedgerOutcome {
+    @Suppress("ReturnCount", "TooGenericExceptionCaught") // Any read failure must be reported, never passed over.
+    fun verify(
+        fileOverride: String?,
+        json: Boolean,
+    ): McpLedgerOutcome {
         val ledgerFile = resolveLedgerFile(fileOverride)
         val verification =
             try {
@@ -100,7 +107,12 @@ internal object McpLedgerCli {
      * it: `verify` is what reads every record.
      */
     @Suppress("TooGenericExceptionCaught") // Any read failure must be reported, never passed over.
-    fun tail(fileOverride: String?, lines: Int, query: McpLedgerQuery, json: Boolean): McpLedgerOutcome =
+    fun tail(
+        fileOverride: String?,
+        lines: Int,
+        query: McpLedgerQuery,
+        json: Boolean,
+    ): McpLedgerOutcome =
         try {
             val ledgerFile = resolveLedgerFile(fileOverride)
             val matched = filterEntries(readEntries(ledgerFile), query)
@@ -120,7 +132,12 @@ internal object McpLedgerCli {
 
     /** Matching records newest first, capped at [limit], with the total number of matches. */
     @Suppress("TooGenericExceptionCaught") // Any read failure must be reported, never passed over.
-    fun search(fileOverride: String?, limit: Int, query: McpLedgerQuery, json: Boolean): McpLedgerOutcome =
+    fun search(
+        fileOverride: String?,
+        limit: Int,
+        query: McpLedgerQuery,
+        json: Boolean,
+    ): McpLedgerOutcome =
         try {
             val ledgerFile = resolveLedgerFile(fileOverride)
             val matched = filterEntries(readEntries(ledgerFile), query)
@@ -160,7 +177,11 @@ internal object McpLedgerCli {
      * Returns null for anything it cannot read. The caller checks for a blank bound first, so a
      * null here always means "unparseable" and is reported rather than silently ignored.
      */
-    fun parseTime(raw: String?, endOfDay: Boolean): Long? {
+    @Suppress("ReturnCount") // Each accepted time representation exits as soon as it parses.
+    fun parseTime(
+        raw: String?,
+        endOfDay: Boolean,
+    ): Long? {
         val text = raw?.trim().orEmpty()
         if (text.isEmpty()) return null
         text.toLongOrNull()?.let { return it }
@@ -175,7 +196,10 @@ internal object McpLedgerCli {
         return null
     }
 
-    fun filterEntries(entries: List<McpLedgerEntry>, query: McpLedgerQuery): List<McpLedgerEntry> =
+    fun filterEntries(
+        entries: List<McpLedgerEntry>,
+        query: McpLedgerQuery,
+    ): List<McpLedgerEntry> =
         entries.filter { entry ->
             val record = entry.record
             val categoryMatches =
@@ -198,7 +222,7 @@ internal object McpLedgerCli {
     }
 
     private fun requireLedger(ledgerFile: File) {
-        if (!ledgerFile.exists()) {
+        if (!ledgerFile.isFile && McpOperationLedger(ledgerFile = ledgerFile).ledgerFilesOldestFirst().isEmpty()) {
             throw McpLedgerReadException(
                 "No MCP operation ledger at ${ledgerFile.absolutePath}. " +
                     "Records appear here after a governed MCP tool call.",
@@ -212,7 +236,10 @@ internal object McpLedgerFormat {
     /** ISO-8601 in UTC, so a timestamp in a report cannot be misread as local time. */
     fun timestamp(epochMillis: Long): String = Instant.ofEpochMilli(epochMillis).toString()
 
-    fun verification(ledgerFile: File, verification: McpLedgerVerification): String =
+    fun verification(
+        ledgerFile: File,
+        verification: McpLedgerVerification,
+    ): String =
         buildString {
             appendLine("Ledger:  ${ledgerFile.absolutePath}")
             appendLine("Files:   ${verification.files.size} (${verification.files.joinToString(", ")})")
@@ -236,16 +263,27 @@ internal object McpLedgerFormat {
                     "Chain:   INCOMPLETE - ${verification.coverageGaps.joinToString(", ")} missing, " +
                         "so the chain could not be followed across that gap",
                 )
-            } else {
-                val oldestFile = verification.oldestVerifiableFile
+            } else if (verification.verdict == "intact") {
                 appendLine(
-                    if (oldestFile == null) {
-                        "Chain:   intact - no record carries a hash yet"
-                    } else {
-                        "Chain:   intact - oldest verifiable record is " +
-                            "$oldestFile line ${verification.oldestVerifiableLine}"
-                    },
+                    "Chain:   intact - oldest verifiable record is " +
+                        "${verification.oldestVerifiableFile} line ${verification.oldestVerifiableLine}",
                 )
+            } else {
+                val explanation =
+                    when {
+                        verification.totalRecords == 0 -> {
+                            "the ledger is empty"
+                        }
+
+                        verification.chainedRecords == 0 -> {
+                            "every record predates integrity tracking; write a new record to anchor the chain"
+                        }
+
+                        else -> {
+                            "${verification.unverifiableSuffixRecords} unhashed record(s) follow hashed history"
+                        }
+                    }
+                appendLine("Chain:   UNVERIFIABLE - $explanation")
             }
             if (verification.unverifiableRecords > 0) {
                 appendLine(
@@ -261,7 +299,10 @@ internal object McpLedgerFormat {
             McpLedgerBreakReason.LINK_BROKEN -> "the record chains to a different predecessor than the one before it"
         }
 
-    fun records(entries: List<McpLedgerEntry>, totalMatches: Int): String {
+    fun records(
+        entries: List<McpLedgerEntry>,
+        totalMatches: Int,
+    ): String {
         if (entries.isEmpty()) {
             return if (totalMatches == 0) "No matching ledger records." else "No records to show."
         }
@@ -294,7 +335,10 @@ internal object McpLedgerFormat {
         return body + footer
     }
 
-    fun verificationJson(ledgerFile: File, verification: McpLedgerVerification): JsonObject {
+    fun verificationJson(
+        ledgerFile: File,
+        verification: McpLedgerVerification,
+    ): JsonObject {
         val broken: JsonElement =
             verification.firstBreak?.let { entry ->
                 buildJsonObject {
@@ -316,6 +360,7 @@ internal object McpLedgerFormat {
             put("totalRecords", verification.totalRecords)
             put("chainedRecords", verification.chainedRecords)
             put("unverifiableRecords", verification.unverifiableRecords)
+            put("unverifiableSuffixRecords", verification.unverifiableSuffixRecords)
             put("oldestVerifiableFile", verification.oldestVerifiableFile)
             put("oldestVerifiableLine", verification.oldestVerifiableLine)
             put("coverageGaps", buildJsonArray { verification.coverageGaps.forEach { add(it) } })
@@ -323,7 +368,11 @@ internal object McpLedgerFormat {
         }
     }
 
-    fun recordsJson(ledgerFile: File, entries: List<McpLedgerEntry>, totalMatches: Int): JsonObject =
+    fun recordsJson(
+        ledgerFile: File,
+        entries: List<McpLedgerEntry>,
+        totalMatches: Int,
+    ): JsonObject =
         buildJsonObject {
             put("path", ledgerFile.absolutePath.replace('\\', '/'))
             put("matched", totalMatches)
@@ -331,8 +380,7 @@ internal object McpLedgerFormat {
             put("records", buildJsonArray { entries.forEach { add(recordJson(it)) } })
         }
 
-    private fun policyOf(record: McpOperationRecord): String =
-        "${record.policyApplied}/${record.approvalDisposition}"
+    private fun policyOf(record: McpOperationRecord): String = "${record.policyApplied}/${record.approvalDisposition}"
 
     private fun recordJson(entry: McpLedgerEntry): JsonObject {
         val record = entry.record
