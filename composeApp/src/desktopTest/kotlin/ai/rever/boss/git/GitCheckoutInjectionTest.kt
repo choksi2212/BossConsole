@@ -67,6 +67,35 @@ class GitCheckoutInjectionTest {
     }
 
     @Test
+    fun aRemoteNameThatStripsToEmptyIsRefused(
+        @TempDir tmp: File,
+    ) = runTest {
+        val dir = repo(tmp)
+        File(dir, "tracked.txt").writeText("PRECIOUS UNCOMMITTED\n")
+
+        val result = provider(dir).checkout("origin/")
+
+        assertTrue(result is GitOperationResultData.Error, "expected a refusal, got $result")
+        assertEquals("PRECIOUS UNCOMMITTED\n", File(dir, "tracked.txt").readText())
+    }
+
+    @Test
+    fun aRefusalLeavesHeadAndTheWorktreeUntouched(
+        @TempDir tmp: File,
+    ) = runTest {
+        val dir = repo(tmp)
+        git(dir, "update-ref", "refs/remotes/origin/-f", "HEAD")
+        File(dir, "tracked.txt").writeText("PRECIOUS UNCOMMITTED\n")
+        val headBefore = git(dir, "rev-parse", "HEAD").trim()
+
+        val result = provider(dir).checkout("origin/-f")
+
+        assertTrue(result is GitOperationResultData.Error)
+        assertEquals(headBefore, git(dir, "rev-parse", "HEAD").trim(), "refusal must not move HEAD")
+        assertEquals("PRECIOUS UNCOMMITTED\n", File(dir, "tracked.txt").readText())
+    }
+
+    @Test
     fun aLocalBranchWhoseWholeNameIsADashFlagIsRefused(
         @TempDir tmp: File,
     ) = runTest {
