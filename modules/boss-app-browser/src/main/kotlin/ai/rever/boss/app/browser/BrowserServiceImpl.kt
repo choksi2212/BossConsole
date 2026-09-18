@@ -29,7 +29,7 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
     private val allowedSchemes = setOf("http", "https", "file", "ftp", "about")
 
     /** Redact URI userinfo before logging so `user:pass@host` never hits the log file (#640 shape). */
-    private fun redactUrlForLog(url: String): String {
+    internal fun redactUrlForLog(url: String): String {
         val schemeEnd = url.indexOf("://")
         val authorityEnd =
             if (schemeEnd < 0) -1 else url.indexOf('/', schemeEnd + 3)
@@ -57,10 +57,12 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
 
     override suspend fun navigate(request: NavigateBrowserRequest): NavigateBrowserResponse {
         val url = request.url.trim()
-        logger.info("navigate: windowId={}, url={}", request.windowId, redactUrlForLog(url))
 
-        // Scheme gate (#911): `javascript:` executes script in the page context
-        // with no approval surface; `data:` smuggles payloads.
+        // Scheme gate FIRST (#911): `javascript:` executes script in the page
+        // context with no approval surface; `data:` smuggles payloads. A
+        // refused URL must not reach ANY log line - only its scheme does -
+        // so the gate runs before the INFO log that would otherwise echo the
+        // payload verbatim (the exact leak the issue reports).
         navigationRefusal(url, request.windowId)?.let { refusal ->
             return NavigateBrowserResponse
                 .newBuilder()
@@ -68,6 +70,8 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
                 .setErrorMessage(refusal)
                 .build()
         }
+
+        logger.info("navigate: windowId={}, url={}", request.windowId, redactUrlForLog(url))
 
         val prev = windowStates[request.windowId]
         val newState =
@@ -152,7 +156,7 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
         }
 
     override suspend fun getFavicon(request: GetFaviconRequest): GetFaviconResponse {
-        logger.debug("getFavicon: url={}", request.url)
+        logger.debug("getFavicon: url={}", redactUrlForLog(request.url))
         return GetFaviconResponse
             .newBuilder()
             .setFaviconBytes(ByteString.EMPTY)

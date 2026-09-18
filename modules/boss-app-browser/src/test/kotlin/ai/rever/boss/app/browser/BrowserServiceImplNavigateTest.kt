@@ -69,6 +69,62 @@ class BrowserServiceImplNavigateTest {
         }
 
     @Test
+    fun `scheme smuggling variants are refused - uppercase, tab-injected, and schemeless`() =
+        runBlocking {
+            for (url in listOf("JAVASCRIPT:alert(1)", "jav	ascript:alert(1)", "not-a-url", "relative/path")) {
+                val req =
+                    NavigateBrowserRequest
+                        .newBuilder()
+                        .setWindowId("w1")
+                        .setUrl(url)
+                        .build()
+                val response = service.navigate(req)
+                assertFalse(response.success, "expected refusal for: $url")
+            }
+        }
+
+    @Test
+    fun `a refused navigation leaves the current window state intact`() =
+        runBlocking {
+            val ok =
+                NavigateBrowserRequest
+                    .newBuilder()
+                    .setWindowId("w1")
+                    .setUrl("https://example.com")
+                    .build()
+            service.navigate(ok)
+
+            val evil =
+                NavigateBrowserRequest
+                    .newBuilder()
+                    .setWindowId("w1")
+                    .setUrl("javascript:alert(document.domain)")
+                    .build()
+            val refusal = service.navigate(evil)
+
+            assertFalse(refusal.success)
+            val info = service.getPageInfo(Empty.getDefaultInstance())
+            assertEquals("https://example.com", info.url, "refusal must not clobber the current page")
+        }
+
+    @Test
+    fun `userinfo redaction masks the full credential including at-signs in the password`() =
+        runBlocking {
+            val req =
+                NavigateBrowserRequest
+                    .newBuilder()
+                    .setWindowId("w1")
+                    .setUrl("https://example.com")
+                    .build()
+            service.navigate(req)
+            // The redaction itself is a pure function on the service; pin the
+            // password-with-@ shape directly through the log path by asserting
+            // the redacted form of a representative URL.
+            val redacted = service.redactUrlForLog("https://admin:p@ss@w0rd@internal-host/path")
+            assertEquals("https://***@internal-host/path", redacted)
+        }
+
+    @Test
     fun `reload completes the loading cycle instead of stranding the window`() =
         runBlocking {
             val req =
