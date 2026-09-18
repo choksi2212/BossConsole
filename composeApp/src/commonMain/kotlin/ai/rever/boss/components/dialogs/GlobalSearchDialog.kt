@@ -998,7 +998,7 @@ internal fun listItemIndexFor(
  * - this walk against an already-grouped input, and `getFilteredResults` itself against an
  * interleaved one.
  */
-internal fun sectionStartsFor(byCategory: Map<SearchCategory?, List<SearchResult>>): Map<SearchCategory, Int> {
+internal fun sectionStartsFor(byCategory: Map<SearchCategory, List<SearchResult>>): Map<SearchCategory, Int> {
     val starts = LinkedHashMap<SearchCategory, Int>()
     var offset = 0
     for (category in SearchCategory.entries) {
@@ -1023,12 +1023,12 @@ private fun SearchResultsList(
     onResultClick: (SearchResult) -> Unit,
 ) {
     // Group results by category for section display
-    val groupedResults: Map<SearchCategory?, List<SearchResult>> =
+    val groupedResults: Map<SearchCategory, List<SearchResult>> =
         remember(results, showSections) {
             if (showSections) {
                 results.groupBy { it.category }
             } else {
-                mapOf(results.firstOrNull()?.category to results)
+                emptyMap()
             }
         }
 
