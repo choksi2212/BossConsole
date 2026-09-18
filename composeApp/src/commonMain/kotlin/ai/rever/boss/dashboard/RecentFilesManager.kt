@@ -9,6 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -233,19 +234,30 @@ object RecentFilesManager {
 
     /**
      * Reset manager state for hermetic unit testing and redirect [settingsFile] to [testFile].
-     * Cancels the init load (it reads [settingsFile] at execution time) and any pending
-     * debounced save, clears both flows, and re-runs the load so the state matches [testFile].
-     * When [recorded] is given it is seeded after the load, so a test can observe the startup
-     * merge against a non-empty "recorded while the load was in flight" state.
-     * Tests must call this again with the real path before finishing, so the singleton is left
-     * where the app and other tests expect it.
+     * Cancels the init load (it reads [settingsFile] at execution time) and any pending debounced
+     * save, then clears both flows. When [reload] is true the load is re-run so the state matches
+     * [testFile], and [recorded] is seeded after it, so a test can observe the startup merge
+     * against a non-empty "recorded while the load was in flight" state.
+     *
+     * Tests must point this back at [BossDirectories] before finishing, so the singleton is left
+     * where later tests expect it, and pass `reload = false` when they do. Test tasks redirect
+     * `user.home` to a fresh build directory, so this is not the developer's real file; avoiding
+     * the reload still prevents teardown from scheduling work that can outlive the test.
      */
     internal suspend fun resetForTesting(
         testFile: File,
         recorded: List<RecentFile>? = null,
+        reload: Boolean = true,
     ) {
-        initialLoadJob?.cancel()
+        initialLoadJob?.cancelAndJoin()
         initialLoadJob = null
+        // Finished before the swap, not merely cancelled, so reset cannot clear the shared list
+        // while an old save is serializing it. The destination itself is captured by scheduleSave.
+        val pendingSave =
+            synchronized(saveJobLock) {
+                saveJob.also { saveJob = null }
+            }
+        pendingSave?.cancelAndJoin()
         mutationLock.withLock {
             settingsFile = testFile
             _allFiles.value = emptyList()
@@ -253,10 +265,7 @@ object RecentFilesManager {
         // Keep refreshVisible as the only writer of the displayed flow. This orders the reset
         // against a derive already holding visibilityLock without nesting the two locks.
         refreshVisible()
-        synchronized(saveJobLock) {
-            saveJob?.cancel()
-            saveJob = null
-        }
+        if (!reload) return
         loadAsync()
         if (recorded != null) {
             mutationLock.withLock { _allFiles.value = recorded }
@@ -272,20 +281,25 @@ object RecentFilesManager {
         // Swap the debounce job under a lock: callers arrive from concurrent coroutines (an open
         // and a removal racing), and an unsynchronised cancel-then-assign can overwrite the
         // reference to a job that is still pending, leaving a timer nothing will ever cancel.
+        val target = settingsFile
         synchronized(saveJobLock) {
             saveJob?.cancel()
             saveJob =
                 scope.launch {
                     delay(SAVE_DEBOUNCE_MS)
-                    saveImmediately()
+                    saveImmediately(target)
                 }
         }
     }
 
     /**
      * Immediately save recent files to disk (bypasses debounce).
+     *
+     * @param target resolved by the caller, never read here: a debounced save that picked
+     *   its destination at execution time would follow [settingsFile] if it changed in
+     *   between, and write one test/profile's files into another's file.
      */
-    private suspend fun saveImmediately() =
+    private suspend fun saveImmediately(target: File = settingsFile) =
         withContext(Dispatchers.IO) {
             try {
                 // The recorded list, never the filtered view; see _allFiles.
@@ -295,7 +309,7 @@ object RecentFilesManager {
                 // a second writer arriving mid-write leaves JSON that fails to parse - and the
                 // load path swallows that as "no recent files", losing all twenty entries rather
                 // than one. atomicWriteText writes a unique sibling temp and moves it into place.
-                settingsFile.atomicWriteText(content)
+                target.atomicWriteText(content)
             } catch (e: Exception) {
                 recentFilesLogger.warn(LogCategory.FILE, "Error saving recent files", error = e)
             }
