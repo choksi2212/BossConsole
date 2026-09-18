@@ -1,5 +1,6 @@
 package ai.rever.boss.mcp.sandbox
 
+import ai.rever.boss.mcp.McpMutatingToolCatalog
 import ai.rever.boss.plugin.api.McpToolArgs
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -22,10 +23,10 @@ import kotlin.test.assertTrue
  *
  * The evaluator is fail-OPEN at the name level and these tests pin that as-is: unclassified
  * names default to LOW, including near-miss names (`secret_get_all`) and names under a
- * non-boss server prefix (`mcp__vault__secret_get` is not normalized). The policy gate's
- * separate mutating-catalog check, not this evaluator, is what fails closed for those. Any
- * move toward a fail-closed default must be a conscious contract change that turns these
- * pins red.
+ * non-boss server prefix (`mcp__vault__secret_get` is not normalized). Nothing else
+ * necessarily fails closed for those names: only a provider's explicit `readOnly = false`
+ * declaration does. Any move toward a fail-closed default must be a conscious contract change
+ * that turns these pins red.
  *
  * [McpRiskLevel.MEDIUM] is reserved by the enum but assigned by no rule today; that absence
  * is pinned too, because a silent future MEDIUM emission would change which tools clear the
@@ -33,32 +34,63 @@ import kotlin.test.assertTrue
  * exhaustive per-category surface.
  */
 class McpRiskEvaluatorTest {
-
     private val evaluator = DefaultMcpRiskEvaluator()
     private val emptyArgs = McpToolArgs(emptyMap(), "{}")
 
     // The documented tool surface, pinned in full per category.
     private val shellTools =
         setOf(
-            "run_command", "run_in_sidebar", "run_in_panel", "send_input",
-            "terminal_exec", "k8s_exec", "open_terminal", "terminal_open",
+            "run_command",
+            "run_in_sidebar",
+            "run_in_panel",
+            "send_input",
+            "terminal_exec",
+            "k8s_exec",
+            "open_terminal",
+            "terminal_open",
         )
-    private val secretVaultTools = setOf("secret_create", "secret_update", "secret_delete", "secret_search", "secrets_list")
+    private val secretVaultTools =
+        setOf("secret_create", "secret_update", "secret_delete", "secret_search", "secrets_list")
     private val dockerMutatingTools =
         setOf(
-            "docker_rm", "docker_stop", "docker_compose_down", "docker_compose_up",
-            "docker_build", "docker_start", "docker_restart", "docker_run", "docker_exec",
+            "docker_rm",
+            "docker_stop",
+            "docker_compose_down",
+            "docker_compose_up",
+            "docker_build",
+            "docker_start",
+            "docker_restart",
+            "docker_run",
+            "docker_exec",
         )
     private val k8sMutatingTools =
         setOf(
-            "k8s_delete", "helm_uninstall", "helm_rollback", "helm_install", "helm_upgrade",
-            "k8s_apply", "k8s_scale", "k8s_rollout_restart", "k8s_use_context", "k8s_port_forward_stop",
+            "k8s_delete",
+            "helm_uninstall",
+            "helm_rollback",
+            "helm_install",
+            "helm_upgrade",
+            "k8s_apply",
+            "k8s_scale",
+            "k8s_rollout_restart",
+            "k8s_use_context",
+            "k8s_port_forward_stop",
         )
     private val fileWriteTools = setOf("codebase_write", "file_delete", "file_write", "project_replace")
     private val readOnlyTools =
         setOf(
-            "codebase_read", "codebase_tree", "git_status", "git_log", "docker_ps", "k8s_pods",
-            "k8s_logs", "bookmarks_list", "downloads_list", "plugins_list", "list_tabs", "read_scrollback",
+            "codebase_read",
+            "codebase_tree",
+            "git_status",
+            "git_log",
+            "docker_ps",
+            "k8s_pods",
+            "k8s_logs",
+            "bookmarks_list",
+            "downloads_list",
+            "plugins_list",
+            "list_tabs",
+            "read_scrollback",
         )
 
     // Every wording the destructive heuristic pins today. Commands deliberately avoid JSON
@@ -75,10 +107,19 @@ class McpRiskEvaluatorTest {
             "chmod -r 777 /srv/app",
         )
     private val benignCommands = listOf("ls -la", "git status", "pwd", "echo hello")
+    private val knownLowRiskMutatingTools =
+        setOf(
+            "open_workspace",
+            "workspace_open",
+            "create_workspace",
+            "workspace_create",
+            "close_workspace",
+            "workspace_close",
+        )
 
-    /** Map and raw JSON stay in sync so the command is found whichever representation `McpToolArgs.string` reads. */
-    private fun commandArgs(command: String): McpToolArgs =
-        McpToolArgs(mapOf("command" to command), "{\"command\":\"$command\"}")
+    /** Map and raw JSON stay in sync for either representation read by `McpToolArgs.string`. */
+    @Suppress("MaxLineLength")
+    private fun commandArgs(command: String): McpToolArgs = McpToolArgs(mapOf("command" to command), "{\"command\":\"$command\"}")
 
     private fun cmdAliasArgs(cmd: String): McpToolArgs = McpToolArgs(mapOf("cmd" to cmd), "{\"cmd\":\"$cmd\"}")
 
@@ -125,7 +166,10 @@ class McpRiskEvaluatorTest {
         for (name in dockerMutatingTools) {
             val assessment = evaluator.evaluateRisk(name, emptyArgs)
             assertEquals(McpRiskLevel.CRITICAL, assessment.level, name)
-            assertTrue(assessment.reason.contains("Docker infrastructure mutation"), "$name reason: ${assessment.reason}")
+            assertTrue(
+                assessment.reason.contains("Docker infrastructure mutation"),
+                "$name reason: ${assessment.reason}",
+            )
         }
     }
 
@@ -174,7 +218,11 @@ class McpRiskEvaluatorTest {
     fun `benign shell commands stay at HIGH`() {
         for (name in shellTools) {
             for (command in benignCommands) {
-                assertEquals(McpRiskLevel.HIGH, evaluator.evaluateRisk(name, commandArgs(command)).level, "$name: $command")
+                assertEquals(
+                    McpRiskLevel.HIGH,
+                    evaluator.evaluateRisk(name, commandArgs(command)).level,
+                    "$name: $command",
+                )
             }
         }
     }
@@ -189,7 +237,10 @@ class McpRiskEvaluatorTest {
 
     @Test
     fun `the cmd alias is honored when the command argument is missing`() {
-        assertEquals(McpRiskLevel.CRITICAL, evaluator.evaluateRisk("run_command", cmdAliasArgs("rm -rf /tmp/cache")).level)
+        assertEquals(
+            McpRiskLevel.CRITICAL,
+            evaluator.evaluateRisk("run_command", cmdAliasArgs("rm -rf /tmp/cache")).level,
+        )
         assertEquals(McpRiskLevel.HIGH, evaluator.evaluateRisk("run_command", cmdAliasArgs("ls -la")).level)
     }
 
@@ -238,15 +289,30 @@ class McpRiskEvaluatorTest {
     @Test
     fun `near-miss names do not partially match a category`() {
         // Classification is exact-match on purpose; a fuzzy matcher would rate unreviewed
-        // names by their spelling instead of a reviewed catalog. These near-misses fall to
-        // the LOW default - the policy gate's separate McpMutatingToolCatalog check, not this
-        // evaluator, is what fails closed for mutating near-misses.
+        // names by their spelling instead of a reviewed catalog. These near-misses fall to the
+        // LOW default and are not rescued by the mutating catalog unless the provider explicitly
+        // declares `readOnly = false`.
         for (name in listOf(
-            "secret_get_all", "secret_getter", "docker_rm_force", "codebase_read_write",
-            "run_command2", "file_writer", "k8s_deletes",
+            "secret_get_all",
+            "secret_getter",
+            "docker_rm_force",
+            "codebase_read_write",
+            "run_command2",
+            "file_writer",
+            "k8s_deletes",
         )) {
             assertEquals(McpRiskLevel.LOW, evaluator.evaluateRisk(name, emptyArgs).level, name)
         }
+    }
+
+    @Test
+    fun `the mutating catalog and risk evaluator mismatch stays explicit`() {
+        val mismatches =
+            McpMutatingToolCatalog.KNOWN_MUTATING_TOOLS.filterTo(mutableSetOf()) { name ->
+                evaluator.evaluateRisk(name, emptyArgs).level < McpRiskLevel.HIGH
+            }
+
+        assertEquals(knownLowRiskMutatingTools, mismatches)
     }
 
     // ---------------------------------------------------------------------
@@ -259,7 +325,10 @@ class McpRiskEvaluatorTest {
         // boss server's form.
         assertEquals(McpRiskLevel.LOW, evaluator.evaluateRisk("mcp__boss__codebase_read", emptyArgs).level)
         assertEquals(McpRiskLevel.HIGH, evaluator.evaluateRisk("mcp__boss__run_command", commandArgs("ls -la")).level)
-        assertEquals(McpRiskLevel.CRITICAL, evaluator.evaluateRisk("mcp__boss__run_command", commandArgs("rm -rf /tmp/cache")).level)
+        assertEquals(
+            McpRiskLevel.CRITICAL,
+            evaluator.evaluateRisk("mcp__boss__run_command", commandArgs("rm -rf /tmp/cache")).level,
+        )
         assertEquals(McpRiskLevel.CRITICAL, evaluator.evaluateRisk("mcp__boss__secret_get", emptyArgs).level)
         assertEquals(McpRiskLevel.CRITICAL, evaluator.evaluateRisk("mcp__boss__docker_rm", emptyArgs).level)
 
@@ -309,7 +378,10 @@ class McpRiskEvaluatorTest {
         for ((readOnly, mutating) in pairs) {
             val readOnlyLevel = evaluator.evaluateRisk(readOnly, emptyArgs).level
             val mutatingLevel = evaluator.evaluateRisk(mutating, emptyArgs).level
-            assertTrue(readOnlyLevel < mutatingLevel, "$readOnly ($readOnlyLevel) must rate below $mutating ($mutatingLevel)")
+            assertTrue(
+                readOnlyLevel < mutatingLevel,
+                "$readOnly ($readOnlyLevel) must rate below $mutating ($mutatingLevel)",
+            )
         }
     }
 
