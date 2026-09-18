@@ -3,7 +3,6 @@ package ai.rever.boss.plugin
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -13,7 +12,7 @@ import kotlin.test.assertTrue
  * `system_plugins` row names, with no checksum or signature on the bytes,
  * so the ONLY thing keeping a rewritten row from making the host install
  * bytes from an arbitrary GitHub repo is
- * [SystemPluginManifestService.untrustedGithubRepoReason], consulted before
+ * [SystemPluginManifestService.pinnedGithubRepoOrNull], consulted before
  * any connection is opened.
  *
  * The decision tests mirror [PluginStoreSetupIpcGateTest]; the wiring test
@@ -23,7 +22,6 @@ import kotlin.test.assertTrue
  * refuse-path cannot be driven hermetically without heavy refactoring).
  */
 class SystemPluginGithubRepoPinTest {
-
     @Test
     fun `every shipped system plugin id has a pinned repo`() {
         val pinned = SystemPluginManifestService.pinnedSystemPluginRepos()
@@ -49,8 +47,9 @@ class SystemPluginGithubRepoPinTest {
     @Test
     fun `a pinned repo is trusted for its pluginId`() {
         for ((pluginId, repo) in SystemPluginManifestService.pinnedSystemPluginRepos()) {
-            assertNull(
-                SystemPluginManifestService.untrustedGithubRepoReason(pluginId, repo),
+            assertEquals(
+                repo,
+                SystemPluginManifestService.pinnedGithubRepoOrNull(pluginId, repo),
                 "expected $pluginId at $repo to be trusted",
             )
         }
@@ -58,33 +57,48 @@ class SystemPluginGithubRepoPinTest {
 
     @Test
     fun `a retargeted repo for a known plugin is refused`() {
-        val reason =
-            SystemPluginManifestService.untrustedGithubRepoReason(
+        val pinned =
+            SystemPluginManifestService.pinnedGithubRepoOrNull(
                 "ai.rever.boss.plugin.api",
                 "evil-org/boss-plugin-api",
             )
-        assertNotNull(reason)
-        assertTrue(reason.contains("pinned repo"), "reason should name the pin, got: $reason")
+        assertNull(pinned)
     }
 
     @Test
     fun `a pluginId this host does not ship is refused`() {
         // Rows appended live via table edit have no pin in this host build.
-        val reason =
-            SystemPluginManifestService.untrustedGithubRepoReason(
+        val pinned =
+            SystemPluginManifestService.pinnedGithubRepoOrNull(
                 "com.attacker.plugin",
                 "attacker/innocent-looking",
             )
-        assertNotNull(reason)
-        assertTrue(reason.contains("not shipped"), "reason should say the plugin is unknown, got: $reason")
+        assertNull(pinned)
     }
 
     @Test
-    fun `the pinned repo with different casing and padding is still trusted`() {
-        assertNull(
-            SystemPluginManifestService.untrustedGithubRepoReason(
+    fun `the pinned repo with different casing resolves to the build-owned spelling`() {
+        assertEquals(
+            "risa-labs-inc/boss-plugin-api",
+            SystemPluginManifestService.pinnedGithubRepoOrNull(
                 "ai.rever.boss.plugin.api",
-                " RISA-LABS-INC/Boss-Plugin-Api ",
+                "RISA-LABS-INC/Boss-Plugin-Api",
+            ),
+        )
+    }
+
+    @Test
+    fun `padding is refused rather than interpolated into a request URL`() {
+        assertNull(
+            SystemPluginManifestService.pinnedGithubRepoOrNull(
+                "ai.rever.boss.plugin.api",
+                " risa-labs-inc/boss-plugin-api ",
+            ),
+        )
+        assertNull(
+            SystemPluginManifestService.pinnedGithubRepoOrNull(
+                "ai.rever.boss.plugin.api",
+                "risa-labs-inc/boss-plugin-api\r\n",
             ),
         )
     }
@@ -99,8 +113,8 @@ class SystemPluginGithubRepoPinTest {
                 "risa-labs-inc/boss-plugin-api#",
             )
         for (repo in lookalikes) {
-            assertNotNull(
-                SystemPluginManifestService.untrustedGithubRepoReason("ai.rever.boss.plugin.api", repo),
+            assertNull(
+                SystemPluginManifestService.pinnedGithubRepoOrNull("ai.rever.boss.plugin.api", repo),
                 "expected lookalike '$repo' to be refused",
             )
         }
@@ -118,7 +132,7 @@ class SystemPluginGithubRepoPinTest {
             source
                 .substringAfter("private suspend fun downloadSystemPluginFromGitHub")
                 .substringBefore("Load persisted plugins using the provided")
-        val gateIdx = download.indexOf("untrustedGithubRepoReason")
+        val gateIdx = download.indexOf("pinnedGithubRepoOrNull")
         assertTrue(gateIdx >= 0, "downloadSystemPluginFromGitHub must consult the repo pin")
         val firstConnectionIdx = download.indexOf("openConnection")
         assertTrue(
