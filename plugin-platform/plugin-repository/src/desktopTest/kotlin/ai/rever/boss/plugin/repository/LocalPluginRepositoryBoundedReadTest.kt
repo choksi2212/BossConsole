@@ -152,4 +152,57 @@ class LocalPluginRepositoryBoundedReadTest {
             assertTrue(result.isFailure, "an oversize manifest must not be copied out as a download")
             assertTrue(!target.exists(), "nothing may be copied out of the hostile JAR")
         }
+
+    /**
+     * A real zip-bomb regression fixture for the repository scan: the JAR's
+     * manifest entry claims [ZIP_BOMB_INFLATED_BYTES] of uncompressed data
+     * backed by a tiny compressed payload on disk (a repeated byte deflates
+     * ~1000:1), streamed into the JAR so the fixture never holds the
+     * inflated size. The listing must skip it within the byte bounds.
+     */
+    @Test
+    fun `a zip-bomb manifest entry is skipped during listing without being inflated`() =
+        runTest {
+            val pluginDir = pluginDirectory()
+            zipBombJar(pluginDir)
+
+            val startedAt = System.nanoTime()
+            val plugins = LocalPluginRepository(pluginDir).listPlugins().getOrThrow()
+            val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
+
+            assertTrue(plugins.isEmpty(), "a zip-bomb manifest must be skipped, not listed")
+            assertTrue(
+                elapsedMs < 5_000,
+                "the scan must reject the bomb at the cap, not inflate it; took ${elapsedMs}ms",
+            )
+        }
+
+    /** Writes a plugin JAR whose manifest entry inflates to 1 GiB from a tiny on-disk payload. */
+    private fun zipBombJar(directory: File): File {
+        val jar = File(directory, "zip-bomb.jar")
+        val chunk = ByteArray(CHUNK_BYTES) { 'x'.code.toByte() }
+        JarOutputStream(jar.outputStream()).use { out ->
+            out.putNextEntry(JarEntry(PluginManifestConstants.MANIFEST_PATH))
+            var remaining = ZIP_BOMB_INFLATED_BYTES
+            while (remaining > 0) {
+                val toWrite = minOf(CHUNK_BYTES, remaining)
+                out.write(chunk, 0, toWrite)
+                remaining -= toWrite
+            }
+            out.closeEntry()
+        }
+        assertTrue(
+            jar.length() < 16 * 1024 * 1024,
+            "the zip-bomb fixture must stay tiny on disk, was ${jar.length()} bytes",
+        )
+        return jar
+    }
+
+    private companion object {
+        /** 1 GiB of inflated manifest data - comfortably over any plausible test heap. */
+        const val ZIP_BOMB_INFLATED_BYTES: Int = 1024 * 1024 * 1024
+
+        /** Chunk size used to stream the bomb into the JAR; the inflated size is never held. */
+        const val CHUNK_BYTES: Int = 1024 * 1024
+    }
 }
