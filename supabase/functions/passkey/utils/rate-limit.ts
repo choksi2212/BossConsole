@@ -67,6 +67,10 @@ function evictExpired(now: number) {
   for (const [key, window] of buckets) {
     if (window.resetAt <= now) buckets.delete(key)
   }
+  // Distinct attacker-controlled keys in one live window have nothing
+  // expired to evict. Clear at the ceiling so the map cannot grow without
+  // bound; this deliberately mirrors the organisation limiter.
+  if (buckets.size >= MAX_KEYS) buckets.clear()
 }
 
 /** Exposed for tests: drops all limiter state so suites are isolated. */
@@ -74,7 +78,11 @@ export function resetRateLimiter() {
   buckets.clear()
 }
 
-/** Best-effort client identity from the edge's forwarded headers. */
+/**
+ * Best-effort client identity from the edge's forwarded headers. XFF is
+ * caller-controlled unless the request arrived through the Supabase gateway;
+ * only there is its leftmost hop meaningful as a source address.
+ */
 export function clientKey(headers: Headers): string {
   const forwarded = headers.get("x-forwarded-for")
   if (forwarded) {

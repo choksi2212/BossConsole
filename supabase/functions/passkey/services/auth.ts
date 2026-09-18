@@ -47,8 +47,10 @@ export interface AuthenticationCredential {
  * random challenge that is never stored, so /auth/complete can never
  * verify against it, with an empty allowCredentials list so the client's
  * credential request fails locally. Used for every pre-auth failure state
- * (unknown email, no passkeys, lookup error) so they are indistinguishable
- * from each other and from a challenge that was genuinely issued.
+ * (unknown email, no passkeys, lookup error, challenge-store failure) so
+ * those failure states are indistinguishable from each other. An enrolled
+ * account remains distinguishable because legacy non-discoverable passkeys
+ * require their real credential IDs in allowCredentials.
  */
 function inertChallenge(sessionId?: string) {
   return {
@@ -66,16 +68,13 @@ function inertChallenge(sessionId?: string) {
 /**
  * Generates an authentication challenge for a user.
  *
- * Enumeration-safe by construction (BossConsole#768): the three probeable
- * states — unknown email, known email with no passkeys, and a real passkey
- * user — must not be distinguishable by status code, body shape, or timing.
- * The first two return the same inert challenge: a freshly generated random
- * value that is never stored, with an empty allowCredentials list, so a
- * prober gets a byte-for-byte plausible 200 for any email and the client's
- * navigator.credentials.get() fails locally exactly as it would for a
- * genuine no-credentials user. The real credential list is returned only
- * when a passkey row actually exists; the ceremony (not this response) is
- * what proves the caller owns it.
+ * Narrows the enumeration oracle tracked by BossConsole#768: unknown email,
+ * known email with no passkeys, lookup error and challenge-store failure all
+ * return the same inert response shape. A real passkey user still receives a
+ * non-empty allowCredentials list and is therefore distinguishable; legacy
+ * non-discoverable credentials cannot authenticate without their real IDs.
+ * Closing that residual oracle requires the discoverable-credential migration
+ * tracked separately in #768. Timing is not equalised by this function.
  */
 export const generateAuthChallenge = withErrorHandler(
   async (supabase: SupabaseClient, email: string, sessionId?: string) => {
