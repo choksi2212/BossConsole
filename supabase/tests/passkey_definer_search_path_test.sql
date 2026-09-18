@@ -23,7 +23,7 @@ select is(
     (select proconfig from pg_proc
       where oid = 'public.clean_expired_passkey_challenges()'::regprocedure),
     ARRAY['search_path=""'],
-    'clean_expired_passkey_challenges pins search_path to empty (bounded, SKIP LOCKED)'
+    'clean_expired_passkey_challenges pins search_path to empty'
 );
 
 select is(
@@ -63,27 +63,26 @@ select is(
     'all four functions carry the empty search_path (membership test, order-independent)'
 );
 
--- 6: the trigger chain no longer runs as DEFINER with a leaked empty path:
--- the delegate is INVOKER, so an empty search_path cannot turn it into a
--- definer-privileged primitive.
+-- 6: the trigger owns its cleanup so an authenticated INSERT does not need
+-- EXECUTE on the separately revoked cleanup RPC; its empty path and qualified
+-- table reference keep that elevated body closed.
 select ok(
     (select prosecdef from pg_proc
-      where oid = 'public.trigger_cleanup_expired_challenges()'::regprocedure) = false,
-    'trigger_cleanup_expired_challenges is SECURITY INVOKER'
+      where oid = 'public.trigger_cleanup_expired_challenges()'::regprocedure) = true,
+    'trigger_cleanup_expired_challenges is SECURITY DEFINER with a closed path'
 );
 
--- 7-8: the bounded cleanup RPC executes under the closed path - the
--- live-path proof for the trigger chain create_mobile_registration_session
--- depends on.
+-- 7-8: the cleanup RPC executes under the closed path and retains all three
+-- lifecycle rules from its original body.
 select lives_ok(
     $$ select public.clean_expired_passkey_challenges() $$,
-    'the bounded cleanup RPC executes with the closed search_path'
+    'the cleanup RPC executes with the closed search_path'
 );
 
-select is(
-    (select proname from pg_proc where oid = 'public.clean_expired_passkey_challenges()'::regprocedure),
-    'clean_expired_passkey_challenges',
-    'the cleanup RPC resolves (present whether or not #572 has landed)'
+select like(
+    pg_get_functiondef('public.clean_expired_passkey_challenges()'::regprocedure),
+    '%status IN (%failed%, %expired%)%',
+    'the cleanup RPC retains failed and expired session cleanup'
 );
 
 -- 9-13: the dead client grants are gone; the operational role keeps access.

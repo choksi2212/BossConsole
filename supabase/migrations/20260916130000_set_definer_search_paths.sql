@@ -157,33 +157,19 @@ ALTER FUNCTION "public"."get_session_status"("p_session_id" "text") OWNER TO "po
 -- invoking function's search_path, so the 10% cleanup branch inherited the
 -- empty path and aborted registration with relation-not-found.
 --
--- Redefine the trigger chain to be self-contained and bounded, in the same
--- shape as open #572 (20260911093022), so whichever lands second is a
--- no-op textual replace of identical semantics:
---
---   - clean_expired_passkey_challenges(): bounded cleanup, 256 rows,
---     FOR UPDATE SKIP LOCKED, SECURITY INVOKER, empty search_path. If #572
---     has not landed, this defines it; when it has, this replaces it with
---     the identical body.
---   - trigger_cleanup_expired_challenges(): SECURITY INVOKER delegate with
---     its own empty search_path, replacing the unbounded unqualified body -
---     no probabilistic gate, since the RPC itself is bounded now.
-CREATE OR REPLACE FUNCTION "public"."clean_expired_passkey_challenges"() RETURNS "void"
-    LANGUAGE "sql" SECURITY INVOKER SET search_path TO ''
-    AS $$
-  DELETE FROM public.passkey_challenges WHERE id IN (
-    SELECT id FROM public.passkey_challenges WHERE expires_at <= pg_catalog.clock_timestamp()
-    ORDER BY expires_at LIMIT 256 FOR UPDATE SKIP LOCKED
-  );
-$$;
-
-ALTER FUNCTION "public"."clean_expired_passkey_challenges"() OWNER TO "postgres";
+-- Keep the RPC above as the original three-rule SECURITY DEFINER cleanup.
+-- The trigger is self-contained instead of delegating to that RPC: client
+-- roles intentionally cannot EXECUTE the RPC, while an INSERT trigger must
+-- remain able to perform its owner-controlled cleanup.
 
 CREATE OR REPLACE FUNCTION "public"."trigger_cleanup_expired_challenges"() RETURNS "trigger"
-    LANGUAGE "plpgsql" SECURITY INVOKER SET search_path TO ''
+    LANGUAGE "plpgsql" SECURITY DEFINER SET search_path TO ''
     AS $$
 BEGIN
-  PERFORM public.clean_expired_passkey_challenges();
+  IF pg_catalog.random() < 0.1 THEN
+    DELETE FROM public.passkey_challenges
+    WHERE expires_at < pg_catalog.now();
+  END IF;
   RETURN NEW;
 END;
 $$;
