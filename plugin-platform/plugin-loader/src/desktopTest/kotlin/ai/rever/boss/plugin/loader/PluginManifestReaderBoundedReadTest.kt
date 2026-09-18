@@ -5,9 +5,10 @@ import java.util.jar.JarEntry
 import java.util.jar.JarOutputStream
 import kotlin.test.AfterTest
 import kotlin.test.Test
-import kotlin.test.assertFailsWith
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * Pins the bounded manifest read in [PluginManifestReader]: a `plugin.json`
@@ -66,9 +67,7 @@ class PluginManifestReaderBoundedReadTest {
                 PluginManifestReader.readFromJar(manifestJar(oversize))
             }
 
-        assert(error.message!!.contains("exceeds")) {
-            "message should name the size cap: ${error.message}"
-        }
+        assertTrue(error.message.orEmpty().contains("exceeds"), "message should name the size cap: ${error.message}")
     }
 
     @Test

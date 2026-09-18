@@ -92,10 +92,9 @@ object PluginManifestReader {
      * zip-bomb `plugin.json` from exhausting the heap before signature
      * verification can reject the JAR.
      *
-     * Shared with LocalPluginRepository in plugin-repository: every reader of
-     * this manifest entry must go through this bound, not only the signed
-     * load path, so an untrusted JAR cannot exhaust the heap via a scan of
-     * the local plugin directory.
+     * Shared with LocalPluginRepository in plugin-repository so both the
+     * loader and local-repository scans enforce the same bound. Other readers
+     * of this manifest entry must apply an equivalent streaming bound.
      */
     fun readManifestContent(
         jar: JarFile,
