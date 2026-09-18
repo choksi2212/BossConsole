@@ -106,7 +106,7 @@ class SearchResultListIndexTest {
     // lambda) is the list's total, so no row ever matched. These tests pin the walk itself,
     // its input contract, and the coupling to `getFilteredResults` that the contract relies on.
 
-    private fun grouped(list: List<SearchResult>): Map<SearchCategory?, List<SearchResult>> = list.groupBy { it.category }
+    private fun grouped(list: List<SearchResult>) = list.groupBy { it.category }
 
     @Test
     fun `section starts are the first occurrence of each category`() {
