@@ -975,7 +975,8 @@ internal fun listItemIndexFor(
 }
 
 /**
- * Where each section's rows begin in [results], in the order [SearchResultsList] draws them.
+ * Where each section's rows begin in the result list, in the order [SearchResultsList] draws
+ * them.
  *
  * The sectioned view marks a row selected by comparing `section start + local index` against the
  * selection's result index. The start must therefore be a value fixed BEFORE the `items` block is
@@ -987,12 +988,17 @@ internal fun listItemIndexFor(
  * view - the one double-shift actually opens - never did, and Enter picked a row the user could
  * not see marked.
  *
+ * Takes the drawing loop's own grouping, not the list, so there is a single source of truth: a
+ * category that is drawn (present in [byCategory], non-empty) always has a start, and a category
+ * that is not drawn never does. `SearchResultsList` reads the starts with `getValue`, which is
+ * safe by that construction.
+ *
  * Like [listItemIndexFor], correct only while `getFilteredResults` groups by category ordinal:
- * the walk mirrors the drawing loop (same enum order, same skips), and the two cannot drift
- * without the section-starts test noticing.
+ * the walk mirrors the drawing loop (same enum order, same skips), and the tests pin both halves
+ * - this walk against an already-grouped input, and `getFilteredResults` itself against an
+ * interleaved one.
  */
-internal fun sectionStartsFor(results: List<SearchResult>): Map<SearchCategory, Int> {
-    val byCategory = results.groupBy { it.category }
+internal fun sectionStartsFor(byCategory: Map<SearchCategory?, List<SearchResult>>): Map<SearchCategory, Int> {
     val starts = LinkedHashMap<SearchCategory, Int>()
     var offset = 0
     for (category in SearchCategory.entries) {
@@ -1017,7 +1023,7 @@ private fun SearchResultsList(
     onResultClick: (SearchResult) -> Unit,
 ) {
     // Group results by category for section display
-    val groupedResults =
+    val groupedResults: Map<SearchCategory?, List<SearchResult>> =
         remember(results, showSections) {
             if (showSections) {
                 results.groupBy { it.category }
@@ -1026,12 +1032,13 @@ private fun SearchResultsList(
             }
         }
 
-    // Each section's start in [results], fixed before the loop: the `items` lambdas below run
-    // after it, and a loop-mutated var captured by them would read the finished walk's total,
-    // never the section's start (see sectionStartsFor).
+    // Each section's start in the result list, derived from the SAME grouping the loop below draws
+    // and fixed before the loop: the `items` lambdas run after it, and a loop-mutated var
+    // captured by them would read the finished walk's total, never the section's start (see
+    // sectionStartsFor).
     val sectionStarts =
-        remember(results, showSections) {
-            if (showSections) sectionStartsFor(results) else emptyMap()
+        remember(groupedResults, showSections) {
+            if (showSections) sectionStartsFor(groupedResults) else emptyMap()
         }
 
     LazyColumn(
