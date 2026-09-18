@@ -79,7 +79,7 @@ select lives_ok(
     'the cleanup RPC executes with the closed search_path'
 );
 
-select like(
+select alike(
     pg_get_functiondef('public.clean_expired_passkey_challenges()'::regprocedure),
     '%status IN (%failed%, %expired%)%',
     'the cleanup RPC retains failed and expired session cleanup'
