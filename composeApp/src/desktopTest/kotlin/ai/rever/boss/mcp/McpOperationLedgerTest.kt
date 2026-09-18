@@ -6,6 +6,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
+import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -289,6 +290,31 @@ class McpOperationLedgerTest {
                 "Appends must leave the ledger owner-only",
             )
         }
+    }
+
+    @Test
+    fun `the first append repairs a permissive legacy ledger`() {
+        val file = createTempLedgerFile()
+        if (!posixPermissionsSupported(file)) return
+        file.writeText("")
+        Files.setPosixFilePermissions(file.toPath(), PosixFilePermissions.fromString("rw-r--r--"))
+
+        McpOperationLedger(ledgerFile = file).record(
+            toolName = "git_status",
+            providerId = "git",
+            policyApplied = McpPolicyAction.ALLOW,
+            approvalDisposition = McpApprovalDisposition.AUTO_ALLOWED,
+            durationMs = 1L,
+            isError = false,
+            rawArgs = emptyMap(),
+        )
+
+        assertEquals(
+            setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
+            Files.getPosixFilePermissions(file.toPath()),
+            "A ledger created by an older build must not remain readable by other accounts",
+        )
+        assertEquals(1, file.readLines().size)
     }
 
     @Test

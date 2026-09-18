@@ -36,7 +36,10 @@ class McpLedgerChainTest {
         tempFiles.clear()
     }
 
-    private fun record(ledger: McpOperationLedger, toolName: String) {
+    private fun record(
+        ledger: McpOperationLedger,
+        toolName: String,
+    ) {
         ledger.record(
             toolName = toolName,
             providerId = "provider",
@@ -48,8 +51,7 @@ class McpLedgerChainTest {
         )
     }
 
-    private fun verify(file: File): McpLedgerVerification =
-        McpOperationLedger(ledgerFile = file).verifyChain()
+    private fun verify(file: File): McpLedgerVerification = McpOperationLedger(ledgerFile = file).verifyChain()
 
     private fun storedRecords(file: File): List<McpOperationRecord> =
         file
@@ -57,11 +59,17 @@ class McpLedgerChainTest {
             .filter { it.isNotBlank() }
             .map { Json.decodeFromString<McpOperationRecord>(it) }
 
-    private fun rewrite(file: File, lines: List<String>) {
+    private fun rewrite(
+        file: File,
+        lines: List<String>,
+    ) {
         file.writeText(lines.joinToString("\n") + "\n")
     }
 
-    private fun backupOf(file: File, index: Int): File = File(file.parentFile, "${file.name}.$index")
+    private fun backupOf(
+        file: File,
+        index: Int,
+    ): File = File(file.parentFile, "${file.name}.$index")
 
     @Test
     fun `sha256Hex produces the published SHA-256 vectors`() {
@@ -274,6 +282,31 @@ class McpLedgerChainTest {
     }
 
     @Test
+    fun `removing hashes from a chained suffix is not reported intact`() {
+        val file = createTempLedgerFile()
+        val ledger = McpOperationLedger(ledgerFile = file)
+        repeat(3) { record(ledger, "tool_$it") }
+
+        val lines = file.readLines().toMutableList()
+        val stripped = Json.decodeFromString<McpOperationRecord>(lines.last()).copy(hash = null, parentHash = null)
+        lines[lines.lastIndex] = Json.encodeToString(stripped)
+        rewrite(file, lines)
+
+        val verification = verify(file)
+        assertEquals("unverifiable", verification.verdict)
+        assertEquals(1, verification.unverifiableSuffixRecords)
+    }
+
+    @Test
+    fun `an empty ledger is not reported intact`() {
+        val file = createTempLedgerFile().apply { writeText("") }
+
+        val verification = verify(file)
+        assertEquals("unverifiable", verification.verdict)
+        assertEquals(0, verification.chainedRecords)
+    }
+
+    @Test
     fun `a malformed line fails verification instead of being skipped`() {
         val file = createTempLedgerFile()
         val ledger = McpOperationLedger(ledgerFile = file)
@@ -306,5 +339,20 @@ class McpLedgerChainTest {
         assertEquals(listOf("${file.name}.2"), verification.coverageGaps)
         assertNull(verification.firstBreak)
         assertTrue(verification.chainedRecords > 0, "records after the gap must still be checked")
+    }
+
+    @Test
+    fun `a missing active ledger is reported as incomplete when backups survive`() {
+        val file = createTempLedgerFile()
+        val ledger = McpOperationLedger(ledgerFile = file, maxFileSizeBytes = 200L, maxBackupIndex = 3)
+        repeat(12) { record(ledger, "tool_$it") }
+        assertTrue(backupOf(file, 1).exists(), "a rotation should exist")
+        file.delete()
+
+        val verification = verify(file)
+
+        assertEquals("incomplete", verification.verdict)
+        assertEquals(listOf(file.name), verification.coverageGaps)
+        assertTrue(verification.totalRecords > 0, "surviving backups must still be read")
     }
 }
