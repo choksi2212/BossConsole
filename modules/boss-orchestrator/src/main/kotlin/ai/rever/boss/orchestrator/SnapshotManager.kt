@@ -81,7 +81,11 @@ class SnapshotManager(
         return id
     }
 
-    /** Return the bytes of the most recent snapshot, or null if none exist. */
+    /**
+     * Return the bytes of the most recent snapshot, or null if none exist.
+     *
+     * @throws IllegalArgumentException if the process ID is invalid or its directory escapes the snapshot root.
+     */
     fun loadLatest(processId: String): ByteArray? {
         val dir = snapshotDir(processId, create = false) ?: return null
         return dir
@@ -90,7 +94,11 @@ class SnapshotManager(
             ?.readBytes()
     }
 
-    /** List all snapshots for [processId], most recent first. */
+    /**
+     * List all snapshots for [processId], most recent first.
+     *
+     * @throws IllegalArgumentException if the process ID is invalid or its directory escapes the snapshot root.
+     */
     fun listSnapshots(processId: String): List<SnapshotInfo> {
         val dir = snapshotDir(processId, create = false) ?: return emptyList()
         return dir
@@ -112,7 +120,11 @@ class SnapshotManager(
             ?: emptyList()
     }
 
-    /** Delete all but the [keepLast] most recent snapshots for [processId]. */
+    /**
+     * Delete all but the [keepLast] most recent snapshots for [processId].
+     *
+     * @throws IllegalArgumentException if the process ID is invalid or its directory escapes the snapshot root.
+     */
     fun cleanup(
         processId: String,
         keepLast: Int = 5,

@@ -37,6 +37,37 @@ class McpOperationLedgerTest {
     }
 
     @Test
+    fun `concurrent telemetry order matches durable chain order`() {
+        val file = createTempLedgerFile()
+        val ledger = McpOperationLedger(ledgerFile = file, ringBufferCapacity = 100)
+        val workers =
+            java.util.concurrent.Executors
+                .newFixedThreadPool(8)
+        try {
+            val writes =
+                (1..80).map { index ->
+                    workers.submit {
+                        ledger.record(
+                            toolName = "tool_$index",
+                            providerId = "test",
+                            policyApplied = McpPolicyAction.ALLOW,
+                            approvalDisposition = McpApprovalDisposition.AUTO_ALLOWED,
+                            durationMs = 1L,
+                            isError = false,
+                            rawArgs = emptyMap(),
+                        )
+                    }
+                }
+            writes.forEach { it.get(10, java.util.concurrent.TimeUnit.SECONDS) }
+            val durable = file.readLines().map { Json.decodeFromString<McpOperationRecord>(it).id }
+            assertEquals(durable.reversed(), ledger.recentOperations.value.map { it.id })
+            assertEquals(80L, ledger.totalCalls.value)
+        } finally {
+            workers.shutdownNow()
+        }
+    }
+
+    @Test
     fun `record writes valid JSONL line and updates ring buffer`() {
         val file = createTempLedgerFile()
         val ledger = McpOperationLedger(ledgerFile = file, ringBufferCapacity = 10)
