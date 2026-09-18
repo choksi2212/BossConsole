@@ -78,3 +78,12 @@ Deno.test("rateLimit - an attacker spraying distinct keys is bounded by MAX_KEYS
   // And the same fresh key is still within its own budget on the next call.
   assertEquals(rateLimit("authchallenge:11.11.11.11", 60, 3600, base + 20_001).allowed, true)
 })
+
+Deno.test("clientKey - connecting identity wins over a spoofed forwarded prefix", () => {
+  assertEquals(clientKey(new Headers({
+    "cf-connecting-ip": "5.5.5.5", "x-real-ip": "6.6.6.6", "x-forwarded-for": "spoofed, 7.7.7.7",
+  })), "5.5.5.5")
+  assertEquals(clientKey(new Headers({
+    "x-real-ip": "6.6.6.6", "x-forwarded-for": "spoofed, 7.7.7.7",
+  })), "6.6.6.6")
+})

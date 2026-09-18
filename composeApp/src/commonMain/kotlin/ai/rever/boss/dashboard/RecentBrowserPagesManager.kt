@@ -75,6 +75,7 @@ private data class BrowserHistoryEntry(
  * Thread-safe: All file I/O operations run on Dispatchers.IO.
  * Uses StateFlow for reactive UI updates.
  */
+@Suppress("TooManyFunctions") // Visit, dismissal, persistence, and shutdown share one manager state.
 object RecentBrowserPagesManager {
     private val logger = BossLogger.forComponent("RecentBrowserPagesManager")
     private const val MAX_PAGES = 30
@@ -348,6 +349,15 @@ object RecentBrowserPagesManager {
                     saveImmediately(target)
                 }
         }
+    }
+
+    /** Flush a scheduled page save before shutdown, including one already entering its write. */
+    suspend fun flushPendingSaves() {
+        val pending = synchronized(saveJobLock) { saveJob.also { saveJob = null } }
+        if (pending == null || pending.isCompleted) return
+        pending.cancel()
+        pending.join()
+        saveImmediately()
     }
 
     /**

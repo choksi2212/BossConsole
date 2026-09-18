@@ -2294,3 +2294,10 @@ inspects at most 4096 characters; full XML parsing still enforces its own limits
 Dev reload resolves staged JARs with manifest identity validation, matching startup.
 The scaffold wrapper source/hash is recorded in `resources/launcher/README.md`;
 update it with the pinned distribution checksum and scaffold validation together.
+
+### Dev #935 persistence and audit contracts
+
+- MCP ledger hashes detect retained-record edits and broken adjacency, not authenticity: no secret key is used, and complete rewrites or tail truncation are not detectable. Ledger files are owner-only. `boss mcp ledger verify|tail|search` reads local disk; it is not an ungated plugin MCP read surface.
+- `atomicWriteText` pins POSIX files to 0600. The separate `writeModeFile` writer for `env_vars` preserves existing permissions; that rule does not apply to all state writers.
+- Chromium's constructed GitHub backup URL uses the catalog checksum. Primary and backup must contain identical artifact bytes; checksum mismatch fails closed. See `docs/dev-935-release-checklist.md` for deployment checks.
+- Browser print is a direct-native exception to the usual AWT ownership rule after macOS manual verification. Pending AWT cancellation is best-effort, not a cross-thread exactly-once guarantee; do not copy this pattern for destructive actions.
