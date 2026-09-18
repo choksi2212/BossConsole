@@ -46,7 +46,9 @@ class RecentFilesFlushOnExitTest {
     fun setUp() {
         runBlocking {
             recentFilesFile =
-                Files.createTempDirectory("recent-files-flush-test-").toFile()
+                Files
+                    .createTempDirectory("recent-files-flush-test-")
+                    .toFile()
                     .resolve("recent-files.json")
             RecentFilesManager.resetForTesting(recentFilesFile)
         }
