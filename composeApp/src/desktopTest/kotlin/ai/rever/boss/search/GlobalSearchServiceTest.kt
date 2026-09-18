@@ -60,8 +60,9 @@ class GlobalSearchServiceTest {
      * exactly one point and the ranking is strictly by name length. That determinism is what
      * lets the cap tests say WHICH rows survive, not merely how many.
      */
-    private fun twentyMatchFiles(): List<IndexedFile> =
-        (0..19).map { n -> indexedFile(name = "match" + "x".repeat(n) + ".kt") }
+    private fun twentyMatchFiles(): List<IndexedFile> = (0..19).map { n ->
+        indexedFile(name = "match" + "x".repeat(n) + ".kt")
+    }
 
     // --- ranking -------------------------------------------------------------------------------
 
