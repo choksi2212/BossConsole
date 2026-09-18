@@ -352,4 +352,37 @@ class ChromiumAutoDownloaderTest {
             assertFalse(backup.exists())
             assertFalse(File(root, "boss-chromium.new").exists())
         }
+
+    // ---- startup recovery for an interrupted direct-path swap (#910 follow-up) ----
+
+    @Test
+    fun `promotePendingInstall restores the engine from an interrupted-swap backup when the target is missing`() {
+        // The crash window: the direct-path swap moved target aside to the
+        // .old backup, then the process died before promoting the .new dir.
+        makeExistingTarget("9.1.2")
+        target.renameTo(backup)
+        assertFalse(target.exists())
+
+        promote()
+
+        // The only surviving engine is back at its home path, contents intact.
+        assertEquals("old-engine", File(target, "payload.bin").readText())
+        assertEquals("9.1.2", File(target, "version.txt").readText())
+        assertFalse(backup.exists())
+    }
+
+    @Test
+    fun `promotePendingInstall reclaims a crashed extraction sibling before staging work`() {
+        makeExistingTarget("9.1.2")
+        val crashedExtract = File(root, "boss-chromium.new").apply { mkdirs() }
+        File(crashedExtract, "executable.name").writeText("STALE")
+        makeCompleteStaging("9.2.0")
+
+        promote()
+
+        // The stale .new sibling never leaks into the next launch; the
+        // staged install still promotes on top of the live target.
+        assertFalse(crashedExtract.exists())
+        assertEquals("9.2.0", File(target, "version.txt").readText())
+    }
 }

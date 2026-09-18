@@ -118,11 +118,47 @@ object ChromiumAutoDownloader {
     }
 
     // Directory params are injectable for tests.
+
+    /**
+     * Startup recovery for an interrupted direct-path swap (#910 follow-up):
+     * a hard kill between "move target aside" and "promote .new" leaves no
+     * engine at target while the only copy sits in the .old backup, and a
+     * crashed extraction leaves a .new sibling nothing else ever reclaims.
+     * Both are handled here, BEFORE anything consults isChromiumInstalled or
+     * starts a re-download.
+     */
+    private fun recoverInterruptedEngineSwap(
+        target: File,
+        backup: File,
+    ) {
+        if (!target.exists() && backup.exists()) {
+            if (backup.renameTo(target)) {
+                logger.info(
+                    LogCategory.BROWSER,
+                    "Restored the engine from the interrupted-swap backup",
+                    mapOf("backup" to backup.toString()),
+                )
+            } else {
+                logger.warn(
+                    LogCategory.BROWSER,
+                    "Found an interrupted-swap backup but could not restore it",
+                    mapOf("backup" to backup.toString()),
+                )
+            }
+        }
+        val interruptedExtract = File(target.parentFile, target.name + ".new")
+        if (interruptedExtract.exists()) {
+            interruptedExtract.deleteRecursively()
+            logger.info(LogCategory.BROWSER, "Discarded interrupted engine extraction sibling")
+        }
+    }
+
     internal fun promotePendingInstall(
         pending: File,
         target: File,
         backup: File,
     ) {
+        recoverInterruptedEngineSwap(target, backup)
         if (!pending.exists()) return
 
         try {
