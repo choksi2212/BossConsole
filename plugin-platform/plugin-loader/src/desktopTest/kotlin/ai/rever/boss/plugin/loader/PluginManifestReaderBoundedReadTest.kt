@@ -220,7 +220,10 @@ class PluginManifestReaderBoundedReadTest {
         private fun demand(requested: Int) {
             val total = served + requested
             if (total > maxBytes) {
-                fail("unbounded read: the reader pulled $total bytes in total, more than the $maxBytes a bounded reader may ever request")
+                fail(
+                    "unbounded read: the reader pulled $total bytes in total, " +
+                        "more than the $maxBytes a bounded reader may ever request",
+                )
             }
             served = total
         }

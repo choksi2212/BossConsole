@@ -25,6 +25,7 @@ import java.util.jar.JarFile
  * JDK's JarVerifier reads every META-INF signature entry (*.SF, *.DSA,
  * *.RSA, *.EC) fully into memory, unbounded, ahead of this bounded read.
  */
+@Suppress("TooManyFunctions") // 11 focused read/validate steps on one fail-closed path
 object PluginManifestReader {
     private val logger = BossLogger.forComponent("PluginManifestReader")
 
