@@ -96,18 +96,20 @@ class McpOperationLedger(
         // 1. Persist first, because persistence is what assigns the chain hash. What comes back is
         //    the record on disk, or the draft when there is no ledger file or the write failed, so
         //    the in-memory copy below mirrors exactly what was written rather than a pre-hash one.
-        val record = persistRecord(draft)
+        return synchronized(writeLock) {
+            val record = persistRecord(draft)
 
-        // 2. Update in-memory telemetry ring buffer
-        _recentOperations.update { current ->
-            (listOf(record) + current).take(ringBufferCapacity)
-        }
-        _totalCalls.update { it + 1 }
-        if (isError) {
-            _totalErrors.update { it + 1 }
-        }
+            // 2. Update in-memory telemetry ring buffer
+            _recentOperations.update { current ->
+                (listOf(record) + current).take(ringBufferCapacity)
+            }
+            _totalCalls.update { it + 1 }
+            if (isError) {
+                _totalErrors.update { it + 1 }
+            }
 
-        return record
+            record
+        }
     }
 
     /**
