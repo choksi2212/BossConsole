@@ -30,10 +30,8 @@ class RecentBrowserPagesFlushTest {
                 }
                 assertTrue(file.readText().contains(url))
             } finally {
-                manager.removePage(url)
-                withTimeout(2_000) {
-                    while (file.exists() && file.readText().contains(url)) yield()
-                }
+                // Await the writer without holding a Windows file handle open.
+                manager.removePage(url).join()
                 manager.flushPendingSaves()
                 manager.settingsFile = original
                 dir.deleteRecursively()
