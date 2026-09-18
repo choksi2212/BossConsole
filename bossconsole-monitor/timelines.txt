@@ -1,0 +1,88 @@
+=== ISSUE 762 timeline ===
+cross-referenced	765	-	fix(auth): serialize user_data.json transactions and persist atomically	choksi2212
+cross-referenced	795	-	Serialize and atomically persist recent files and user data (#764, #762)	aryanbajaj868
+referenced	-	-		kshivang
+cross-referenced	834	-	fix(auth): fence user_data.json saves against a logout that interleaves the lock	choksi2212
+referenced	-	-		kshivang
+referenced	-	-		choksi2212
+referenced	-	-		choksi2212
+referenced	-	-		kshivang
+=== ISSUE 764 timeline ===
+cross-referenced	766	-	fix(dashboard): serialize recent-files mutations and persist atomically	choksi2212
+cross-referenced	795	-	Serialize and atomically persist recent files and user data (#764, #762)	aryanbajaj868
+referenced	-	-		kshivang
+cross-referenced	834	-	fix(auth): fence user_data.json saves against a logout that interleaves the lock	choksi2212
+referenced	-	-		kshivang
+referenced	-	-		choksi2212
+referenced	-	-		choksi2212
+referenced	-	-		kshivang
+=== ISSUE 768 timeline ===
+cross-referenced	769	-	fix(security): make /auth/challenge enumeration-safe and rate-limited	choksi2212
+cross-referenced	924	-	Security: the public mobile auth pages allow unauthenticated session_id rebinding - the victim's completed passkey ceremony and token handoff redirect to the attacker's session	choksi2212
+cross-referenced	935	-	Integrate dev: security hardening, reliable persistence, and Home Favorites	claude[bot]
+=== ISSUE 770 timeline ===
+cross-referenced	771	-	fix(security): stop edge functions returning raw exception text to callers	choksi2212
+cross-referenced	901	-	fix(supabase): stop leaking raw error details from edge functions	Mihir-Rabari
+=== ISSUE 797 timeline ===
+cross-referenced	798	-	fix(security): verify the GitHub fallback update download against the catalog hash	choksi2212
+cross-referenced	803	-	fix(updater): verify the GitHub fallback download against the catalog sha256 (#797)	Mihir-Rabari
+cross-referenced	812	-	fix(security): verify SHA-256 checksum on GitHub fallback update downloads (#797)	KhushiTrivediii
+referenced	-	-		choksi2212
+referenced	-	-		kshivang
+referenced	-	-		kshivang
+cross-referenced	828	-	fix(updater): verify the chromium engine fallback download against the catalog sha256	choksi2212
+referenced	-	-		kshivang
+=== ISSUE 804 timeline ===
+cross-referenced	806	-	fix(security): classify MCP tools fail-closed from the provider's own readOnly declaration	choksi2212
+cross-referenced	808	-	fix(mcp): weigh the provider's readOnly declaration in the mutating gate	Mihir-Rabari
+cross-referenced	811	-	fix(security): enforce readOnly declaration in MCP policy gate classification (#804)	KhushiTrivediii
+referenced	-	-		Mihir-Rabari
+referenced	-	-		kshivang
+referenced	-	-		Mihir-Rabari
+referenced	-	-		kshivang
+referenced	-	-		Mihir-Rabari
+=== ISSUE 813 timeline ===
+cross-referenced	814	-	fix(git): serialize refresh against concurrent callers and project close	choksi2212
+cross-referenced	878	-	fix(git): serialize refresh and clear using refreshMutex in DesktopGitService (#813)	KhushiTrivediii
+cross-referenced	882	-	fix(git): epoch-check the global project path against cross-window switches	choksi2212
+cross-referenced	892	-	fix(git): epoch-check the global project path against cross-window switches	choksi2212
+referenced	-	-		KhushiTrivediii
+cross-referenced	919	-	Security: DesktopGitService.checkout() runs the remote-prefix-stripped name unchecked - remote branch 'origin/-f' becomes 'git checkout -f --' and silently discards all uncommitted work	choksi2212
+=== ISSUE 823 timeline ===
+cross-referenced	829	-	Security/namespace session tool trust	Aditya8369
+cross-referenced	830	-	fix(security): scope MCP session trust to the provider the operator approved	choksi2212
+cross-referenced	815	-	fix(mcp): scope session trust to the provider the operator approved	choksi2212
+cross-referenced	895	-	Security: MCP standing ALLOWs skip argument-driven CRITICAL re-asks - one Always-Allow executes commands the risk evaluator rates CRITICAL	Mihir-Rabari
+cross-referenced	903	-	fix(security): escalate CRITICAL risk on ALLOW paths so standing grants re-ask	KhushiTrivediii
+cross-referenced	926	-	Security: the workspace MCP file tools write reserved store files by name (Space_Themes.json, last-session-set), and plugin provider ids pass unscoped through registration	choksi2212
+=== ISSUE 885 timeline ===
+cross-referenced	889	-	fix(security): confine editor-service saves to the user's home, resolve symlinks, and save atomically	choksi2212
+cross-referenced	891	-	fix(security): confine editor-service saves to the user's home, resolve symlinks, and save atomically	choksi2212
+cross-referenced	904	-	fix(security): implement atomic save and canonical path validation in EditorServiceImpl (#885)	KhushiTrivediii
+referenced	-	-		KhushiTrivediii
+referenced	-	-		KhushiTrivediii
+=== ISSUE 910 timeline ===
+cross-referenced	929	-	fix(security): atomic engine extraction swap and fail-fast macOS ditto in ChromiumAutoDownloader (#910)	KhushiTrivediii
+=== ISSUE 911 timeline ===
+cross-referenced	916	-	fix(security): refuse prohibited schemes, redact URL credentials in logs, and fix reload state in BrowserServiceImpl (#911)	KhushiTrivediii
+referenced	-	-		KhushiTrivediii
+cross-referenced	931	-	fix(browser): gate javascript: and unknown-scheme URLs before execution or logging	Mihir-Rabari
+cross-referenced	932	-	fix(browser) : refuse javascript:/data: URLs in BrowserServiceImpl.navigate (#911)	abhinavlenka
+=== ISSUE 912 timeline ===
+=== ISSUE 914 timeline ===
+=== ISSUE 915 timeline ===
+=== ISSUE 919 timeline ===
+cross-referenced	930	-	fix(git): re-validate the remote-prefix-stripped checkout name before running git	Mihir-Rabari
+cross-referenced	934	-	fix(security): re-validate stripped branch name in DesktopGitService.checkout (#919)	KhushiTrivediii
+=== ISSUE 920 timeline ===
+=== ISSUE 921 timeline ===
+=== ISSUE 922 timeline ===
+cross-referenced	936	-	fix(updater): install only from the volume hdiutil reports, never a guessed glob	Mihir-Rabari
+=== ISSUE 923 timeline ===
+=== ISSUE 924 timeline ===
+=== ISSUE 925 timeline ===
+cross-referenced	937	-	fix(settings): persist keymap, zoom and workspace settings owner-only	Mihir-Rabari
+cross-referenced	938	-	fix(settings): atomic writes and corrupt-file recovery for keymap, zoom and workspace settings	abhinavlenka
+=== ISSUE 926 timeline ===
+=== ISSUE 927 timeline ===
+=== ISSUE 928 timeline ===
