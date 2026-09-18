@@ -1,5 +1,6 @@
 package ai.rever.boss.app
 
+import ai.rever.boss.cli.isSupplementaryFormatCharacter
 import ai.rever.boss.components.dialogs.ConfirmationDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -64,9 +65,20 @@ private const val SPACE_PROMPT_LABEL_MAX_LENGTH = 512
 /** Keeps untrusted Space metadata from forging or overwhelming the command confirmation copy. */
 private fun String.safeSpacePromptLabel(): String {
     val visible =
-        map { character ->
-            if (character.category in HIDDEN_PROMPT_CHARACTERS) '\uFFFD' else character
-        }.joinToString("")
+        buildString {
+            var index = 0
+            while (index < this@safeSpacePromptLabel.length) {
+                val character = this@safeSpacePromptLabel[index]
+                val low = this@safeSpacePromptLabel.getOrNull(index + 1)
+                if (low != null && isSupplementaryFormatCharacter(character, low)) {
+                    append('\uFFFD')
+                    index += 2
+                } else {
+                    append(if (character.category in HIDDEN_PROMPT_CHARACTERS) '\uFFFD' else character)
+                    index++
+                }
+            }
+        }
     return if (visible.length <= SPACE_PROMPT_LABEL_MAX_LENGTH) {
         visible
     } else {

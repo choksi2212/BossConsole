@@ -162,13 +162,37 @@ object CLISecurityValidator {
     fun isValidCommand(command: String): Boolean =
         command.isNotBlank() &&
             command.length <= MAX_COMMAND_LENGTH &&
-            command.none { it.category in HIDDEN_COMMAND_CHARACTERS }
+            !command.hasHiddenDisplayCharacter()
+}
 
-    private val HIDDEN_COMMAND_CHARACTERS =
-        setOf(
-            CharCategory.CONTROL,
-            CharCategory.FORMAT,
-            CharCategory.LINE_SEPARATOR,
-            CharCategory.PARAGRAPH_SEPARATOR,
-        )
+private val HIDDEN_DISPLAY_CHARACTERS =
+    setOf(
+        CharCategory.CONTROL,
+        CharCategory.FORMAT,
+        CharCategory.LINE_SEPARATOR,
+        CharCategory.PARAGRAPH_SEPARATOR,
+    )
+
+/** True for characters that can make reviewed one-line text differ from its underlying value. */
+internal fun String.hasHiddenDisplayCharacter(): Boolean {
+    var index = 0
+    var hidden = false
+    while (index < length && !hidden) {
+        val character = this[index]
+        hidden =
+            character.category in HIDDEN_DISPLAY_CHARACTERS ||
+            (index + 1 < length && isSupplementaryFormatCharacter(character, this[index + 1]))
+        index += if (character.isHighSurrogate() && index + 1 < length && this[index + 1].isLowSurrogate()) 2 else 1
+    }
+    return hidden
+}
+
+/** Supplementary-plane `Cf` ranges used for musical formatting and invisible Unicode tags. */
+internal fun isSupplementaryFormatCharacter(
+    high: Char,
+    low: Char,
+): Boolean {
+    if (!high.isHighSurrogate() || !low.isLowSurrogate()) return false
+    val codePoint = 0x10000 + ((high.code - 0xD800) shl 10) + (low.code - 0xDC00)
+    return codePoint in 0x1D173..0x1D17A || codePoint == 0xE0001 || codePoint in 0xE0020..0xE007F
 }
