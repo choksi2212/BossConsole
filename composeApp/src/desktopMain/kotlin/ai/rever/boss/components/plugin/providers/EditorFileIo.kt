@@ -1,8 +1,8 @@
 package ai.rever.boss.components.plugin.providers
 
+import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
-import ai.rever.boss.utils.atomicWriteText
 import java.io.File
 
 private val fileIoLogger = BossLogger.forComponent("EditorFileIo")
