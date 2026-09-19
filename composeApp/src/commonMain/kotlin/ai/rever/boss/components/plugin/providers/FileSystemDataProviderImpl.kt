@@ -50,9 +50,7 @@ internal fun deleteUserPath(
                 Files.deleteIfExists(target)
             }
 
-        if (!deleted) {
-            throw IllegalStateException("Failed to delete (file may not exist or is locked): $file")
-        }
+        check(deleted) { "Failed to delete (file may not exist or is locked): $file" }
     }
 
 /**
@@ -202,14 +200,13 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
         }
     }
 
-    override suspend fun delete(path: String): Result<Unit> {
-        return kotlinx.coroutines.withContext(Dispatchers.IO) {
+    override suspend fun delete(path: String): Result<Unit> =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
             deleteUserPath(
                 file = File(path),
                 homeDirectory = File(System.getProperty("user.home")),
             )
         }
-    }
 
     override suspend fun rename(
         path: String,
