@@ -165,10 +165,8 @@ class EditorServiceImplTest {
             // child path's open() fails because the intermediate directory was never created.
             // On POSIX the open fails with ENOENT; on Windows it fails with the equivalent.
             // Either way the implementation surfaces the error instead of swallowing it.
-            val missingParent = File(
-                Files.createTempDirectory("boss-savefile-missing-").toFile(),
-                "does/not/exist",
-            )
+            val tempDir = Files.createTempDirectory("boss-savefile-missing-").toFile()
+            val missingParent = File(tempDir, "does/not/exist")
             val target = File(missingParent, "out.txt")
             try {
                 val response =
