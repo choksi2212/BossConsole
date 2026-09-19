@@ -2,6 +2,7 @@ package ai.rever.boss.cli
 
 import ai.rever.boss.plugin.launchpad.DevPluginArtifacts
 import ai.rever.boss.plugin.launchpad.PluginManifest
+import ai.rever.boss.plugin.launchpad.PluginMcpToolDeclaration
 import ai.rever.boss.plugin.launchpad.PluginPermission
 import ai.rever.boss.plugin.launchpad.PluginScaffolder
 import ai.rever.boss.plugin.launchpad.PluginValidator
@@ -631,64 +632,92 @@ private fun parseManifestText(
  */
 internal fun formatHumanInspectReport(report: InspectReport.Ok): String =
     buildString {
-        val m = report.manifest
-        appendLine("Plugin: ${m.resolvedDisplayName().ifBlank { m.resolvedPluginId() }}")
-        appendLine("  ID:          ${m.resolvedPluginId()}")
-        if (m.resolvedDisplayName().isNotBlank() && m.resolvedDisplayName() != m.resolvedPluginId()) {
-            appendLine("  Display:     ${m.resolvedDisplayName()}")
-        }
-        appendLine("  Version:     ${m.version}")
-        appendLine("  API:         ${m.resolvedApiVersion()}")
-        appendLine("  Entrypoint:  ${m.resolvedMainClass()}")
-        if (m.author.isNotBlank()) appendLine("  Author:      ${m.author}")
-        if (m.license.isNotBlank()) appendLine("  License:     ${m.license}")
-        if (m.description.isNotBlank()) {
-            appendLine("  Description:")
-            appendLine(m.description.prependIndent("    "))
-        }
-        if (m.systemPlugin) appendLine("  [flag] systemPlugin: true - read-only host-installed plugin")
-        if (!m.canUnload) appendLine("  [flag] canUnload: false - pinned in memory once loaded")
-
-        appendLine()
-        appendLine("Permissions (${m.permissions.size}):")
-        if (m.permissions.isEmpty()) {
-            appendLine("  (none)")
-        } else {
-            for (permission in m.permissions) {
-                val known = PluginPermission.fromIdentifier(permission)
-                val label = if (known != null) permission else "$permission (unrecognised)"
-                appendLine("  - $label")
-            }
-        }
-
-        appendLine()
-        appendLine("MCP Tools (${m.mcpTools.size}):")
-        if (m.mcpTools.isEmpty()) {
-            appendLine("  (none)")
-        } else {
-            for (tool in m.mcpTools) {
-                val adminTag = if (tool.adminOnly) " [admin]" else ""
-                appendLine("  - ${tool.name}$adminTag")
-                if (tool.description.isNotBlank()) {
-                    appendLine(tool.description.prependIndent("    "))
-                }
-            }
-        }
-
-        appendLine()
-        appendLine("Source:")
-        when (val source = report.source) {
-            is InspectSource.Directory -> {
-                appendLine("  Directory:   ${source.rootPath}")
-                appendLine("  Manifest:    ${source.manifestPath}")
-            }
-            is InspectSource.Archive -> {
-                appendLine("  Archive:     ${source.archivePath}")
-                appendLine("  Size:        ${source.archiveSizeBytes} bytes")
-                if (source.entryCount >= 0) appendLine("  Entries:     ${source.entryCount}")
-            }
-        }
+        appendIdentitySection(this, report.manifest)
+        appendSectionBreak(this)
+        appendPermissionsSection(this, report.manifest.permissions)
+        appendSectionBreak(this)
+        appendMcpToolsSection(this, report.manifest.mcpTools)
+        appendSectionBreak(this)
+        appendSourceSection(this, report.source)
     }.trimEnd()
+
+private fun appendIdentitySection(
+    sb: StringBuilder,
+    m: PluginManifest,
+) {
+    sb.appendLine("Plugin: ${m.resolvedDisplayName().ifBlank { m.resolvedPluginId() }}")
+    sb.appendLine("  ID:          ${m.resolvedPluginId()}")
+    if (m.resolvedDisplayName().isNotBlank() && m.resolvedDisplayName() != m.resolvedPluginId()) {
+        sb.appendLine("  Display:     ${m.resolvedDisplayName()}")
+    }
+    sb.appendLine("  Version:     ${m.version}")
+    sb.appendLine("  API:         ${m.resolvedApiVersion()}")
+    sb.appendLine("  Entrypoint:  ${m.resolvedMainClass()}")
+    if (m.author.isNotBlank()) sb.appendLine("  Author:      ${m.author}")
+    if (m.license.isNotBlank()) sb.appendLine("  License:     ${m.license}")
+    if (m.description.isNotBlank()) {
+        sb.appendLine("  Description:")
+        sb.appendLine(m.description.prependIndent("    "))
+    }
+    if (m.systemPlugin) sb.appendLine("  [flag] systemPlugin: true - read-only host-installed plugin")
+    if (!m.canUnload) sb.appendLine("  [flag] canUnload: false - pinned in memory once loaded")
+}
+
+private fun appendPermissionsSection(
+    sb: StringBuilder,
+    permissions: List<String>,
+) {
+    sb.appendLine("Permissions (${permissions.size}):")
+    if (permissions.isEmpty()) {
+        sb.appendLine("  (none)")
+        return
+    }
+    for (permission in permissions) {
+        val known = PluginPermission.fromIdentifier(permission)
+        val label = if (known != null) permission else "$permission (unrecognised)"
+        sb.appendLine("  - $label")
+    }
+}
+
+private fun appendMcpToolsSection(
+    sb: StringBuilder,
+    tools: List<PluginMcpToolDeclaration>,
+) {
+    sb.appendLine("MCP Tools (${tools.size}):")
+    if (tools.isEmpty()) {
+        sb.appendLine("  (none)")
+        return
+    }
+    for (tool in tools) {
+        val adminTag = if (tool.adminOnly) " [admin]" else ""
+        sb.appendLine("  - ${tool.name}$adminTag")
+        if (tool.description.isNotBlank()) {
+            sb.appendLine(tool.description.prependIndent("    "))
+        }
+    }
+}
+
+private fun appendSourceSection(
+    sb: StringBuilder,
+    source: InspectSource,
+) {
+    sb.appendLine("Source:")
+    when (source) {
+        is InspectSource.Directory -> {
+            sb.appendLine("  Directory:   ${source.rootPath}")
+            sb.appendLine("  Manifest:    ${source.manifestPath}")
+        }
+        is InspectSource.Archive -> {
+            sb.appendLine("  Archive:     ${source.archivePath}")
+            sb.appendLine("  Size:        ${source.archiveSizeBytes} bytes")
+            if (source.entryCount >= 0) sb.appendLine("  Entries:     ${source.entryCount}")
+        }
+    }
+}
+
+private fun appendSectionBreak(sb: StringBuilder) {
+    sb.appendLine()
+}
 
 /** JSON payload for `--json`. Mirrors the sections of the human report, in the same order. */
 internal fun inspectPayload(report: InspectReport.Ok) =
