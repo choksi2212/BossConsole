@@ -209,7 +209,8 @@ class RemotePluginRepositoryDownloadTest {
         runBlocking<Unit> {
             val outside = File(tempDir, "outside-sentinel.jar").apply { writeText("do not overwrite") }
             val target = File(tempDir, "linked-target.jar")
-            if (runCatching { Files.createSymbolicLink(target.toPath(), outside.toPath()) }.isFailure) return@runBlocking
+            val symlinkCreated = runCatching { Files.createSymbolicLink(target.toPath(), outside.toPath()) }.isSuccess
+            if (!symlinkCreated) return@runBlocking
 
             val signature = signAnchor("1.0.0")
             val path =
