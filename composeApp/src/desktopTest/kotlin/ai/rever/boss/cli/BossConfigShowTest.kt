@@ -3,8 +3,8 @@ package ai.rever.boss.cli
 import java.util.Properties
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class BossConfigShowTest {
     private val show = ConfigShow()
@@ -112,11 +112,14 @@ class BossConfigShowTest {
                 localProps = local,
                 embeddedProps = null,
             )
+        // None of the unique TAIL of each secret should appear in the masked value.
+        // The 4-char head is allowed to appear (e.g. "eyJh..."); the tail would let
+        // a reader recover the original.
         for (row in report.rows) {
             assertTrue(row.masked, "$row.key should be masked")
-            assertFalse(row.value.contains("eyJ"), "$row.key leaked secret")
-            assertFalse(row.value.contains("ghp_"), "$row.key leaked token")
-            assertFalse(row.value.contains("license-1.2.3"), "$row.key leaked license")
+            assertFalse(row.value.contains("long-anon-key"), "$row.key leaked anon key tail")
+            assertFalse(row.value.contains("abcdefghij"), "$row.key leaked token tail")
+            assertFalse(row.value.contains("very-long-string"), "$row.key leaked license tail")
             assertTrue(row.value.contains("(len="), "$row.key should show length")
         }
     }

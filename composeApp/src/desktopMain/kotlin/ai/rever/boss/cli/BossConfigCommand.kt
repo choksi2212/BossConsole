@@ -7,12 +7,12 @@ import com.github.ajalt.clikt.core.ProgramResult
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.multiple
 import com.github.ajalt.clikt.parameters.options.option
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import kotlinx.serialization.json.JsonObjectBuilder
 import java.util.Properties
 
 /**
@@ -39,8 +39,7 @@ import java.util.Properties
  */
 @Suppress("LongMethod", "CyclomaticComplexMethod")
 class BossConfigCommand : CliktCommand(name = "config") {
-    override fun help(context: Context) =
-        "Inspects resolved BOSS configuration with per-key source attribution"
+    override fun help(context: Context) = "Inspects resolved BOSS configuration with per-key source attribution"
 
     private val show = ConfigShow()
 
@@ -129,7 +128,9 @@ class BossConfigCommand : CliktCommand(name = "config") {
  * `local.properties` line that is overwritten by an env var still resolves
  * through the env var, and the report has to agree with that.
  */
-enum class ConfigSource(val label: String) {
+enum class ConfigSource(
+    val label: String,
+) {
     ENV_VAR("environment"),
     SYSTEM_PROPERTY("system property"),
     ENV_VARS_FILE("env_vars file"),
@@ -139,7 +140,9 @@ enum class ConfigSource(val label: String) {
 }
 
 /** Numeric precedence; the lowest number is the tier that wins. */
-enum class ConfigTier(val priority: Int) {
+enum class ConfigTier(
+    val priority: Int,
+) {
     ENV_VAR(1),
     SYSTEM_PROPERTY(2),
     ENV_VARS_FILE(3),
@@ -213,7 +216,7 @@ class ConfigShow {
         val rows = mutableListOf<Row>()
         val missing = mutableListOf<String>()
         for (key in keys) {
-            val resolved =
+            val (tier, source) =
                 resolveOne(
                     key = key,
                     envValue = envProvider(key),
@@ -221,8 +224,7 @@ class ConfigShow {
                     envVarsProps = envVarsProps,
                     localProps = localProps,
                     embeddedProps = embeddedProps,
-                ) ?: continue
-            val (tier, source) = resolved
+                )
             if (tier == ConfigTier.NONE) {
                 if (includeAll) {
                     rows += Row(key = key, value = "", source = source, tier = tier, masked = false)
@@ -250,7 +252,7 @@ class ConfigShow {
         envVarsProps: Properties,
         localProps: Properties,
         embeddedProps: Properties?,
-    ): Pair<ConfigTier, ConfigSource>? {
+    ): Pair<ConfigTier, ConfigSource> {
         val envBlank = envValue.isNullOrBlank()
         val sysBlank = sysPropValue.isNullOrBlank()
         val envVarsBlank = if (key == "BOSS_MODE") envVarsProps.getProperty(key).isNullOrBlank() else true
@@ -266,19 +268,6 @@ class ConfigShow {
                 !embeddedBlank -> ConfigTier.EMBEDDED
                 else -> ConfigTier.NONE
             }
-        // The same lookup is mirrored in ConfigLoader.resolve. We mirror
-        // it here so the test can pin which tier wins without standing up
-        // the full ConfigLoader process init.
-        val resolved = ConfigLoader.resolve(
-            key = key,
-            defaultValue = null,
-            envValue = envValue,
-            sysPropValue = sysPropValue,
-            envVarsProps = envVarsProps,
-            localProps = localProps,
-            embeddedProps = embeddedProps ?: Properties(),
-        )
-        if (resolved == null) return null
         val source =
             when (tier) {
                 ConfigTier.ENV_VAR -> ConfigSource.ENV_VAR
@@ -317,8 +306,7 @@ class ConfigShow {
         }
 
     /** Keys whose value is too sensitive to print in plain. */
-    private fun isSensitive(key: String): Boolean =
-        key in SENSITIVE_KEYS
+    private fun isSensitive(key: String): Boolean = key in SENSITIVE_KEYS
 
     /**
      * Mask a sensitive value. Shows the first 4 chars, then `…<len>` so the
