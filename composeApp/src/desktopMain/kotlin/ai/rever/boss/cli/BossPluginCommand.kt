@@ -1,3 +1,5 @@
+@file:Suppress("TooManyFunctions")
+
 package ai.rever.boss.cli
 
 import ai.rever.boss.plugin.launchpad.DevPluginArtifacts
@@ -414,15 +416,16 @@ class BossPluginLinkCommand : CliktCommand(name = "link") {
  */
 @Suppress("TooGenericExceptionCaught")
 class BossPluginInspectCommand : CliktCommand(name = "inspect") {
-    override fun help(context: Context) =
-        "Prints what a plugin declares: identity, permissions, MCP tools, and entrypoint"
+    @Suppress("MaxLineLength")
+    override fun help(context: Context) = "Prints what a plugin declares: identity, permissions, MCP tools, and entrypoint"
 
     private val logger = BossLogger.forComponent("BossPluginInspectCommand")
 
     val path by argument(help = "Path to plugin directory or packaged JAR/ZIP archive")
         .path(canBeDir = true, canBeFile = true)
         .default(Paths.get("."))
-    val json by option("--json", help = "Emit structured JSON instead of the human-readable report").flag(default = false)
+    val json by option("--json", help = "Emit structured JSON instead of the human-readable report")
+        .flag(default = false)
 
     override fun run() {
         val inputPath = path.toAbsolutePath()
@@ -430,13 +433,16 @@ class BossPluginInspectCommand : CliktCommand(name = "inspect") {
             try {
                 inspectTarget(inputPath.toFile())
             } catch (e: Exception) {
-                val msg = "Failed to inspect plugin at ${inputPath}: ${e.message ?: "unknown error"}"
+                val msg = "Failed to inspect plugin at $inputPath: ${e.message ?: "unknown error"}"
                 logger.error(LogCategory.SYSTEM, msg, error = e)
                 failWith(msg, json)
             }
 
         when (report) {
-            is InspectReport.Error -> failWith(report.message, json)
+            is InspectReport.Error -> {
+                failWith(report.message, json)
+            }
+
             is InspectReport.Ok -> {
                 if (json) {
                     echo(launchpadJson.encodeToString(inspectPayload(report)))
@@ -473,7 +479,9 @@ internal sealed interface InspectReport {
         val manifest: PluginManifest,
     ) : InspectReport
 
-    data class Error(val message: String) : InspectReport
+    data class Error(
+        val message: String,
+    ) : InspectReport
 }
 
 /** Where the manifest was read from, so the report can describe what it looked at. */
@@ -520,6 +528,7 @@ internal fun inspectTarget(target: File): InspectReport {
 /** Manifest bytes cap. Anything beyond this is treated as "not a manifest". */
 internal const val INSPECT_MAX_MANIFEST_BYTES: Int = 512 * 1024
 
+@Suppress("ReturnCount", "TooGenericExceptionCaught")
 private fun inspectDirectory(dir: File): InspectReport {
     val candidates =
         listOf(
@@ -533,6 +542,7 @@ private fun inspectDirectory(dir: File): InspectReport {
                 "and plugin.json): ${dir.absolutePath}",
         )
     }
+    val relPath = manifestFile.relativeTo(dir).path.replace('\\', '/')
     val manifestText =
         try {
             // Bounded read so a stray multi-gigabyte file at the manifest path cannot fill the heap.
@@ -540,15 +550,14 @@ private fun inspectDirectory(dir: File): InspectReport {
                 val bytes = stream.readNBytes(INSPECT_MAX_MANIFEST_BYTES + 1)
                 if (bytes.size > INSPECT_MAX_MANIFEST_BYTES) {
                     return InspectReport.Error(
-                        "${manifestFile.relativeTo(dir).path.replace('\\', '/')} exceeds ${INSPECT_MAX_MANIFEST_BYTES} bytes; " +
-                            "refusing to read",
+                        "$relPath exceeds $INSPECT_MAX_MANIFEST_BYTES bytes; refusing to read",
                     )
                 }
                 bytes.toString(Charsets.UTF_8)
             }
         } catch (e: Exception) {
             return InspectReport.Error(
-                "Unable to read ${manifestFile.relativeTo(dir).path.replace('\\', '/')}: ${e.message ?: "unknown error"}",
+                "Unable to read $relPath: ${e.message ?: "unknown error"}",
             )
         }
     return parseManifestText(
@@ -558,6 +567,7 @@ private fun inspectDirectory(dir: File): InspectReport {
     )
 }
 
+@Suppress("NestedBlockDepth", "TooGenericExceptionCaught")
 private fun inspectArchive(archive: File): InspectReport =
     try {
         JarFile(archive).use { jar ->
@@ -574,8 +584,8 @@ private fun inspectArchive(archive: File): InspectReport =
                     val bytes = stream.readNBytes(INSPECT_MAX_MANIFEST_BYTES + 1)
                     if (bytes.size > INSPECT_MAX_MANIFEST_BYTES) {
                         return InspectReport.Error(
-                            "Manifest entry in ${archive.absolutePath} exceeds ${INSPECT_MAX_MANIFEST_BYTES} bytes; " +
-                                "refusing to read",
+                            "Manifest entry in ${archive.absolutePath} exceeds " +
+                                "$INSPECT_MAX_MANIFEST_BYTES bytes; refusing to read",
                         )
                     }
                     bytes.toString(Charsets.UTF_8)
@@ -605,6 +615,7 @@ private fun sourceFor(
         manifestPath = manifestFile.relativeTo(dir).path.replace('\\', '/'),
     )
 
+@Suppress("TooGenericExceptionCaught")
 private fun parseManifestText(
     text: String,
     source: InspectSource,
@@ -707,6 +718,7 @@ private fun appendSourceSection(
             sb.appendLine("  Directory:   ${source.rootPath}")
             sb.appendLine("  Manifest:    ${source.manifestPath}")
         }
+
         is InspectSource.Archive -> {
             sb.appendLine("  Archive:     ${source.archivePath}")
             sb.appendLine("  Size:        ${source.archiveSizeBytes} bytes")
@@ -765,18 +777,20 @@ internal fun inspectPayload(report: InspectReport.Ok) =
 
 private fun sourcePayload(source: InspectSource) =
     when (source) {
-        is InspectSource.Directory ->
+        is InspectSource.Directory -> {
             buildJsonObject {
                 put("type", "directory")
                 put("rootPath", source.rootPath)
                 put("manifestPath", source.manifestPath)
             }
+        }
 
-        is InspectSource.Archive ->
+        is InspectSource.Archive -> {
             buildJsonObject {
                 put("type", "archive")
                 put("archivePath", source.archivePath)
                 put("archiveSizeBytes", source.archiveSizeBytes)
                 if (source.entryCount >= 0) put("entryCount", source.entryCount)
             }
+        }
     }

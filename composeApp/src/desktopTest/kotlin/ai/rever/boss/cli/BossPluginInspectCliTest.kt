@@ -6,6 +6,7 @@ import com.github.ajalt.clikt.core.parse
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
@@ -60,10 +61,11 @@ class BossPluginInspectCliTest {
 
     @Test
     fun `inspect reads the manifest from the resources path that a built project would emit`() {
-        val project = writeProject(
-            manifestPath = "src/main/resources/META-INF/boss-plugin/plugin.json",
-            manifest = fixtureManifest(),
-        )
+        val project =
+            writeProject(
+                manifestPath = "src/main/resources/META-INF/boss-plugin/plugin.json",
+                manifest = fixtureManifest(),
+            )
 
         val report = formatHumanInspectReport(inspectTarget(project).okOrFail())
 
@@ -200,10 +202,11 @@ class BossPluginInspectCliTest {
 
     @Test
     fun `inspect json has the same fields the human report carries`() {
-        val project = writeProject(
-            manifestPath = "plugin.json",
-            manifest = fixtureManifest(),
-        )
+        val project =
+            writeProject(
+                manifestPath = "plugin.json",
+                manifest = fixtureManifest(),
+            )
 
         val report = inspectTarget(project).okOrFail()
         val payload = inspectPayload(report)
@@ -246,7 +249,7 @@ class BossPluginInspectCliTest {
     fun `inspect json omits optional fields the manifest does not set`() {
         val project = workDir.toFile().resolve("minimal")
         project.mkdirs()
-        File(project, "plugin.json").writeText(MINIMAL_MANIFEST)
+        File(project, "plugin.json").writeText(minimalManifest())
 
         val payload = inspectPayload(inspectTarget(project).okOrFail())
         val obj = Json.parseToJsonElement(payload.toString()).jsonObject
@@ -272,7 +275,8 @@ class BossPluginInspectCliTest {
         File(project, "plugin.json").writeText(fixtureManifest())
 
         val payload = inspectPayload(inspectTarget(project).okOrFail())
-        val encoded = launchpadJson.encodeToString(JsonObject.serializer(), Json.parseToJsonElement(payload.toString()).jsonObject)
+        val jsonElement = Json.parseToJsonElement(payload.toString()).jsonObject
+        val encoded = launchpadJson.encodeToString(JsonObject.serializer(), jsonElement)
         val decoded = Json.parseToJsonElement(encoded).jsonObject
 
         assertEquals("com.example.demo", decoded.string("pluginId"))
@@ -323,10 +327,11 @@ class BossPluginInspectCliTest {
         // important guarantee is that the command returns an InspectReport.Error rather than
         // reading the whole entry into memory.
         val bloatedDescription = "x".repeat(INSPECT_MAX_MANIFEST_BYTES + 1)
-        val manifest = fixtureManifest().replace(
-            "\"Demo plugin that exercises every manifest field.\"",
-            "\"$bloatedDescription\"",
-        )
+        val manifest =
+            fixtureManifest().replace(
+                "\"Demo plugin that exercises every manifest field.\"",
+                "\"$bloatedDescription\"",
+            )
         val jar = writeJarPlugin("bloated.jar", manifest)
 
         val result = inspectTarget(jar)
@@ -370,7 +375,8 @@ class BossPluginInspectCliTest {
         val project = writeProject("plugin.json", fixtureManifest())
 
         val cli =
-            ai.rever.boss.cli.createBossCLI()
+            ai.rever.boss.cli
+                .createBossCLI()
         val buffer = java.io.ByteArrayOutputStream()
         val originalOut = System.out
         System.setOut(java.io.PrintStream(buffer))
@@ -391,7 +397,9 @@ class BossPluginInspectCliTest {
     fun `the inspect CLI command emits JSON when --json is passed`() {
         val project = writeProject("plugin.json", fixtureManifest())
 
-        val cli = ai.rever.boss.cli.createBossCLI()
+        val cli =
+            ai.rever.boss.cli
+                .createBossCLI()
         val buffer = java.io.ByteArrayOutputStream()
         val originalOut = System.out
         System.setOut(java.io.PrintStream(buffer))
@@ -411,7 +419,9 @@ class BossPluginInspectCliTest {
     fun `the inspect CLI command exits 1 with a json error envelope when the target is missing`() {
         val missing = workDir.resolve("does-not-exist").toFile()
 
-        val cli = ai.rever.boss.cli.createBossCLI()
+        val cli =
+            ai.rever.boss.cli
+                .createBossCLI()
         val outBuffer = java.io.ByteArrayOutputStream()
         val errBuffer = java.io.ByteArrayOutputStream()
         val originalOut = System.out
@@ -483,11 +493,9 @@ class BossPluginInspectCliTest {
         return element.jsonPrimitive.content
     }
 
-    private fun JsonObject.stringOrNullSafe(key: String): String? =
-        (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+    private fun JsonObject.stringOrNullSafe(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
 
-    private fun JsonObject.jsonObject(key: String): JsonObject =
-        this[key]?.jsonObject ?: error("missing object key '$key' in $this")
+    private fun JsonObject.jsonObject(key: String): JsonObject = this[key]?.jsonObject ?: error("missing key '$key'")
 
     private fun JsonObject.int(key: String): Int {
         val element = this[key] ?: error("missing key '$key'")
@@ -499,13 +507,12 @@ class BossPluginInspectCliTest {
         return element.jsonPrimitive.boolean
     }
 
-    private fun JsonObject.booleanOrNullSafe(key: String): Boolean? =
-        (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.booleanOrNull
+    private fun JsonObject.booleanOrNullSafe(key: String): Boolean? = (this[key] as? JsonPrimitive)?.booleanOrNull
 
-    private fun JsonObject.jsonArray(key: String): JsonArray =
-        (this[key] as? JsonArray) ?: error("missing array key '$key' in $this")
+    private fun JsonObject.jsonArray(key: String): JsonArray = (this[key] as? JsonArray) ?: error("missing '$key'")
 
-    private fun fixtureManifest(): String = """
+    private fun fixtureManifest(): String =
+        """
         {
           "pluginId": "com.example.demo",
           "displayName": "Demo Plugin",
@@ -524,9 +531,10 @@ class BossPluginInspectCliTest {
             { "name": "mcp__demo__admin_tool", "description": "Administers the demo.", "adminOnly": true }
           ]
         }
-    """.trimIndent()
+        """.trimIndent()
 
-    private fun legacyManifest(): String = """
+    private fun legacyManifest(): String =
+        """
         {
           "id": "com.example.legacy",
           "name": "Legacy Plugin",
@@ -535,9 +543,10 @@ class BossPluginInspectCliTest {
           "entrypointClass": "com.example.legacy.LegacyPlugin",
           "permissions": ["network"]
         }
-    """.trimIndent()
+        """.trimIndent()
 
-    private val MINIMAL_MANIFEST = """
+    private fun minimalManifest(): String =
+        """
         {
           "pluginId": "com.example.minimal",
           "displayName": "Minimal",
@@ -545,5 +554,5 @@ class BossPluginInspectCliTest {
           "apiVersion": "1.0.0",
           "mainClass": "com.example.minimal.MinimalPlugin"
         }
-    """.trimIndent()
+        """.trimIndent()
 }
