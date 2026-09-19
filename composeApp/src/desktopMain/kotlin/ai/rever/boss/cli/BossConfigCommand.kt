@@ -76,41 +76,50 @@ class BossConfigCommand : CliktCommand(name = "config") {
         json: Boolean,
     ) {
         if (json) {
-            echo(
-                buildJsonObject {
-                    put("status", if (report.missing.isEmpty()) "ok" else "missing")
-                    put("rows", buildJsonArray { report.rows.forEach { addJsonObject { serializeRow(it) } } })
-                    put("missing", buildJsonArray { report.missing.forEach { add(it) } })
-                }.toString(),
-            )
+            echo(buildJsonReport(report))
         } else {
-            echo("BOSS Configuration")
-            echo("-----------------")
-            if (report.rows.isEmpty()) {
-                echo("No tracked key resolved. Try with --all or --key <name>.")
-            } else {
-                val keyWidth = (report.rows.maxOf { it.key.length }).coerceAtLeast(3)
-                val sourceWidth = (report.rows.maxOf { it.source.label.length }).coerceAtLeast(6)
-                echo("KEY".padEnd(keyWidth) + "  " + "VALUE".padEnd(40) + "  " + "SOURCE".padEnd(sourceWidth) + "  TIER")
-                for (row in report.rows) {
-                    val valueCell = if (row.masked) row.value else row.value.take(40)
-                    echo(
-                        row.key.padEnd(keyWidth) + "  " +
-                            valueCell.padEnd(40) + "  " +
-                            row.source.label.padEnd(sourceWidth) + "  " +
-                            row.tier.toString(),
-                    )
-                }
-            }
-            if (report.missing.isNotEmpty()) {
-                echo("")
-                echo("Did not resolve:")
-                for (k in report.missing) {
-                    echo("  $k")
-                }
-            }
+            renderTextReport(report)
         }
         if (report.missing.isNotEmpty() && !json) throw ProgramResult(1)
+    }
+
+    private fun buildJsonReport(report: ConfigShow.Report): String =
+        buildJsonObject {
+            put("status", if (report.missing.isEmpty()) "ok" else "missing")
+            put("rows", buildJsonArray { report.rows.forEach { addJsonObject { serializeRow(it) } } })
+            put("missing", buildJsonArray { report.missing.forEach { add(it) } })
+        }.toString()
+
+    private fun renderTextReport(report: ConfigShow.Report) {
+        echo("BOSS Configuration")
+        echo("-----------------")
+        if (report.rows.isEmpty()) {
+            echo("No tracked key resolved. Try with --all or --key <name>.")
+        } else {
+            val keyWidth = (report.rows.maxOf { it.key.length }).coerceAtLeast(3)
+            val sourceWidth = (report.rows.maxOf { it.source.label.length }).coerceAtLeast(6)
+            val header =
+                "KEY".padEnd(keyWidth) + "  " +
+                    "VALUE".padEnd(40) + "  " +
+                    "SOURCE".padEnd(sourceWidth) + "  TIER"
+            echo(header)
+            for (row in report.rows) {
+                val valueCell = if (row.masked) row.value else row.value.take(40)
+                echo(
+                    row.key.padEnd(keyWidth) + "  " +
+                        valueCell.padEnd(40) + "  " +
+                        row.source.label.padEnd(sourceWidth) + "  " +
+                        row.tier.toString(),
+                )
+            }
+        }
+        if (report.missing.isNotEmpty()) {
+            echo("")
+            echo("Did not resolve:")
+            for (k in report.missing) {
+                echo("  $k")
+            }
+        }
     }
 
     private fun JsonObjectBuilder.serializeRow(row: ConfigShow.Row) {
@@ -213,18 +222,18 @@ class ConfigShow {
         localProps: Properties = Properties(),
         embeddedProps: Properties? = Properties(),
     ): Report {
+        val ctx =
+            SourceContext(
+                envProvider = envProvider,
+                syspropProvider = syspropProvider,
+                envVarsProps = envVarsProps,
+                localProps = localProps,
+                embeddedProps = embeddedProps,
+            )
         val rows = mutableListOf<Row>()
         val missing = mutableListOf<String>()
         for (key in keys) {
-            val (tier, source) =
-                resolveOne(
-                    key = key,
-                    envValue = envProvider(key),
-                    sysPropValue = syspropProvider(key),
-                    envVarsProps = envVarsProps,
-                    localProps = localProps,
-                    embeddedProps = embeddedProps,
-                )
+            val (tier, source) = resolveOne(key = key, ctx = ctx)
             if (tier == ConfigTier.NONE) {
                 if (includeAll) {
                     rows += Row(key = key, value = "", source = source, tier = tier, masked = false)
@@ -233,7 +242,7 @@ class ConfigShow {
                 }
                 continue
             }
-            val value = valueAt(key, tier, envProvider, syspropProvider, envVarsProps, localProps, embeddedProps)
+            val value = valueAt(key = key, tier = tier, ctx = ctx)
             val masked = isSensitive(key)
             val displayValue = if (masked) maskValue(value) else value
             rows += Row(key = key, value = displayValue, source = source, tier = tier, masked = masked)
@@ -241,23 +250,27 @@ class ConfigShow {
         return Report(rows = rows, missing = missing.sorted())
     }
 
+    private data class SourceContext(
+        val envProvider: (String) -> String?,
+        val syspropProvider: (String) -> String?,
+        val envVarsProps: Properties,
+        val localProps: Properties,
+        val embeddedProps: Properties?,
+    )
+
     /**
      * Walk the precedence chain. Returns the tier that wins and its [ConfigSource].
      * Pure; only the reader injection matters for behaviour.
      */
     private fun resolveOne(
         key: String,
-        envValue: String?,
-        sysPropValue: String?,
-        envVarsProps: Properties,
-        localProps: Properties,
-        embeddedProps: Properties?,
+        ctx: SourceContext,
     ): Pair<ConfigTier, ConfigSource> {
-        val envBlank = envValue.isNullOrBlank()
-        val sysBlank = sysPropValue.isNullOrBlank()
-        val envVarsBlank = if (key == "BOSS_MODE") envVarsProps.getProperty(key).isNullOrBlank() else true
-        val localBlank = localProps.getProperty(key).isNullOrBlank()
-        val embeddedBlank = embeddedProps?.getProperty(key).isNullOrBlank()
+        val envBlank = ctx.envProvider(key).isNullOrBlank()
+        val sysBlank = ctx.syspropProvider(key).isNullOrBlank()
+        val envVarsBlank = if (key == "BOSS_MODE") ctx.envVarsProps.getProperty(key).isNullOrBlank() else true
+        val localBlank = ctx.localProps.getProperty(key).isNullOrBlank()
+        val embeddedBlank = ctx.embeddedProps?.getProperty(key).isNullOrBlank()
 
         val tier =
             when {
@@ -290,18 +303,14 @@ class ConfigShow {
     private fun valueAt(
         key: String,
         tier: ConfigTier,
-        envProvider: (String) -> String?,
-        syspropProvider: (String) -> String?,
-        envVarsProps: Properties,
-        localProps: Properties,
-        embeddedProps: Properties?,
+        ctx: SourceContext,
     ): String =
         when (tier) {
-            ConfigTier.ENV_VAR -> envProvider(key).orEmpty()
-            ConfigTier.SYSTEM_PROPERTY -> syspropProvider(key).orEmpty()
-            ConfigTier.ENV_VARS_FILE -> envVarsProps.getProperty(key).orEmpty()
-            ConfigTier.LOCAL_PROPERTIES -> localProps.getProperty(key).orEmpty()
-            ConfigTier.EMBEDDED -> embeddedProps?.getProperty(key).orEmpty()
+            ConfigTier.ENV_VAR -> ctx.envProvider(key).orEmpty()
+            ConfigTier.SYSTEM_PROPERTY -> ctx.syspropProvider(key).orEmpty()
+            ConfigTier.ENV_VARS_FILE -> ctx.envVarsProps.getProperty(key).orEmpty()
+            ConfigTier.LOCAL_PROPERTIES -> ctx.localProps.getProperty(key).orEmpty()
+            ConfigTier.EMBEDDED -> ctx.embeddedProps?.getProperty(key).orEmpty()
             ConfigTier.NONE -> ""
         }
 
