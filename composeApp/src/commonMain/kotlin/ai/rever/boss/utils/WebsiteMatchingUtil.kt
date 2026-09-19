@@ -270,19 +270,19 @@ object WebsiteMatchingUtil {
         val pathAndQuery = extractPathAndQuery(url) ?: return false
 
         val pathPart = pathAndQuery.substringBefore('?')
-        val pathSegments = pathPart.split('/')
-        if (pathSegments.any { it.substringBefore('.') in LOGIN_PATH_KEYWORDS }) return true
+        val hasPathMatch = pathPart.split('/').any { it.substringBefore('.') in LOGIN_PATH_KEYWORDS }
 
         val queryPart = pathAndQuery.substringAfter('?', missingDelimiterValue = "")
-        if (queryPart.isEmpty()) return false
+        val hasQueryMatch =
+            queryPart.isNotEmpty() &&
+                queryPart.split('&').any { param ->
+                    val eq = param.indexOf('=')
+                    eq > 0 &&
+                        param.substring(0, eq).lowercase() in LOGIN_QUERY_KEYS &&
+                        param.substring(eq + 1).lowercase() in LOGIN_QUERY_VALUES
+                }
 
-        return queryPart.split('&').any { param ->
-            val eq = param.indexOf('=')
-            if (eq <= 0) return@any false
-            val key = param.substring(0, eq).lowercase()
-            val value = param.substring(eq + 1).lowercase()
-            key in LOGIN_QUERY_KEYS && value in LOGIN_QUERY_VALUES
-        }
+        return hasPathMatch || hasQueryMatch
     }
 
     /**
