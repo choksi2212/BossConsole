@@ -458,4 +458,41 @@ class GitDataProviderImplTest {
             assertEquals(name, out, "shell round trip for $name")
         }
     }
+
+    @Test
+    fun safeCloneUrlAcceptsSupportedRemotesLocalPathsAndIpv6Literals() {
+        // The forms the Clone dialog offers today.
+        assertTrue(GitService.isSafeCloneUrl("https://github.com/risa-labs-inc/BossConsole.git"))
+        assertTrue(GitService.isSafeCloneUrl("http://example.com/o/r.git"))
+        assertTrue(GitService.isSafeCloneUrl("git@github.com:risa-labs-inc/BossConsole.git"))
+        assertTrue(GitService.isSafeCloneUrl("ssh://git@github.com/o/r.git"))
+        // Local filesystem paths are a supported, regression-tested surface:
+        // GitCloneRepositoryLifecycleTest clones from real directories.
+        assertTrue(GitService.isSafeCloneUrl("/tmp/checkout/repo.git"))
+        assertTrue(GitService.isSafeCloneUrl("relative/repo.git"))
+        // `::` inside an otherwise legal URL belongs to IPv6 host literals;
+        // only a LEADING `ext::` names the spawning remote helper.
+        assertTrue(GitService.isSafeCloneUrl("ssh://git@[2001:db8::1]/o/r.git"))
+    }
+
+    @Test
+    fun safeCloneUrlRejectsOptionInjectionTransportHelperSpawnAndControlCharacters() {
+        // Option injection: git would read these as clone options, and for
+        // local-path clones --upload-pack=<cmd> EXECUTES.
+        assertFalse(GitService.isSafeCloneUrl("--upload-pack=touch/tmp/pwned"))
+        assertFalse(GitService.isSafeCloneUrl("-n1"))
+        // The ext remote helper runs its address as a shell command.
+        assertFalse(GitService.isSafeCloneUrl("ext::sh -c id"))
+        // A host beginning with `-` after a scheme or git@ prefix becomes
+        // ssh options, not a hostname.
+        assertFalse(GitService.isSafeCloneUrl("ssh://-oProxyCommand=x/r"))
+        assertFalse(GitService.isSafeCloneUrl("git@-oProxyCommand=x:r"))
+        // Control characters and whitespace never belong in a clone URL.
+        assertFalse(GitService.isSafeCloneUrl(""))
+        assertFalse(GitService.isSafeCloneUrl("   "))
+        assertFalse(GitService.isSafeCloneUrl("has space"))
+        assertFalse(GitService.isSafeCloneUrl("has\nnewline"))
+        // Bounded like refnames, at URL scale.
+        assertFalse(GitService.isSafeCloneUrl("a".repeat(2049)))
+    }
 }

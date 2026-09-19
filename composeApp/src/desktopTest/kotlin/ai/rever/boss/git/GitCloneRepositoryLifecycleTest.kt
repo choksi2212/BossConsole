@@ -129,6 +129,23 @@ class GitCloneRepositoryLifecycleTest {
         assertTrue(result is GitError)
     }
 
+    // Regression for #1099: an unsafe clone URL must be refused BEFORE git
+    // is spawned, so a transport-helper URL can never reach a ProcessBuilder.
+    @Test
+    fun `unsafe clone URLs are refused without spawning git`(
+        @TempDir tempDirectory: Path,
+    ) = runBlocking {
+        val result =
+            GitService.cloneRepositoryWithTimeout(
+                "ext::sh -c id",
+                tempDirectory.resolve("target").toString(),
+                {},
+                PUBLIC_CLONE_TIMEOUT_MILLIS,
+            )
+        assertTrue(result is GitError)
+        assertEquals("Refused an unsafe clone URL", (result as GitError).message)
+    }
+
     private suspend fun assertRetrySucceeds(
         tempDirectory: Path,
         target: File,

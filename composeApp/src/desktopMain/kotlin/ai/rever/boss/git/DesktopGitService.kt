@@ -1840,6 +1840,47 @@ actual object GitService {
         return ref.none { it.isWhitespace() || it.code < 0x20 || it == '\u007F' }
     }
 
+    /**
+     * [cloneRepository] is the one verb whose argument is a URL rather than a
+     * refname, so it gets the URL-shaped version of [isSafeRefName]. This is
+     * ARGV safety: the URL travels to `git clone` as one argv element and as
+     * a positional AFTER `--`, and the rules target exactly the forms git
+     * would re-read as something other than "a place to clone from":
+     *
+     *  - a leading `-` (option injection; `--upload-pack=<cmd>` EXECUTES for
+     *    local-path clones)
+     *  - a leading `ext::` (the ext remote helper runs the address as a
+     *    shell command)
+     *  - a host beginning with `-` after a `scheme://` or `git@` prefix
+     *    (ssh would parse it as options)
+     *  - any control character or whitespace (clone URLs and paths never
+     *    legitimately carry them)
+     *
+     * `::` elsewhere is allowed - IPv6 host literals such as
+     * `ssh://git@[2001:db8::1]/r.git` contain it, and only a LEADING `ext::`
+     * names the spawning helper. Local filesystem paths pass the same rules;
+     * the clone lifecycle suite clones from real paths on disk.
+     *
+     * Pure and internal so [ai.rever.boss.git] tests can pin it, like
+     * [isSafeRefName] - a guard that rots silently is worse than none.
+     */
+    internal fun isSafeCloneUrl(url: String): Boolean {
+        if (url.isBlank()) return false
+        if (url.length > MAX_CLONE_URL_LENGTH) return false
+        if (url.startsWith("-")) return false
+        if (url.startsWith("ext::")) return false
+        if (url.any { it.isWhitespace() || it.code < 0x20 || it == '\u007F' }) return false
+        val afterPrefix =
+            KNOWN_URL_PREFIXES.firstOrNull { url.startsWith(it) }
+                ?.let { url.drop(it.length) }
+                ?: url
+        return !afterPrefix.startsWith("-")
+    }
+
+    private const val MAX_CLONE_URL_LENGTH = 2048
+
+    private val KNOWN_URL_PREFIXES = listOf("https://", "http://", "ssh://", "git://", "git@")
+
     private const val MAX_REF_LENGTH = 255
 
     /**
@@ -2275,6 +2316,16 @@ actual object GitService {
                 currentCoroutineContext()[GitCloneTimeoutContext]?.timeoutMillis
                     ?: GIT_CLONE_TIMEOUT_MILLIS
             try {
+                // Clone URLs reach git's argv raw: the argv-safety doctrine the
+                // ref-taking verbs follow (see the checkout guard) applies to
+                // them too, plus a literal `--` below so git can never re-read
+                // the URL or the destination as options even if a future form
+                // slips past the guard.
+                if (!isSafeCloneUrl(repositoryUrl)) {
+                    logger.error(LogCategory.GENERAL, "Refused an unsafe clone URL")
+                    return@withContext GitError("Refused an unsafe clone URL")
+                }
+
                 // Check if git is available
                 if (!checkGitAvailable()) {
                     val error = "Git is not installed. Please install git to clone repositories."
@@ -2320,6 +2371,10 @@ actual object GitService {
                         "git",
                         "clone",
                         "--progress",
+                        // End of options: everything after this is positional,
+                        // so even a URL that slipped the guard can never be
+                        // read as a clone option.
+                        "--",
                         repositoryUrl,
                         targetDirectory,
                     ).apply {
