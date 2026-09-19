@@ -252,6 +252,91 @@ class IpcRoundTripTest {
             assertEquals(0, kernelService.registeredCount, "Process should be removed after shutdown")
         }
 
+    @Test
+    fun `deregisterProcess evicts process and prevents handing stale address to new registrants`() =
+        runBlocking {
+            val stubA = stubFor("proc-a", 59981)
+            val manifestA =
+                ProcessManifest
+                    .newBuilder()
+                    .setProcessId("proc-a")
+                    .setProcessType(ProcessType.PROCESS_TYPE_SERVICE)
+                    .build()
+            stubA.registerProcess(
+                RegisterProcessRequest
+                    .newBuilder()
+                    .setManifest(manifestA)
+                    .setIpcAddress("tcp://localhost:59981")
+                    .build(),
+            )
+
+            assertEquals(1, kernelService.registeredCount)
+
+            // Simulate crash deregistration (#1180)
+            kernelService.deregisterProcess("proc-a")
+            assertEquals(0, kernelService.registeredCount)
+
+            // Verify getProcessStatus reports STOPPED, not RUNNING
+            val status =
+                stubA.getProcessStatus(
+                    ProcessStatusRequest.newBuilder().setProcessId("proc-a").build(),
+                )
+            assertEquals(ProcessState.PROCESS_STATE_STOPPED, status.state)
+
+            // Register new process; it should NOT receive proc-a's stale address
+            val stubB = stubFor("proc-b", 59982)
+            val manifestB =
+                ProcessManifest
+                    .newBuilder()
+                    .setProcessId("proc-b")
+                    .setProcessType(ProcessType.PROCESS_TYPE_SERVICE)
+                    .build()
+            val respB =
+                stubB.registerProcess(
+                    RegisterProcessRequest
+                        .newBuilder()
+                        .setManifest(manifestB)
+                        .setIpcAddress("tcp://localhost:59982")
+                        .build(),
+                )
+
+            assertTrue(respB.success)
+            assertEquals(0, respB.serviceAddressesCount, "New child must not receive dead proc-a's address")
+        }
+
+    @Test
+    fun `evictTimedOutProcesses removes dead processes whose heartbeats expired`() =
+        runBlocking {
+            val stub = stubFor("timeout-proc", 59983)
+            val manifest =
+                ProcessManifest
+                    .newBuilder()
+                    .setProcessId("timeout-proc")
+                    .setProcessType(ProcessType.PROCESS_TYPE_SERVICE)
+                    .setHealthContract(
+                        HealthContract
+                            .newBuilder()
+                            .setHeartbeatIntervalMs(100)
+                            .build(),
+                    ).build()
+            stub.registerProcess(
+                RegisterProcessRequest
+                    .newBuilder()
+                    .setManifest(manifest)
+                    .setIpcAddress("tcp://localhost:59983")
+                    .build(),
+            )
+
+            assertEquals(1, kernelService.registeredCount)
+
+            // Wait for 100ms * 3 = 300ms timeout
+            kotlinx.coroutines.delay(400)
+
+            val evicted = kernelService.evictTimedOutProcesses()
+            assertEquals(listOf("timeout-proc"), evicted)
+            assertEquals(0, kernelService.registeredCount)
+        }
+
     private fun stubFor(
         processId: String,
         port: Int,

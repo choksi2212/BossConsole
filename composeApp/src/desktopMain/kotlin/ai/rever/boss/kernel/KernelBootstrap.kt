@@ -540,6 +540,10 @@ class KernelBootstrap(
         spawner: ProcessSpawner,
         failure: ProcessFailure,
     ) {
+        // Evict crashed child from KernelServiceImpl so dead IDs report STOPPED/CRASHED
+        // and stale ipcAddresses are not handed to newly registering processes (#1180).
+        kernelService?.deregisterProcess(failure.processId)
+
         val process = registry.getProcess(failure.processId)
         if (process == null || process.config.restartPolicy != RestartPolicy.ON_FAILURE) {
             logger.error(
