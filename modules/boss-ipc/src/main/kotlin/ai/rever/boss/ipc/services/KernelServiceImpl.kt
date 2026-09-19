@@ -138,22 +138,6 @@ class KernelServiceImpl(
         logger.info("Process deregistered: id={}", processId)
     }
 
-    /**
-     * Evicts any registered processes whose heartbeat has timed out (#1180).
-     * Returns the list of evicted process IDs.
-     */
-    fun evictTimedOutProcesses(): List<String> {
-        val evicted = mutableListOf<String>()
-        for ((id, info) in registeredProcesses) {
-            val intervalMs = heartbeatInterval(info)
-            if (isHeartbeatTimedOut(id, intervalMs * HEARTBEAT_TIMEOUT_MULTIPLIER)) {
-                deregisterProcess(id)
-                evicted.add(id)
-            }
-        }
-        return evicted
-    }
-
     override suspend fun getProcessStatus(request: ProcessStatusRequest): ProcessStatusResponse {
         val processId = request.processId
         IpcCall.requireProcessControl(processId)
@@ -165,19 +149,10 @@ class KernelServiceImpl(
                     .setState(ProcessState.PROCESS_STATE_STOPPED)
                     .build()
 
-        val intervalMs = heartbeatInterval(info)
-        val isTimedOut = isHeartbeatTimedOut(processId, intervalMs * HEARTBEAT_TIMEOUT_MULTIPLIER)
-        val state =
-            if (isTimedOut) {
-                ProcessState.PROCESS_STATE_CRASHED
-            } else {
-                ProcessState.PROCESS_STATE_RUNNING
-            }
-
         return ProcessStatusResponse
             .newBuilder()
             .setProcessId(processId)
-            .setState(state)
+            .setState(ProcessState.PROCESS_STATE_RUNNING)
             .setStartTime(info.registeredAt)
             .apply {
                 info.lastMetrics.get()?.let { setMetrics(it) }
@@ -192,18 +167,10 @@ class KernelServiceImpl(
                 .filterKeys {
                     it == caller.processId || caller.authority != ProcessAuthority.PROCESS
                 }.map { (id, info) ->
-                    val intervalMs = heartbeatInterval(info)
-                    val isTimedOut = isHeartbeatTimedOut(id, intervalMs * HEARTBEAT_TIMEOUT_MULTIPLIER)
-                    val state =
-                        if (isTimedOut) {
-                            ProcessState.PROCESS_STATE_CRASHED
-                        } else {
-                            ProcessState.PROCESS_STATE_RUNNING
-                        }
                     ProcessStatusResponse
                         .newBuilder()
                         .setProcessId(id)
-                        .setState(state)
+                        .setState(ProcessState.PROCESS_STATE_RUNNING)
                         .setStartTime(info.registeredAt)
                         .apply { info.lastMetrics.get()?.let { setMetrics(it) } }
                         .build()
@@ -222,30 +189,9 @@ class KernelServiceImpl(
     fun getLastHeartbeat(processId: String): Long? = lastHeartbeats[processId]
 
     /**
-     * Check if a process has timed out (no heartbeat within threshold).
-     */
-    fun isHeartbeatTimedOut(
-        processId: String,
-        thresholdMs: Long,
-    ): Boolean {
-        val lastBeat = lastHeartbeats[processId] ?: return true
-        return System.currentTimeMillis() - lastBeat > thresholdMs
-    }
-
-    /**
      * Get count of registered processes.
      */
     val registeredCount: Int get() = registeredProcesses.size
-
-    private fun heartbeatInterval(info: RegisteredProcessInfo): Long {
-        val interval = info.manifest.healthContract.heartbeatIntervalMs
-        return if (interval > 0) interval else DEFAULT_HEARTBEAT_INTERVAL_MS
-    }
-
-    companion object {
-        const val DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000L
-        const val HEARTBEAT_TIMEOUT_MULTIPLIER = 3
-    }
 }
 
 internal data class RegisteredProcessInfo(

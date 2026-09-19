@@ -304,39 +304,6 @@ class IpcRoundTripTest {
             assertEquals(0, respB.serviceAddressesCount, "New child must not receive dead proc-a's address")
         }
 
-    @Test
-    fun `evictTimedOutProcesses removes dead processes whose heartbeats expired`() =
-        runBlocking {
-            val stub = stubFor("timeout-proc", 59983)
-            val manifest =
-                ProcessManifest
-                    .newBuilder()
-                    .setProcessId("timeout-proc")
-                    .setProcessType(ProcessType.PROCESS_TYPE_SERVICE)
-                    .setHealthContract(
-                        HealthContract
-                            .newBuilder()
-                            .setHeartbeatIntervalMs(100)
-                            .build(),
-                    ).build()
-            stub.registerProcess(
-                RegisterProcessRequest
-                    .newBuilder()
-                    .setManifest(manifest)
-                    .setIpcAddress("tcp://localhost:59983")
-                    .build(),
-            )
-
-            assertEquals(1, kernelService.registeredCount)
-
-            // Wait for 100ms * 3 = 300ms timeout
-            kotlinx.coroutines.delay(400)
-
-            val evicted = kernelService.evictTimedOutProcesses()
-            assertEquals(listOf("timeout-proc"), evicted)
-            assertEquals(0, kernelService.registeredCount)
-        }
-
     private fun stubFor(
         processId: String,
         port: Int,
