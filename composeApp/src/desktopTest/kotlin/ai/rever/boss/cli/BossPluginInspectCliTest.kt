@@ -2,6 +2,7 @@ package ai.rever.boss.cli
 
 import ai.rever.boss.plugin.launchpad.PluginPermission
 import ai.rever.boss.plugin.launchpad.launchpadJson
+import com.github.ajalt.clikt.core.parse
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -84,7 +85,7 @@ class BossPluginInspectCliTest {
         assertTrue(report.contains("  - mcp__demo__echo"), report)
         assertTrue(report.contains("  - mcp__demo__admin_tool [admin]"), report)
         assertTrue(report.contains("Source:"), report)
-        assertTrue(report.contains("Directory:   ${project.absolutePath.replace('\\', "/")}"), report)
+        assertTrue(report.contains("Directory:   ${project.absolutePath.replace('\\', '/')}"), report)
         assertTrue(report.contains("Manifest:    src/main/resources/META-INF/boss-plugin/plugin.json"), report)
     }
 
@@ -155,7 +156,7 @@ class BossPluginInspectCliTest {
         val report = formatHumanInspectReport(inspectTarget(jar).okOrFail())
 
         assertTrue(report.contains("Plugin: Demo Plugin"), report)
-        assertTrue(report.contains("Archive:     ${jar.absolutePath.replace('\\', "/")}"), report)
+        assertTrue(report.contains("Archive:     ${jar.absolutePath.replace('\\', '/')}"), report)
         assertTrue(report.contains("Size:        ${jar.length()} bytes"), report)
         // The fixture jar contains exactly the manifest entry, so entries >= 1.
         val entriesLine = report.lines().single { it.trim().startsWith("Entries:") }
@@ -311,7 +312,7 @@ class BossPluginInspectCliTest {
         val report = formatHumanInspectReport(inspectTarget(zip).okOrFail())
 
         assertTrue(report.contains("Plugin: Demo Plugin"), report)
-        assertTrue(report.contains("Archive:     ${zip.absolutePath.replace('\\', "/")}"), report)
+        assertTrue(report.contains("Archive:     ${zip.absolutePath.replace('\\', '/')}"), report)
     }
 
     // ---- Bounded read of an oversized manifest entry ----
