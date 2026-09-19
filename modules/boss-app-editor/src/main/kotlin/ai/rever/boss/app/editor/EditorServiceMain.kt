@@ -45,8 +45,9 @@ fun main() {
                     PluginCapability
                         .newBuilder()
                         .setAction("write_file")
-                        .setInputSchemaJson("""{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}""")
-                        .setOutputSchemaJson(
+                        .setInputSchemaJson(
+                            """{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}""",
+                        ).setOutputSchemaJson(
                             """{"type":"object","properties":{"success":{"type":"boolean"},"error_message":{"type":"string"}},"required":["success"]}""",
                         ).setDescription("Write content to a file")
                         .build(),
