@@ -2,8 +2,8 @@ package ai.rever.boss.cli
 
 import ai.rever.boss.plugin.PluginPersistence
 import ai.rever.boss.plugin.launchpad.HostMeta
-import ai.rever.boss.plugin.launchpad.PluginMcpToolDeclaration
 import ai.rever.boss.plugin.launchpad.PluginManifest
+import ai.rever.boss.plugin.launchpad.PluginMcpToolDeclaration
 import ai.rever.boss.plugin.launchpad.launchpadJson
 import ai.rever.boss.utils.logging.BossLogger
 import com.github.ajalt.clikt.core.parse
@@ -19,8 +19,8 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * The aggregation is split from the CLI wiring so the per-jar read path and the
@@ -61,7 +61,7 @@ class BossPluginAuditCliTest {
         parent: File,
         pluginId: String,
         permissions: List<String>,
-        mcpTools: List<PluginMcpToolDeclaration>,
+        mcpTools: List<PluginMcpToolDeclaration> = emptyList(),
         version: String = "1.0.0",
     ): File {
         val manifest =
@@ -119,7 +119,10 @@ class BossPluginAuditCliTest {
         assertEquals(0, report.byUnrecognised.size, "all three permissions are canonical")
         // filesystem is requested by every plugin
         val filesystemPlugins = report.byPermission["filesystem"].orEmpty()
-        assertEquals(setOf("ai.rever.boss.terminal", "ai.rever.boss.browser", "ai.rever.boss.editor"), filesystemPlugins.toSet())
+        assertEquals(
+            setOf("ai.rever.boss.terminal", "ai.rever.boss.browser", "ai.rever.boss.editor"),
+            filesystemPlugins.toSet(),
+        )
         // terminal/browser/editor are each requested by exactly one plugin
         assertEquals(listOf("ai.rever.boss.terminal"), report.byPermission["terminal"])
         assertEquals(listOf("ai.rever.boss.browser"), report.byPermission["browser"])
@@ -176,7 +179,8 @@ class BossPluginAuditCliTest {
             )
 
         val report =
-            BossPluginAuditCommand.collectAudit(listOf(entry(jar, "ai.rever.boss.mix")), BossLogger.forComponent("test"))
+            BossPluginAuditCommand
+                .collectAudit(listOf(entry(jar, "ai.rever.boss.mix")), BossLogger.forComponent("test"))
 
         assertEquals(3, report.mcpTools.size)
         assertEquals(1, report.adminOnlyCount)
@@ -187,7 +191,10 @@ class BossPluginAuditCliTest {
         )
         assertEquals(
             setOf("safe_read", "any_write"),
-            report.mcpTools.filter { !it.adminOnly }.map { it.toolName }.toSet(),
+            report.mcpTools
+                .filter { !it.adminOnly }
+                .map { it.toolName }
+                .toSet(),
         )
     }
 
@@ -273,11 +280,17 @@ class BossPluginAuditCliTest {
 
         // Re-route stdout so the JSON goes into our buffer, not the test runner.
         out.reset()
-        BossPluginAuditCommand.renderAndExit(
-            BossPluginAuditCommand.collectAudit(listOf(entry(jar, "ai.rever.boss.jsonable")), BossLogger.forComponent("test")),
-            json = true,
-        )
-        val json = out.toString()
+        try {
+            BossPluginAuditCommand.renderAndExit(
+                BossPluginAuditCommand
+                    .collectAudit(listOf(entry(jar, "ai.rever.boss.jsonable")), BossLogger.forComponent("test")),
+                json = true,
+            )
+        } catch (_: com.github.ajalt.clikt.core.ProgramResult) {
+            // An unrecognised permission is present, so exit code 2 is the CORRECT
+            // outcome here; the assertions below are about the JSON body, not the code.
+        }
+        val json = out.toString().trim()
         assertTrue(json.startsWith("{") && json.endsWith("}"), "single object: $json")
         assertTrue("\"filesystem\"" in json, "canonical permission bucket")
         assertTrue("\"websocket.tunnel\"" in json, "unrecognised permission bucket")
@@ -315,13 +328,10 @@ class BossPluginAuditCliTest {
         // Clikt-level smoke: confirms the subcommand wires up and runs without
         // crashing. The full surface is covered by the collectAudit tests above.
         out.reset()
-        try {
-            com.github.ajalt.clikt.core.CliktCommand().parse(
-                listOf("plugin", "audit", "--help"),
-            )
-        } catch (_: Exception) {
-            // --help prints to stdout and exits via helpopt; ignore.
-        }
-        // We do not assert on the body - the surface is tested above.
+        assertTrue(
+            createBossCLI().registeredSubcommands().any { it.commandName == "plugin" },
+            "the plugin group is registered on the root command",
+        )
+        // We do not assert on the audit body - the surface is tested above.
     }
 }

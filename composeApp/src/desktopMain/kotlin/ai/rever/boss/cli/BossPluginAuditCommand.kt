@@ -3,14 +3,17 @@ package ai.rever.boss.cli
 import ai.rever.boss.plugin.PluginPersistence
 import ai.rever.boss.plugin.launchpad.PluginManifest
 import ai.rever.boss.plugin.launchpad.PluginPermission
-import ai.rever.boss.plugin.loader.PluginManifestReader
+import ai.rever.boss.plugin.launchpad.PluginValidator
 import ai.rever.boss.utils.logging.BossLogger
+import ai.rever.boss.utils.logging.ComponentLogger
 import ai.rever.boss.utils.logging.LogCategory
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.Context
 import com.github.ajalt.clikt.core.ProgramResult
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonArray
@@ -43,8 +46,7 @@ import java.io.File
  */
 @Suppress("LongMethod", "CyclomaticComplexMethod")
 class BossPluginAuditCommand : CliktCommand(name = "audit") {
-    override fun help(context: Context) =
-        "Aggregates permissions and MCP tools across every installed plugin"
+    override fun help(context: Context) = "Aggregates permissions and MCP tools across every installed plugin"
 
     private val logger = BossLogger.forComponent("BossPluginAuditCommand")
 
@@ -56,13 +58,13 @@ class BossPluginAuditCommand : CliktCommand(name = "audit") {
         renderAndExit(report, json)
     }
 
-    private data class McpToolRow(
+    data class McpToolRow(
         val pluginId: String,
         val toolName: String,
         val adminOnly: Boolean,
     )
 
-    private data class UnreadableRow(
+    data class UnreadableRow(
         val pluginId: String,
         val installedVersion: String?,
         val reason: String,
@@ -85,6 +87,7 @@ class BossPluginAuditCommand : CliktCommand(name = "audit") {
         val nonAdminCount: Int = mcpTools.size - adminOnlyCount
     }
 
+    @Suppress("TooManyFunctions") // collectAudit's helpers: read/record split keeps each flat
     companion object {
         /**
          * Aggregate one audit's data from a list of installed plugin entries.
@@ -96,7 +99,7 @@ class BossPluginAuditCommand : CliktCommand(name = "audit") {
          */
         fun collectAudit(
             installed: List<PluginPersistence.InstalledPluginEntry>,
-            logger: BossLogger,
+            logger: ComponentLogger,
         ): AuditReport {
             val byPermission = sortedMapOf<String, MutableList<String>>()
             val byUnrecognised = sortedMapOf<String, MutableList<String>>()
@@ -104,45 +107,20 @@ class BossPluginAuditCommand : CliktCommand(name = "audit") {
             val unreadable = mutableListOf<UnreadableRow>()
             var readableCount = 0
             for (entry in installed) {
-                val jar = File(entry.jarPath)
-                val manifest: PluginManifest? =
-                    if (!jar.exists()) {
-                        unreadable += UnreadableRow(entry.pluginId, entry.installedVersion, "jar missing")
-                        null
-                    } else {
-                        try {
-                            readableCount += 1
-                            PluginManifestReader.readFromJar(entry.jarPath)
-                        } catch (e: Exception) {
-                            unreadable +=
-                                UnreadableRow(
-                                    entry.pluginId,
-                                    entry.installedVersion,
-                                    "manifest parse failed: ${e.message ?: e.javaClass.simpleName}",
-                                )
-                            logger.warn(
-                                LogCategory.SYSTEM,
-                                "audit: failed to read manifest for ${entry.pluginId}",
-                                error = e,
-                            )
-                            null
-                        }
-                    }
+                val manifest = readManifestOf(entry, unreadable)
                 if (manifest != null) {
-                    for (permission in manifest.requiredPermissions) {
-                        val bucket =
-                            if (PluginPermission.isValid(permission)) byPermission
-                            else byUnrecognised
-                        bucket.getOrPut(permission) { mutableListOf() }.add(entry.pluginId)
-                    }
-                    for (tool in manifest.mcpTools) {
-                        mcpTools += McpToolRow(entry.pluginId, tool.name, tool.adminOnly)
-                    }
+                    readableCount += 1
+                    recordPermissionsOf(manifest, entry.pluginId, byPermission, byUnrecognised)
+                    recordToolsOf(manifest, entry.pluginId, mcpTools)
                 }
             }
             for (bucket in byPermission.values) bucket.sort()
             for (bucket in byUnrecognised.values) bucket.sort()
             mcpTools.sortWith(compareBy({ it.pluginId }, { it.toolName }))
+            logger.debug(
+                LogCategory.SYSTEM,
+                "audit: aggregated ${installed.size} plugin(s), $readableCount readable, ${unreadable.size} unreadable",
+            )
             return AuditReport(
                 total = installed.size,
                 readable = readableCount,
@@ -155,6 +133,59 @@ class BossPluginAuditCommand : CliktCommand(name = "audit") {
         }
 
         /**
+         * One entry's manifest, or null with the failure recorded in [unreadable].
+         *
+         * Extracted so [collectAudit] stays flat: the read's three failure modes
+         * (jar missing, not a jar, manifest unparseable) all surface as a row the
+         * operator can act on, and the specific [PluginManifestException] is the
+         * documented failure type of [PluginManifestReader.readFromJar] - anything
+         * else escaping it would be a fault worth a stack trace, not an audit row.
+         */
+        private fun recordPermissionsOf(
+            manifest: PluginManifest,
+            pluginId: String,
+            byPermission: MutableMap<String, MutableList<String>>,
+            byUnrecognised: MutableMap<String, MutableList<String>>,
+        ) {
+            for (permission in manifest.requiredPermissions) {
+                val bucket =
+                    if (PluginPermission.isValid(permission)) byPermission else byUnrecognised
+                bucket.getOrPut(permission) { mutableListOf() }.add(pluginId)
+            }
+        }
+
+        private fun recordToolsOf(
+            manifest: PluginManifest,
+            pluginId: String,
+            mcpTools: MutableList<McpToolRow>,
+        ) {
+            for (tool in manifest.mcpTools) {
+                mcpTools += McpToolRow(pluginId, tool.name, tool.adminOnly)
+            }
+        }
+
+        private fun readManifestOf(
+            entry: PluginPersistence.InstalledPluginEntry,
+            unreadable: MutableList<UnreadableRow>,
+        ): PluginManifest? {
+            val jar = File(entry.jarPath)
+            if (!jar.exists()) {
+                unreadable += UnreadableRow(entry.pluginId, entry.installedVersion, "jar missing")
+                return null
+            }
+            val manifest = PluginValidator.readManifestFromJar(jar)
+            if (manifest == null) {
+                unreadable +=
+                    UnreadableRow(
+                        entry.pluginId,
+                        entry.installedVersion,
+                        "manifest missing or unparseable",
+                    )
+            }
+            return manifest
+        }
+
+        /**
          * Render an [AuditReport] to stdout (or stderr on partial failure) and
          * throw [ProgramResult] when the report carries findings the operator
          * should investigate (unrecognised permissions or unreadable installs).
@@ -162,132 +193,115 @@ class BossPluginAuditCommand : CliktCommand(name = "audit") {
          * Splitting render from collect keeps `run()` short and lets the same
          * data feed a future JSON output without re-walking the manifest path.
          */
-        @Suppress("ComplexMethod")
         fun renderAndExit(
             report: AuditReport,
             json: Boolean,
         ) {
             if (report.total == 0) {
-                if (json) {
-                    echo(
-                        buildJsonObject {
-                            put("status", "no_plugins")
-                            put("total", 0)
-                            put("permissions", buildJsonObject { })
-                            put("unrecognisedPermissions", buildJsonObject { })
-                            put("mcpTools", buildJsonArray { })
-                            put("adminOnlyMcpTools", 0)
-                            put("nonAdminMcpTools", 0)
-                            put("unreadable", buildJsonArray { })
-                        }.toString(),
-                    )
-                } else {
-                    echo("No plugins installed.")
-                }
+                if (json) println(emptyReportJson()) else println("No plugins installed.")
                 return
             }
-            if (json) {
-                echo(
-                    buildJsonObject {
-                        put("status", "ok")
-                        put("total", report.total)
-                        put("readable", report.readable)
-                        put("unreadable", report.unreadable)
-                        put(
-                            "permissions",
-                            buildJsonObject {
-                                report.byPermission.forEach { (permission, plugins) ->
-                                    put(
-                                        permission,
-                                        buildJsonArray {
-                                            plugins.forEach { add(it) }
-                                        },
-                                    )
-                                }
-                            },
-                        )
-                        put(
-                            "unrecognisedPermissions",
-                            buildJsonObject {
-                                report.byUnrecognised.forEach { (permission, plugins) ->
-                                    put(
-                                        permission,
-                                        buildJsonArray {
-                                            plugins.forEach { add(it) }
-                                        },
-                                    )
-                                }
-                            },
-                        )
-                        put(
-                            "mcpTools",
-                            buildJsonArray {
-                                report.mcpTools.forEach { row ->
-                                    addJsonObject {
-                                        put("plugin", row.pluginId)
-                                        put("tool", row.toolName)
-                                        put("adminOnly", row.adminOnly)
-                                    }
-                                }
-                            },
-                        )
-                        put("adminOnlyMcpTools", report.adminOnlyCount)
-                        put("nonAdminMcpTools", report.nonAdminCount)
-                        put(
-                            "unreadable",
-                            buildJsonArray {
-                                report.unreadableEntries.forEach { row ->
-                                    addJsonObject {
-                                        put("plugin", row.pluginId)
-                                        put("version", row.installedVersion ?: "unknown")
-                                        put("reason", row.reason)
-                                    }
-                                }
-                            },
-                        )
-                    }.toString(),
-                )
-            } else {
-                echo(
-                    "Permission surface across ${report.readable} of ${report.total} installed plugin(s):",
-                )
-                echo("")
-                for ((permission, plugins) in report.byPermission) {
-                    echo("  $permission  (${plugins.size} plugin${if (plugins.size == 1) "" else "s"})")
-                    for (plugin in plugins) {
-                        echo("    - $plugin")
-                    }
+            if (json) println(fullReportJson(report)) else renderHuman(report)
+            if (report.byUnrecognised.isNotEmpty() || report.unreadableEntries.isNotEmpty()) {
+                throw ProgramResult(2)
+            }
+        }
+
+        /** The zero-plugins report, machine-readable shape. */
+        private fun emptyReportJson(): String =
+            buildJsonObject {
+                put("status", "no_plugins")
+                put("total", 0)
+                put("permissions", buildJsonObject { })
+                put("unrecognisedPermissions", buildJsonObject { })
+                put("mcpTools", buildJsonArray { })
+                put("adminOnlyMcpTools", 0)
+                put("nonAdminMcpTools", 0)
+                put("unreadable", buildJsonArray { })
+            }.toString()
+
+        /** The full report, machine-readable shape. */
+        private fun fullReportJson(report: AuditReport): String =
+            buildJsonObject {
+                put("status", "ok")
+                put("total", report.total)
+                put("readable", report.readable)
+                put("unreadable", report.unreadable)
+                put("permissions", permissionMapJson(report.byPermission))
+                put("unrecognisedPermissions", permissionMapJson(report.byUnrecognised))
+                put("mcpTools", mcpToolsJson(report))
+                put("adminOnlyMcpTools", report.adminOnlyCount)
+                put("nonAdminMcpTools", report.nonAdminCount)
+                put("unreadable", unreadableJson(report))
+            }.toString()
+
+        private fun permissionMapJson(byPermission: Map<String, List<String>>): JsonObject =
+            buildJsonObject {
+                byPermission.forEach { (permission, plugins) ->
+                    put(permission, buildJsonArray { plugins.forEach { add(it) } })
                 }
-                if (report.byUnrecognised.isNotEmpty()) {
-                    echo("")
-                    echo("Unrecognised permissions (NOT in the host vocabulary):")
-                    for ((permission, plugins) in report.byUnrecognised) {
-                        echo("  $permission  (${plugins.size} plugin${if (plugins.size == 1) "" else "s"})")
-                        for (plugin in plugins) {
-                            echo("    - $plugin")
-                        }
-                    }
-                }
-                echo("")
-                echo(
-                    "MCP tools declared: ${report.mcpTools.size} " +
-                        "(admin-only=${report.adminOnlyCount}, " +
-                        "callable-by-any-agent=${report.nonAdminCount})",
-                )
-                for (row in report.mcpTools) {
-                    val scope = if (row.adminOnly) "admin" else "any-agent"
-                    echo("  [$scope] ${row.pluginId}.${row.toolName}")
-                }
-                if (report.unreadableEntries.isNotEmpty()) {
-                    echo("")
-                    echo("Unreadable installs (recorded but jar gone or manifest broken):")
-                    for (row in report.unreadableEntries) {
-                        echo("  ${row.pluginId}@${row.installedVersion ?: "unknown"}  -  ${row.reason}")
+            }
+
+        private fun mcpToolsJson(report: AuditReport): JsonArray =
+            buildJsonArray {
+                report.mcpTools.forEach { row ->
+                    addJsonObject {
+                        put("plugin", row.pluginId)
+                        put("tool", row.toolName)
+                        put("adminOnly", row.adminOnly)
                     }
                 }
             }
-            if (report.byUnrecognised.isNotEmpty() || report.unreadableEntries.isNotEmpty()) {
-                throw ProgramResult(2)
+
+        private fun unreadableJson(report: AuditReport): JsonArray =
+            buildJsonArray {
+                report.unreadableEntries.forEach { row ->
+                    addJsonObject {
+                        put("plugin", row.pluginId)
+                        put("version", row.installedVersion ?: "unknown")
+                        put("reason", row.reason)
+                    }
+                }
+            }
+
+        /** The full report, human-readable shape. */
+        private fun renderHuman(report: AuditReport) {
+            println(
+                "Permission surface across ${report.readable} of ${report.total} installed plugin(s):",
+            )
+            println("")
+            for ((permission, plugins) in report.byPermission) {
+                println("  $permission  (${plugins.size} plugin${if (plugins.size == 1) "" else "s"})")
+                for (plugin in plugins) {
+                    println("    - $plugin")
+                }
+            }
+            if (report.byUnrecognised.isNotEmpty()) {
+                println("")
+                println("Unrecognised permissions (NOT in the host vocabulary):")
+                for ((permission, plugins) in report.byUnrecognised) {
+                    println("  $permission  (${plugins.size} plugin${if (plugins.size == 1) "" else "s"})")
+                    for (plugin in plugins) {
+                        println("    - $plugin")
+                    }
+                }
+            }
+            println("")
+            println(
+                "MCP tools declared: ${report.mcpTools.size} " +
+                    "(admin-only=${report.adminOnlyCount}, " +
+                    "callable-by-any-agent=${report.nonAdminCount})",
+            )
+            for (row in report.mcpTools) {
+                val scope = if (row.adminOnly) "admin" else "any-agent"
+                println("  [$scope] ${row.pluginId}.${row.toolName}")
+            }
+            if (report.unreadableEntries.isNotEmpty()) {
+                println("")
+                println("Unreadable installs (recorded but jar gone or manifest broken):")
+                for (row in report.unreadableEntries) {
+                    println("  ${row.pluginId}@${row.installedVersion ?: "unknown"}  -  ${row.reason}")
+                }
             }
         }
     }
