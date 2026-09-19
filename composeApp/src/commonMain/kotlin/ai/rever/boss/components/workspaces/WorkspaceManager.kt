@@ -413,6 +413,70 @@ class WorkspaceManager {
     }
 
     /**
+     * Blocking sibling of [saveCurrentWorkspace]. Writes the file and refreshes the in-memory
+     * list on the calling thread, returning only after both have completed.
+     *
+     * For callers whose response CLAIMS the Space is saved: an async fire-and-forget would let
+     * the response leave before the bytes hit disk, and the agent reading the response back would
+     * re-enter a Space that doesn't exist yet. The UI flow stays on [saveCurrentWorkspace]
+     * because the status message is fire-and-forget there; a tool's success message is a contract.
+     *
+     * Mirrors [saveLastSessionBlocking]'s shape - same in-place write, same key-by-id list update,
+     * same `loadedFileNames` update, same `null` on failure - so a caller cannot tell from the
+     * result whether the bytes went via scope.launch or straight onto disk.
+     */
+    fun saveCurrentWorkspaceBlocking(name: String? = null): LayoutWorkspace? {
+        val current = _currentWorkspace.value ?: return null
+        val now = Clock.System.now().toEpochMilliseconds()
+        val savedWorkspace =
+            if (isSpaceSlot(current.id)) {
+                savedCopyOfSlot(
+                    current = current,
+                    id = LayoutWorkspace.generateId(),
+                    now = now,
+                    takenNames = savedSpaceNames(_workspaces.value),
+                    requestedName = name,
+                )
+            } else {
+                current.copy(
+                    id = current.id.ifEmpty { LayoutWorkspace.generateId() },
+                    name =
+                        name?.let {
+                            uniqueWorkspaceName(it, savedSpaceNames(_workspaces.value) - current.name)
+                        } ?: current.name,
+                    timestamp = now,
+                )
+            }
+
+        val fileName = fileNameFor(savedWorkspace)
+        val filePath = fileManager.saveWorkspaceBlocking(savedWorkspace, fileName)
+        if (filePath == null) {
+            logger.warn(
+                LogCategory.WORKSPACE,
+                "Failed to save current workspace (blocking)",
+                mapOf("workspace" to savedWorkspace.name),
+            )
+            return null
+        }
+        loadedFileNames[savedWorkspace.id] = fileName
+        val workspaces = _workspaces.value.toMutableList()
+        val existingIndex = workspaces.indexOfFirst { it.id == savedWorkspace.id }
+        if (existingIndex >= 0) {
+            workspaces[existingIndex] = savedWorkspace
+        } else {
+            workspaces.add(savedWorkspace)
+        }
+        _workspaces.value = workspaces
+        _currentWorkspace.value = savedWorkspace
+        logger.debug(
+            LogCategory.WORKSPACE,
+            "Saved current workspace (blocking)",
+            mapOf("id" to savedWorkspace.id, "name" to savedWorkspace.name),
+        )
+        return savedWorkspace
+    }
+
+    /**
      * Write [record] as the Last Session file, and refresh the list entry for it.
      *
      * The layout watcher's only write. Deliberately does NOT touch [currentWorkspace]: while the
