@@ -37,25 +37,50 @@ class ProcessMonitor(
 
     /**
      * Start monitoring a specific process.
+     *
+     * Synchronized on [monitorJobs] to prevent check-then-act races where concurrent calls
+     * (e.g. startup trySpawn racing startGlobalMonitor) launch duplicate monitor coroutines
+     * for the same process id (#1178). On completion or cancellation, the coroutine
+     * self-deregisters from [monitorJobs].
      */
     fun startMonitoring(processId: String) {
-        val existing = monitorJobs[processId]
-        if (existing?.isActive == true) return
+        synchronized(monitorJobs) {
+            val existing = monitorJobs[processId]
+            if (existing?.isActive == true) return
 
-        monitorJobs[processId] =
-            scope.launch {
-                monitorProcess(processId)
-            }
-        logger.info("Started monitoring process: {}", processId)
+            val job =
+                scope.launch {
+                    try {
+                        monitorProcess(processId)
+                    } finally {
+                        synchronized(monitorJobs) {
+                            coroutineContext[Job]?.let { activeJob ->
+                                monitorJobs.remove(processId, activeJob)
+                            }
+                        }
+                    }
+                }
+            monitorJobs[processId] = job
+            logger.info("Started monitoring process: {}", processId)
+        }
     }
 
     /**
      * Stop monitoring a specific process.
      */
     fun stopMonitoring(processId: String) {
-        monitorJobs.remove(processId)?.cancel()
+        val job =
+            synchronized(monitorJobs) {
+                monitorJobs.remove(processId)
+            }
+        job?.cancel()
         logger.info("Stopped monitoring process: {}", processId)
     }
+
+    /**
+     * Returns true if a monitor coroutine is currently active for [processId].
+     */
+    fun isMonitoring(processId: String): Boolean = monitorJobs[processId]?.isActive == true
 
     /**
      * Start the global monitor that watches for new/removed processes.
@@ -87,9 +112,7 @@ class ProcessMonitor(
                             }
                             return@forEach
                         }
-                        if (!monitorJobs.containsKey(process.config.processId) ||
-                            monitorJobs[process.config.processId]?.isActive != true
-                        ) {
+                        if (!isMonitoring(process.config.processId)) {
                             startMonitoring(process.config.processId)
                         }
                     }
@@ -107,8 +130,13 @@ class ProcessMonitor(
      */
     fun stopSupervision() {
         globalMonitorJob?.cancel()
-        monitorJobs.values.forEach { it.cancel() }
-        monitorJobs.clear()
+        val jobs =
+            synchronized(monitorJobs) {
+                val copy = monitorJobs.values.toList()
+                monitorJobs.clear()
+                copy
+            }
+        jobs.forEach { it.cancel() }
     }
 
     /**

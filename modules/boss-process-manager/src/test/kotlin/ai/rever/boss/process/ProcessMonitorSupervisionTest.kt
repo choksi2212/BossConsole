@@ -1,5 +1,7 @@
 package ai.rever.boss.process
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
@@ -200,4 +202,70 @@ class ProcessMonitorSupervisionTest {
         reapable.forEach { it.destroy() }
         assertFalse(proc.isAlive, "the hook's destroy must reach a registered plugin child")
     }
+
+    @Test
+    fun `concurrent startMonitoring calls launch exactly one job and emit exactly one failure on death`() =
+        runTest {
+            val registry = ProcessRegistry()
+            val monitor = ProcessMonitor(registry, backgroundScope)
+            val failures = mutableListOf<ProcessFailure>()
+            backgroundScope.launch { monitor.failures.collect { failures += it } }
+
+            val proc = FakeProcess(9999)
+            registry.register("svc-race", managed("svc-race", ProcessType.SERVICE, proc))
+
+            // Race multiple concurrent startMonitoring calls
+            val startJobs =
+                (1..10).map {
+                    backgroundScope.launch(Dispatchers.Default) {
+                        monitor.startMonitoring("svc-race")
+                    }
+                }
+            startJobs.joinAll()
+
+            advanceTimeBy(50)
+            proc.die(exitCode = 137)
+            advanceTimeBy(500)
+
+            // Exactly one failure must be emitted on death, preventing duplicate respawns (#1178)
+            assertEquals(1, failures.size, "expected exactly 1 failure event, got: $failures")
+            assertEquals("svc-race", failures.first().processId)
+            assertEquals(137, failures.first().exitCode)
+        }
+
+    @Test
+    fun `monitor job self-deregisters on process exit`() =
+        runTest {
+            val registry = ProcessRegistry()
+            val monitor = ProcessMonitor(registry, backgroundScope)
+
+            val proc = FakeProcess(8888)
+            registry.register("svc-exit", managed("svc-exit", ProcessType.SERVICE, proc))
+
+            monitor.startMonitoring("svc-exit")
+            advanceTimeBy(50)
+            assertTrue(monitor.isMonitoring("svc-exit"))
+
+            proc.die(exitCode = 1)
+            advanceTimeBy(500)
+
+            assertFalse(monitor.isMonitoring("svc-exit"), "completed monitor job must self-deregister")
+        }
+
+    @Test
+    fun `stopMonitoring cancels the active job and removes it`() =
+        runTest {
+            val registry = ProcessRegistry()
+            val monitor = ProcessMonitor(registry, backgroundScope)
+
+            val proc = FakeProcess(7777)
+            registry.register("svc-stop", managed("svc-stop", ProcessType.SERVICE, proc))
+
+            monitor.startMonitoring("svc-stop")
+            advanceTimeBy(50)
+            assertTrue(monitor.isMonitoring("svc-stop"))
+
+            monitor.stopMonitoring("svc-stop")
+            assertFalse(monitor.isMonitoring("svc-stop"))
+        }
 }
