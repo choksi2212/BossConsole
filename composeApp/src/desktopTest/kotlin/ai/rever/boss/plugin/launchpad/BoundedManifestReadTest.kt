@@ -4,6 +4,7 @@ import java.io.File
 import java.nio.file.Files
 import java.util.jar.JarEntry
 import java.util.jar.JarOutputStream
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -28,6 +29,11 @@ import kotlin.test.assertTrue
 class BoundedManifestReadTest {
     private val workDir = Files.createTempDirectory("boss-bounded-manifest-read-test")
 
+    @AfterTest
+    fun tearDown() {
+        workDir.toFile().deleteRecursively()
+    }
+
     @Test
     fun `the bounded reader returns the manifest for a normal-sized entry`() {
         val jar = writeJar(
@@ -36,7 +42,7 @@ class BoundedManifestReadTest {
         )
 
         val manifestText =
-            JarFile(jar).use { jarFile ->
+            openJarFile(jar).use { jarFile ->
                 val entry =
                     jarFile.getJarEntry("META-INF/boss-plugin/plugin.json")
                 assertNotNull(entry, "test fixture missing manifest entry")
@@ -57,7 +63,7 @@ class BoundedManifestReadTest {
         val jar = writeJar("oversized.jar", oversized)
 
         val result =
-            JarFile(jar).use { jarFile ->
+            openJarFile(jar).use { jarFile ->
                 val entry =
                     jarFile.getJarEntry("META-INF/boss-plugin/plugin.json")
                 assertNotNull(entry, "test fixture missing manifest entry")
@@ -75,7 +81,7 @@ class BoundedManifestReadTest {
         val jar = writeJar("exactly-too-big.jar", "x".repeat(DevPluginArtifacts.MAX_MANIFEST_BYTES + 1))
 
         val result =
-            JarFile(jar).use { jarFile ->
+            openJarFile(jar).use { jarFile ->
                 val entry =
                     jarFile.getJarEntry("META-INF/boss-plugin/plugin.json")
                 assertNotNull(entry, "test fixture missing manifest entry")
@@ -93,7 +99,7 @@ class BoundedManifestReadTest {
         val jar = writeJar("exactly-fits.jar", content)
 
         val result =
-            JarFile(jar).use { jarFile ->
+            openJarFile(jar).use { jarFile ->
                 val entry =
                     jarFile.getJarEntry("META-INF/boss-plugin/plugin.json")
                 assertNotNull(entry, "test fixture missing manifest entry")
@@ -112,7 +118,7 @@ class BoundedManifestReadTest {
         val jar = writeJar("cap.jar", "x".repeat(DevPluginArtifacts.MAX_MANIFEST_BYTES))
 
         val result =
-            JarFile(jar).use { jarFile ->
+            openJarFile(jar).use { jarFile ->
                 val entry =
                     jarFile.getJarEntry("META-INF/boss-plugin/plugin.json")
                 assertNotNull(entry, "test fixture missing manifest entry")
@@ -138,5 +144,5 @@ class BoundedManifestReadTest {
         return jar
     }
 
-    private fun JarFile(file: File): java.util.jar.JarFile = java.util.jar.JarFile(file)
+    private fun openJarFile(file: File): java.util.jar.JarFile = java.util.jar.JarFile(file)
 }
