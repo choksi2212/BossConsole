@@ -570,6 +570,11 @@ fun BossPopup(
  *
  * Pure, and separate from the composable, so the conversion is pinned by a test at more than one
  * scale factor rather than only by looking at a 1x screen.
+ *
+ * A zero or NaN offset, or a layout that has not yet been placed, returns [IntRect.Zero]. The validity
+ * check is `Offset.isValid()` from Compose, which requires both coordinates to be finite - so an
+ * infinite offset is treated as unplaced and produces an empty rect rather than scaling to a window
+ * corner.
  */
 internal fun anchorRectInDp(
     positionPx: Offset,
@@ -586,9 +591,6 @@ internal fun anchorRectInDp(
         bottom = top + (sizePx.height / density).roundToInt(),
     )
 }
-
-/** Guards against the Unspecified/NaN offset a detached or not-yet-placed layout reports. */
-private fun Offset.isValid(): Boolean = !x.isNaN() && !y.isNaN()
 
 /**
  * Where a [BossPopup] places itself on the heavyweight path.

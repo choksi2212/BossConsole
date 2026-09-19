@@ -164,4 +164,14 @@ class AnchorRectConversionTest {
     fun `an unplaced layout reporting NaN does not become a NaN window position`() {
         assertEquals(IntRect.Zero, anchorRectInDp(Offset(Float.NaN, Float.NaN), IntSize(10, 10), density = 2f))
     }
+
+    @Test
+    fun `an infinite anchor coordinate also reads as unplaced, not as a window corner`() {
+        // Compose's Offset.isValid() rejects infinity as well as NaN - stricter than a plain
+        // !isNaN() check, which is the right thing for an anchor position. The previous local
+        // Offset.isValid() extension was shadowed by the Compose member, so the call site has
+        // always been this strict; the test pins that.
+        assertEquals(IntRect.Zero, anchorRectInDp(Offset(Float.POSITIVE_INFINITY, 10f), IntSize(10, 10), density = 2f))
+        assertEquals(IntRect.Zero, anchorRectInDp(Offset(10f, Float.NEGATIVE_INFINITY), IntSize(10, 10), density = 2f))
+    }
 }
