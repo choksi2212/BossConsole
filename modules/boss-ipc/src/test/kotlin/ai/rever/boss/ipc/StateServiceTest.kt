@@ -181,4 +181,104 @@ class StateServiceTest {
 
             assertTrue(resultKeys.containsAll(keys), "All stored keys should be listed")
         }
+
+    @Test
+    fun `watchState buffers rapid updates without dropping intermediate versions`() =
+        runBlocking {
+            withTimeout(10_000) {
+                val stub = StateServiceGrpcKt.StateServiceCoroutineStub(channel!!)
+                val key = "rapid.watch.key"
+
+                stub.setState(
+                    StateUpdate
+                        .newBuilder()
+                        .setKey(key)
+                        .setValue(ByteString.copyFromUtf8("initial"))
+                        .setValueType("string")
+                        .setSourceProcess("test")
+                        .build(),
+                )
+
+                val emittedValues = mutableListOf<String>()
+                val job =
+                    launch {
+                        stub
+                            .watchState(StateKey.newBuilder().setKey(key).build())
+                            .collect { emittedValues += it.value.toStringUtf8() }
+                    }
+
+                // Wait until watcher is connected and initial snapshot is received
+                while (emittedValues.isEmpty()) {
+                    kotlinx.coroutines.delay(10)
+                }
+                assertEquals("initial", emittedValues.first())
+
+                // Rapid updates after subscribing (#1179)
+                for (i in 1..5) {
+                    stub.setState(
+                        StateUpdate
+                            .newBuilder()
+                            .setKey(key)
+                            .setValue(ByteString.copyFromUtf8("val-$i"))
+                            .setValueType("string")
+                            .setSourceProcess("test")
+                            .build(),
+                    )
+                }
+
+                while (emittedValues.size < 6) {
+                    kotlinx.coroutines.delay(10)
+                }
+                job.cancel()
+
+                assertEquals(
+                    listOf("initial", "val-1", "val-2", "val-3", "val-4", "val-5"),
+                    emittedValues,
+                )
+            }
+        }
+
+    @Test
+    fun `watchState on uninitialized key streams updates as they arrive without duplicates`() =
+        runBlocking {
+            withTimeout(10_000) {
+                val stub = StateServiceGrpcKt.StateServiceCoroutineStub(channel!!)
+                val key = "uninitialized.watch.key"
+
+                val emitted = mutableListOf<String>()
+                val job =
+                    launch {
+                        stub
+                            .watchState(StateKey.newBuilder().setKey(key).build())
+                            .collect { emitted += it.value.toStringUtf8() }
+                    }
+
+                kotlinx.coroutines.delay(50)
+                stub.setState(
+                    StateUpdate
+                        .newBuilder()
+                        .setKey(key)
+                        .setValue(ByteString.copyFromUtf8("first"))
+                        .setValueType("string")
+                        .setSourceProcess("test")
+                        .build(),
+                )
+                stub.setState(
+                    StateUpdate
+                        .newBuilder()
+                        .setKey(key)
+                        .setValue(ByteString.copyFromUtf8("second"))
+                        .setValueType("string")
+                        .setSourceProcess("test")
+                        .build(),
+                )
+
+                while (emitted.size < 2) {
+                    kotlinx.coroutines.delay(10)
+                }
+                job.cancel()
+
+                assertEquals(listOf("first", "second"), emitted)
+            }
+        }
 }

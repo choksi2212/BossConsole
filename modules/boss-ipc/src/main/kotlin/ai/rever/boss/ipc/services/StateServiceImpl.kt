@@ -5,10 +5,13 @@ import ai.rever.boss.ipc.auth.ProcessAuthority
 import ai.rever.boss.ipc.auth.ProcessIdentity
 import ai.rever.boss.ipc.proto.*
 import com.google.protobuf.ByteString
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.produceIn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
@@ -50,21 +53,36 @@ class StateServiceImpl : StateServiceGrpcKt.StateServiceCoroutineImplBase() {
         return entry.toStateValue()
     }
 
+    @OptIn(FlowPreview::class)
     override fun watchState(request: StateKey): Flow<StateValue> =
         flow {
             val caller = IpcCall.current()
-            stateStore[request.key]?.let {
-                authorizeRead(it, caller)
-                emit(it.toStateValue())
-            }
+            var lastEmittedVersion = -1L
 
-            // Then stream changes
-            stateChanges
-                .filter { it.key == request.key }
-                .collect {
-                    authorizeRead(it, IpcCall.current())
-                    emit(it.toStateValue())
+            coroutineScope {
+                // Subscribe to stateChanges before snapshotting so updates in the gap are buffered (#1179)
+                val incoming =
+                    stateChanges
+                        .filter { it.key == request.key }
+                        .produceIn(this)
+
+                // Read snapshot after subscribing
+                val initial = stateStore[request.key]
+                if (initial != null) {
+                    authorizeRead(initial, caller)
+                    lastEmittedVersion = initial.version
+                    emit(initial.toStateValue())
                 }
+
+                // Stream subsequent changes, deduplicating any entry captured in both snapshot and subscription
+                for (entry in incoming) {
+                    if (entry.version > lastEmittedVersion) {
+                        authorizeRead(entry, IpcCall.current())
+                        lastEmittedVersion = entry.version
+                        emit(entry.toStateValue())
+                    }
+                }
+            }
         }
 
     override suspend fun setState(request: StateUpdate): StateValue {
