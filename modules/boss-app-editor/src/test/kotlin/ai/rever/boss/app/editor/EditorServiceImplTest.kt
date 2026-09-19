@@ -159,15 +159,20 @@ class EditorServiceImplTest {
     @Test
     fun `saveFile on an unwritable target reports failure with the OS error, not a silent Empty`() =
         runBlocking {
-            // Targeting a child of a directory that does not exist is the portable way to
+            // Targeting a child of an EXISTING FILE (not a directory) is the portable way to
             // make writeText fail across platforms: the mkdirs call inside saveFile silently
-            // succeeds (because the parent path is "writable" - the disk is writable), but the
-            // child path's open() fails because the intermediate directory was never created.
-            // On POSIX the open fails with ENOENT; on Windows it fails with the equivalent.
-            // Either way the implementation surfaces the error instead of swallowing it.
-            val tempDir = Files.createTempDirectory("boss-savefile-missing-").toFile()
-            val missingParent = File(tempDir, "does/not/exist")
-            val target = File(missingParent, "out.txt")
+            // does NOT create a sibling under a non-directory, so the write fails with
+            // ENOTDIR (POSIX) / ERROR_DIRECTORY (Windows). Either way, saveFile must
+            // surface the failure rather than returning an Empty-shaped success.
+            // dir.setWritable(false, false) was tried first; it is not portable on Windows
+            // because admin or elevated contexts and certain filesystem ACLs ignore the
+            // request and let writes succeed anyway. Writing under a non-directory parent
+            // is portable because no POSIX/Windows conformance mode lets open(O_WRONLY |
+            // O_CREAT) succeed when the immediate parent is not a directory.
+            val tempDir = Files.createTempDirectory("boss-savefile-fail-").toFile()
+            val existingFile = File(tempDir, "a-file")
+            existingFile.writeText("not a directory\n")
+            val target = File(existingFile, "out.txt")
             try {
                 val response =
                     service.saveFile(
@@ -177,16 +182,14 @@ class EditorServiceImplTest {
                             .setContent("hello\n")
                             .build(),
                     )
-                assertFalse(response.success, "a write to a non-existent path must surface as failure")
+                assertFalse(response.success, "writing under a non-directory parent must surface as failure")
                 assertNotNull(response.errorMessage, "the OS error message must reach the wire")
                 assertFalse(
                     target.exists(),
                     "the file must not have been created by a hidden write",
                 )
             } finally {
-                // Re-create the parent so deleteRecursively can reach the temp dir.
-                missingParent.mkdirs()
-                target.parentFile?.parentFile?.deleteRecursively()
+                tempDir.deleteRecursively()
             }
         }
 
