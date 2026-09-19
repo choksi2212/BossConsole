@@ -28,6 +28,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.nio.file.Files
@@ -52,7 +53,16 @@ class TerminalLimitsTest {
             queued.add(block)
         }
 
-        fun next(): Runnable = checkNotNull(queued.poll(5, TimeUnit.SECONDS)) { "Expected a dispatched continuation" }
+        // runInterruptible makes the blocking poll cancellable (#1086): without it,
+        // withTimeout could only fire AFTER poll returned, so the test's deadlines
+        // were fiction for exactly the calls that flaked on busy Windows runners.
+        suspend fun next(
+            timeout: Long = 5,
+            unit: TimeUnit = TimeUnit.SECONDS,
+        ): Runnable =
+            runInterruptible {
+                checkNotNull(queued.poll(timeout, unit)) { "Expected a dispatched continuation" }
+            }
     }
 
     private val root = Files.createTempDirectory("terminal-limits-")
@@ -229,12 +239,15 @@ class TerminalLimitsTest {
     @Test
     fun `cancellation during return dispatch terminates the unclaimed process`() =
         runBlocking {
-            withTimeout(15_000) {
+            // The 30s budget covers the child JVM's cold start (same split as the
+            // `background` test); with runInterruptible the deadline now actually
+            // applies to the blocking poll instead of firing only after it returns.
+            withTimeout(30_000) {
                 val dispatcher = PausedDispatcher()
                 val scope = CoroutineScope(SupervisorJob() + dispatcher + callerContext)
                 val creation = scope.async { service.createSession(request("wait")) }
                 dispatcher.next().run()
-                val returning = dispatcher.next()
+                val returning = dispatcher.next(timeout = 30, unit = TimeUnit.SECONDS)
                 val unclaimed =
                     stub
                         .listSessions(Empty.getDefaultInstance())
