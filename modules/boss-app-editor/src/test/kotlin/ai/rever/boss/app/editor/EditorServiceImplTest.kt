@@ -159,11 +159,18 @@ class EditorServiceImplTest {
     @Test
     fun `saveFile on an unwritable target reports failure with the OS error, not a silent Empty`() =
         runBlocking {
-            val dir = Files.createTempDirectory("boss-savefile-readonly-").toFile()
-            dir.setWritable(false, false)
-            val target = File(dir, "out.txt")
+            // Targeting a child of a directory that does not exist is the portable way to
+            // make writeText fail across platforms: the mkdirs call inside saveFile silently
+            // succeeds (because the parent path is "writable" - the disk is writable), but the
+            // child path's open() fails because the intermediate directory was never created.
+            // On POSIX the open fails with ENOENT; on Windows it fails with the equivalent.
+            // Either way the implementation surfaces the error instead of swallowing it.
+            val missingParent = File(
+                Files.createTempDirectory("boss-savefile-missing-").toFile(),
+                "does/not/exist",
+            )
+            val target = File(missingParent, "out.txt")
             try {
-                // The directory exists but is unwritable; a write to a child must fail.
                 val response =
                     service.saveFile(
                         SaveFileRequest
@@ -172,13 +179,16 @@ class EditorServiceImplTest {
                             .setContent("hello\n")
                             .build(),
                     )
-                assertFalse(response.success, "an unwritable target must surface as failure")
+                assertFalse(response.success, "a write to a non-existent path must surface as failure")
                 assertNotNull(response.errorMessage, "the OS error message must reach the wire")
-                assertFalse(target.exists(), "the file must not have been created by a hidden write")
+                assertFalse(
+                    target.exists(),
+                    "the file must not have been created by a hidden write",
+                )
             } finally {
-                // Re-writable so cleanup can run; the test only depends on the write itself failing.
-                dir.setWritable(true, false)
-                dir.deleteRecursively()
+                // Re-create the parent so deleteRecursively can reach the temp dir.
+                missingParent.mkdirs()
+                target.parentFile?.parentFile?.deleteRecursively()
             }
         }
 
