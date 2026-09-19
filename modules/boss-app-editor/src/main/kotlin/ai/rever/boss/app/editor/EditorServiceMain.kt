@@ -42,14 +42,16 @@ fun main() {
                             """{"type":"object","properties":{"content":{"type":"string"},"language":{"type":"string"}}}""",
                         ).setDescription("Open a file in the editor")
                         .build(),
+                    val writeFileOutputSchema =
+                        "{\"type\":\"object\",\"properties\":{\"success\":{\"type\":\"boolean\"}," +
+                            "\"error_message\":{\"type\":\"string\"}},\"required\":[\"success\"]}"
                     PluginCapability
                         .newBuilder()
                         .setAction("write_file")
                         .setInputSchemaJson(
                             """{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}""",
-                        ).setOutputSchemaJson(
-                            """{"type":"object","properties":{"success":{"type":"boolean"},"error_message":{"type":"string"}},"required":["success"]}""",
-                        ).setDescription("Write content to a file")
+                        ).setOutputSchemaJson(writeFileOutputSchema)
+                        .setDescription("Write content to a file")
                         .build(),
                     PluginCapability
                         .newBuilder()
