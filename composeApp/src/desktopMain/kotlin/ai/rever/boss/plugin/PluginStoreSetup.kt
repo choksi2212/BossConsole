@@ -2242,26 +2242,12 @@ object PluginStoreSetup {
     /**
      * Read plugin manifest from a JAR file.
      */
-    private fun readPluginManifest(jarFile: File): ai.rever.boss.plugin.api.PluginManifest? {
-        return try {
+    private fun readPluginManifest(jarFile: File): ai.rever.boss.plugin.api.PluginManifest? =
+        try {
             java.util.jar.JarFile(jarFile).use { jar ->
-                val entry =
-                    jar.getJarEntry("META-INF/boss-plugin/plugin.json")
-                        ?: return null
-                // Bounded read - the previous form inflated the whole entry as a String and let
-                // a publisher-controlled system-plugin fallback OOM the host. Route through the
-                // shared 512 KiB cap the rest of the launchpad uses.
-                val content =
-                    DevPluginArtifacts.readBoundedUtf8String(jar.getInputStream(entry))
-                        ?: run {
-                            logger.error(
-                                LogCategory.SYSTEM,
-                                "Plugin manifest entry too large or unreadable",
-                                mapOf("file" to jarFile.name),
-                            )
-                            return null
-                        }
-                manifestJson.decodeFromString<ai.rever.boss.plugin.api.PluginManifest>(content)
+                readManifestContent(jar, jarFile.name)?.let { content ->
+                    manifestJson.decodeFromString<ai.rever.boss.plugin.api.PluginManifest>(content)
+                }
             }
         } catch (e: Exception) {
             logger.error(
@@ -2274,6 +2260,21 @@ object PluginStoreSetup {
             )
             null
         }
+
+    private fun readManifestContent(
+        jar: java.util.jar.JarFile,
+        fileName: String,
+    ): String? {
+        val entry = jar.getJarEntry("META-INF/boss-plugin/plugin.json") ?: return null
+        val content = DevPluginArtifacts.readBoundedUtf8String(jar.getInputStream(entry))
+        if (content == null) {
+            logger.error(
+                LogCategory.SYSTEM,
+                "Plugin manifest entry too large or unreadable",
+                mapOf("file" to fileName),
+            )
+        }
+        return content
     }
 
     /**

@@ -36,10 +36,7 @@ class BoundedManifestReadTest {
 
     @Test
     fun `the bounded reader returns the manifest for a normal-sized entry`() {
-        val jar = writeJar(
-            "normal.jar",
-            """{"pluginId":"com.example.ok","version":"1.0.0"}""",
-        )
+        val jar = writeJar("normal.jar", """{"pluginId":"com.example.ok","version":"1.0.0"}""")
 
         val manifestText =
             openJarFile(jar).use { jarFile ->

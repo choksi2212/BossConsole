@@ -588,37 +588,13 @@ class PluginInstallService(
     /**
      * Extract plugin manifest from a JAR file.
      */
-    private fun extractManifestFromJar(jarPath: String): PluginManifest? {
-        return try {
-            val jarFile = JarFile(File(jarPath))
-            jarFile.use { jar ->
-                val manifestEntry = jar.getJarEntry("META-INF/boss-plugin/plugin.json")
-                if (manifestEntry == null) {
-                    logger.debug(
-                        LogCategory.SYSTEM,
-                        "No plugin manifest found in JAR",
-                        mapOf(
-                            "jarPath" to jarPath,
-                        ),
-                    )
-                    return null
+    private fun extractManifestFromJar(jarPath: String): PluginManifest? =
+        try {
+            JarFile(File(jarPath)).use { jar ->
+                readManifestContent(jar, jarPath)?.let { manifestJson ->
+                    val json = Json { ignoreUnknownKeys = true }
+                    json.decodeFromString<PluginManifest>(manifestJson)
                 }
-
-                // Bounded read - a DEFLATE entry can be tiny on disk and expand to hundreds of MB.
-                // Unbounded inflation would let a publisher-controlled GitHub release asset OOM
-                // onboarding; cap at the shared 512 KiB manifest size the rest of the launchpad uses.
-                val manifestJson =
-                    DevPluginArtifacts.readBoundedUtf8String(jar.getInputStream(manifestEntry))
-                        ?: run {
-                            logger.warn(
-                                LogCategory.SYSTEM,
-                                "Plugin manifest entry too large or unreadable",
-                                mapOf("jarPath" to jarPath),
-                            )
-                            return null
-                        }
-                val json = Json { ignoreUnknownKeys = true }
-                json.decodeFromString<PluginManifest>(manifestJson)
             }
         } catch (e: Exception) {
             logger.warn(
@@ -631,6 +607,29 @@ class PluginInstallService(
             )
             null
         }
+
+    private fun readManifestContent(
+        jar: JarFile,
+        jarPath: String,
+    ): String? {
+        val manifestEntry = jar.getJarEntry("META-INF/boss-plugin/plugin.json")
+        if (manifestEntry == null) {
+            logger.debug(
+                LogCategory.SYSTEM,
+                "No plugin manifest found in JAR",
+                mapOf("jarPath" to jarPath),
+            )
+            return null
+        }
+        val manifestJson = DevPluginArtifacts.readBoundedUtf8String(jar.getInputStream(manifestEntry))
+        if (manifestJson == null) {
+            logger.warn(
+                LogCategory.SYSTEM,
+                "Plugin manifest entry too large or unreadable",
+                mapOf("jarPath" to jarPath),
+            )
+        }
+        return manifestJson
     }
 
     /**
