@@ -392,17 +392,21 @@ class BossPluginLinkCommand : CliktCommand(name = "link") {
 }
 
 /**
- * Reads a plugin manifest from a source directory or packaged JAR and prints what it declares.
+ * Reads a plugin manifest from a source directory or packaged JAR/ZIP and prints what it declares.
  *
- * Surfaces the fields that matter before a plugin is installed or linked: identity
- * (id, display name, version), the API version it requires, the entrypoint class, the
- * permissions it asks for, and the MCP tools it registers. Read-only: `boss inspect` never
- * touches the host, the plugin loader, or the filesystem beyond reading the manifest.
+ * Surfaces the fields that matter before a plugin is installed or linked: identity (id, display
+ * name, version), the API version it requires, the entrypoint class, the permissions it asks for,
+ * and the MCP tools it registers. Read-only: `boss plugin inspect` never touches the host, the
+ * plugin loader, or the filesystem beyond reading the manifest file (and, for an archive,
+ * opening it as a JAR).
  *
- * Accepts the same inputs as [BossPluginLinkCommand] - a directory containing a manifest
- * (either a top-level `plugin.json` or `src/main/resources/META-INF/boss-plugin/plugin.json`),
- * or a packaged `.jar`/`.zip` whose manifest lives at `META-INF/boss-plugin/plugin.json`.
- * The same `build/libs` resolution applies to a directory.
+ * Accepts the same inputs as [BossPluginLinkCommand] - a directory containing a manifest (either
+ * a top-level `plugin.json` or `src/main/resources/META-INF/boss-plugin/plugin.json`), or a
+ * packaged `.jar`/`.zip` whose manifest lives at `META-INF/boss-plugin/plugin.json`.
+ *
+ * Does NOT walk `build/libs` the way `boss plugin link` does: this command reports what the
+ * source tree says, not what `gradle build` would emit. Point it at the project directory or at
+ * the already-built JAR directly.
  *
  * Usage:
  *   boss plugin inspect [<path>] [--json]
@@ -427,36 +431,11 @@ class BossPluginInspectCommand : CliktCommand(name = "inspect") {
             } catch (e: Exception) {
                 val msg = "Failed to inspect plugin at ${inputPath}: ${e.message ?: "unknown error"}"
                 logger.error(LogCategory.SYSTEM, msg, error = e)
-                if (json) {
-                    echo(
-                        buildJsonObject {
-                            put("status", "error")
-                            put("error", msg)
-                        }.toString(),
-                        err = true,
-                    )
-                } else {
-                    echo("Error: $msg", err = true)
-                }
-                throw ProgramResult(1)
+                failWith(msg, json)
             }
 
         when (report) {
-            is InspectReport.Error -> {
-                if (json) {
-                    echo(
-                        buildJsonObject {
-                            put("status", "error")
-                            put("error", report.message)
-                        }.toString(),
-                        err = true,
-                    )
-                } else {
-                    echo("Error: ${report.message}", err = true)
-                }
-                throw ProgramResult(1)
-            }
-
+            is InspectReport.Error -> failWith(report.message, json)
             is InspectReport.Ok -> {
                 if (json) {
                     echo(launchpadJson.encodeToString(inspectPayload(report)))
@@ -465,6 +444,24 @@ class BossPluginInspectCommand : CliktCommand(name = "inspect") {
                 }
             }
         }
+    }
+
+    private fun failWith(
+        message: String,
+        asJson: Boolean,
+    ): Nothing {
+        if (asJson) {
+            echo(
+                buildJsonObject {
+                    put("status", "error")
+                    put("error", message)
+                }.toString(),
+                err = true,
+            )
+        } else {
+            echo("Error: $message", err = true)
+        }
+        throw ProgramResult(1)
     }
 }
 
@@ -519,6 +516,9 @@ internal fun inspectTarget(target: File): InspectReport {
     )
 }
 
+/** Manifest bytes cap. Anything beyond this is treated as "not a manifest". */
+internal const val INSPECT_MAX_MANIFEST_BYTES: Int = 512 * 1024
+
 private fun inspectDirectory(dir: File): InspectReport {
     val candidates =
         listOf(
@@ -532,60 +532,93 @@ private fun inspectDirectory(dir: File): InspectReport {
                 "and plugin.json): ${dir.absolutePath}",
         )
     }
-    val manifest =
+    val manifestText =
         try {
-            launchpadJson.decodeFromString<PluginManifest>(manifestFile.readText())
-        } catch (e: Exception) {
-            return InspectReport.Error(
-                "Unable to parse ${manifestFile.relativeTo(dir).path.replace('\\', '/')}: ${e.message ?: "unknown error"}",
-            )
-        }
-    return InspectReport.Ok(
-        source = InspectSource.Directory(
-            rootPath = dir.absolutePath.replace('\\', '/'),
-            manifestPath = manifestFile.relativeTo(dir).path.replace('\\', '/'),
-        ),
-        manifest = manifest,
-    )
-}
-
-private fun inspectArchive(archive: File): InspectReport {
-    val size = archive.length()
-    val manifest =
-        try {
-            JarFile(archive).use { jar ->
-                val entry = jar.getJarEntry("META-INF/boss-plugin/plugin.json")
-                if (entry == null) {
+            // Bounded read so a stray multi-gigabyte file at the manifest path cannot fill the heap.
+            manifestFile.inputStream().use { stream ->
+                val bytes = stream.readNBytes(INSPECT_MAX_MANIFEST_BYTES + 1)
+                if (bytes.size > INSPECT_MAX_MANIFEST_BYTES) {
                     return InspectReport.Error(
-                        "META-INF/boss-plugin/plugin.json not found in archive: ${archive.absolutePath}",
+                        "${manifestFile.relativeTo(dir).path.replace('\\', '/')} exceeds ${INSPECT_MAX_MANIFEST_BYTES} bytes; " +
+                            "refusing to read",
                     )
                 }
-                val content =
-                    jar.getInputStream(entry).use { stream ->
-                        stream.readBytes().toString(Charsets.UTF_8)
-                    }
-                launchpadJson.decodeFromString<PluginManifest>(content)
+                bytes.toString(Charsets.UTF_8)
             }
         } catch (e: Exception) {
             return InspectReport.Error(
-                "Unable to read manifest from ${archive.absolutePath}: ${e.message ?: "unknown error"}",
+                "Unable to read ${manifestFile.relativeTo(dir).path.replace('\\', '/')}: ${e.message ?: "unknown error"}",
             )
         }
-    val entryCount =
-        try {
-            JarFile(archive).use { jar -> jar.size() }
-        } catch (_: Exception) {
-            -1
-        }
-    return InspectReport.Ok(
-        source = InspectSource.Archive(
-            archivePath = archive.absolutePath.replace('\\', '/'),
-            archiveSizeBytes = size,
-            entryCount = entryCount,
-        ),
-        manifest = manifest,
+    return parseManifestText(
+        manifestText,
+        sourceFor(manifestFile, dir),
+        sizeErrorContext = manifestFile.name,
     )
 }
+
+private fun inspectArchive(archive: File): InspectReport =
+    try {
+        JarFile(archive).use { jar ->
+            val entry = jar.getJarEntry("META-INF/boss-plugin/plugin.json")
+            if (entry == null) {
+                return InspectReport.Error(
+                    "META-INF/boss-plugin/plugin.json not found in archive: ${archive.absolutePath}",
+                )
+            }
+            val size = archive.length()
+            val entryCount = jar.size()
+            val content =
+                jar.getInputStream(entry).use { stream ->
+                    val bytes = stream.readNBytes(INSPECT_MAX_MANIFEST_BYTES + 1)
+                    if (bytes.size > INSPECT_MAX_MANIFEST_BYTES) {
+                        return InspectReport.Error(
+                            "Manifest entry in ${archive.absolutePath} exceeds ${INSPECT_MAX_MANIFEST_BYTES} bytes; " +
+                                "refusing to read",
+                        )
+                    }
+                    bytes.toString(Charsets.UTF_8)
+                }
+            parseManifestText(
+                content,
+                InspectSource.Archive(
+                    archivePath = archive.absolutePath.replace('\\', '/'),
+                    archiveSizeBytes = size,
+                    entryCount = entryCount,
+                ),
+                sizeErrorContext = archive.absolutePath,
+            )
+        }
+    } catch (e: Exception) {
+        InspectReport.Error(
+            "Unable to read manifest from ${archive.absolutePath}: ${e.message ?: "unknown error"}",
+        )
+    }
+
+private fun sourceFor(
+    manifestFile: File,
+    dir: File,
+): InspectSource =
+    InspectSource.Directory(
+        rootPath = dir.absolutePath.replace('\\', '/'),
+        manifestPath = manifestFile.relativeTo(dir).path.replace('\\', '/'),
+    )
+
+private fun parseManifestText(
+    text: String,
+    source: InspectSource,
+    sizeErrorContext: String,
+): InspectReport =
+    try {
+        // `launchpadJson` is the same encoder/decoder the rest of the launchpad uses; mirror its
+        // settings here so a future change to one side changes both.
+        val manifest = launchpadJson.decodeFromString<PluginManifest>(text)
+        InspectReport.Ok(source = source, manifest = manifest)
+    } catch (e: Exception) {
+        InspectReport.Error(
+            "Unable to parse $sizeErrorContext: ${e.message ?: "unknown error"}",
+        )
+    }
 
 /**
  * Human-readable `boss plugin inspect` report. Sections appear in the order a person asks
