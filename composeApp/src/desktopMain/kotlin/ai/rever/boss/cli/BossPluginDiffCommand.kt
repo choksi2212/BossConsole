@@ -348,15 +348,24 @@ private object PluginDiffJson {
                 "unrecognisedPermissionsRemoved",
                 buildJsonArray { diff.unrecognisedPermissionsRemoved.forEach { add(it) } },
             )
-            put("mcpToolsAdded", buildJsonArray {
-                diff.mcpToolsAdded.forEach { tool -> addJsonObject { toolJson(tool) } }
-            })
-            put("mcpToolsRemoved", buildJsonArray {
-                diff.mcpToolsRemoved.forEach { tool -> addJsonObject { toolJson(tool) } }
-            })
-            put("mcpToolsKept", buildJsonArray {
-                diff.mcpToolsKept.forEach { tool -> addJsonObject { toolJson(tool) } }
-            })
+            put(
+                "mcpToolsAdded",
+                buildJsonArray {
+                    diff.mcpToolsAdded.forEach { tool -> addJsonObject { toolJson(tool) } }
+                },
+            )
+            put(
+                "mcpToolsRemoved",
+                buildJsonArray {
+                    diff.mcpToolsRemoved.forEach { tool -> addJsonObject { toolJson(tool) } }
+                },
+            )
+            put(
+                "mcpToolsKept",
+                buildJsonArray {
+                    diff.mcpToolsKept.forEach { tool -> addJsonObject { toolJson(tool) } }
+                },
+            )
             put(
                 "mcpToolAdminScopeFlipped",
                 buildJsonArray {
