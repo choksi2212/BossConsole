@@ -52,7 +52,11 @@ class ProjectStateConcurrencyTest {
         tempDir.deleteRecursively()
     }
 
-    private fun project(index: Int): Project = Project(name = "Project $index", path = "/tmp/project-$index", lastOpened = index.toLong())
+    private fun project(index: Int): Project {
+        val name = "Project $index"
+        val path = "/tmp/project-$index"
+        return Project(name = name, path = path, lastOpened = index.toLong())
+    }
 
     @Test
     fun `concurrent updates from multiple windows do not drop entries`() =
@@ -122,7 +126,10 @@ class ProjectStateConcurrencyTest {
                 "An entry written during the race must remain visible",
             )
             // /tmp/project-1 was both removed and re-added during the race; whichever wins, the
-            // path is in the list at most once.
-            assertEquals(1, paths.count { it == "/tmp/project-1" })
+            // path is in the list at most once - 0 if remove ran last, 1 if update(1) ran last.
+            assertTrue(
+                paths.count { it == "/tmp/project-1" } <= 1,
+                "An entry touched by both remove and update in the race must not be duplicated",
+            )
         }
 }
