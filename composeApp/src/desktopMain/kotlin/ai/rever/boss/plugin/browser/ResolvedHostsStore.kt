@@ -73,21 +73,23 @@ object ResolvedHostsStore {
     fun recordLoaded(host: String) {
         if (host.isBlank()) return
         if (hosts.add(host.lowercase())) {
-            // Bind the destination and the contents now rather than inside the coroutine:
-            // the write is what must land, and reading either one later would let an
-            // unrelated change in between decide where it goes or what it says.
-            save(storeFile, hosts.toList().sorted())
+            // Bind the destination now; the contents snapshot is taken inside `save` under
+            // `saveLock`, so two recordLoaded calls landing together cannot race the lock and
+            // overwrite a newer in-memory state with an older snapshot - the failure mode
+            // captured by `concurrentRecordLoadedRetainsAllHosts` in ResolvedHostsStoreTest.
+            save(storeFile)
         }
     }
 
-    private fun save(
-        target: File,
-        snapshot: List<String>,
-    ) {
+    private fun save(target: File) {
         scope.launch {
             withContext(Dispatchers.IO) {
                 saveLock.withLock {
                     try {
+                        // Snapshot under the lock so concurrent recordLoaded callers cannot
+                        // publish an out-of-order write. The in-memory `hosts` set is a
+                        // ConcurrentHashMap.newKeySet so a `toList()` here is a stable snapshot.
+                        val snapshot = hosts.toList().sorted()
                         target.atomicWriteText(json.encodeToString(snapshot))
                     } catch (e: IOException) {
                         logger.warn(LogCategory.BROWSER, "Failed to save resolved hosts", error = e)
@@ -100,5 +102,22 @@ object ResolvedHostsStore {
     /** Drop everything. Used by tests. */
     internal fun clear() {
         hosts.clear()
+    }
+
+    /**
+     * Save synchronously, in the calling thread, holding [saveLock]. Returns the bytes that
+     * landed on disk so a test can pin the snapshot shape.
+     *
+     * Production uses the debounced [save] launch on `scope`; the lock here is the same lock
+     * that path takes, so a test driving this method is testing the exact same write path a
+     * coroutine-driven save would.
+     */
+    internal fun saveNowBlocking(): String = kotlinx.coroutines.runBlocking {
+        saveLock.withLock {
+            val snapshot = hosts.toList().sorted()
+            val payload = json.encodeToString(snapshot)
+            storeFile.atomicWriteText(payload)
+            payload
+        }
     }
 }
