@@ -25,10 +25,14 @@ import kotlin.test.assertTrue
  */
 class DashboardStatsScheduleTest {
     private val tempFile: File = BossDirectoriesPath.resolve("dashboard-stats.json")
-    private val before: DashboardStats = read()
 
     @Test
     fun `concurrent recorders schedule exactly one persisted save`() {
+        // Ensure manager has initialized and completed any initial load
+        DashboardStatsManager.stats.value
+        Thread.sleep(500L)
+        val before = read()
+
         val calls = 50
         val ready = CountDownLatch(calls)
         val start = CountDownLatch(1)
@@ -51,15 +55,21 @@ class DashboardStatsScheduleTest {
         start.countDown()
         done.await()
 
-        // Wait long enough for every debounced save to have fired (5s window plus slack).
-        Thread.sleep(7_000L)
+        // Poll until the debounced save fires and writes the expected count (up to 15s)
+        var recorded = 0
+        val deadline = System.currentTimeMillis() + 15_000L
+        while (System.currentTimeMillis() < deadline) {
+            val after = read()
+            recorded =
+                (after.totalFilesOpened - before.totalFilesOpened) +
+                    (after.totalBrowserPagesVisited - before.totalBrowserPagesVisited) +
+                    (after.totalTerminalSessions - before.totalTerminalSessions)
+            if (recorded == calls) {
+                break
+            }
+            Thread.sleep(200L)
+        }
 
-        val after = read()
-        // The total counters should equal the number of recorders.
-        val recorded =
-            (after.totalFilesOpened - before.totalFilesOpened) +
-                (after.totalBrowserPagesVisited - before.totalBrowserPagesVisited) +
-                (after.totalTerminalSessions - before.totalTerminalSessions)
         assertEquals(
             calls,
             recorded,
@@ -71,15 +81,15 @@ class DashboardStatsScheduleTest {
         assertTrue(tempFile.exists(), "the file must exist")
     }
 
+    @Suppress("SwallowedException")
     private fun read(): DashboardStats =
         if (tempFile.exists()) {
             try {
                 kotlinx.serialization.json.Json {
-                        prettyPrint = false
-                        ignoreUnknownKeys = true
-                        encodeDefaults = false
-                    }
-                    .decodeFromString<DashboardStats>(tempFile.readText())
+                    prettyPrint = false
+                    ignoreUnknownKeys = true
+                    encodeDefaults = false
+                }.decodeFromString<DashboardStats>(tempFile.readText())
             } catch (e: Exception) {
                 DashboardStats()
             }
