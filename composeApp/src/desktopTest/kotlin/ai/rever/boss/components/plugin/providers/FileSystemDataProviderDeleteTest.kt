@@ -66,7 +66,7 @@ class FileSystemDataProviderDeleteTest {
     }
 
     @Test
-    fun `deleting a path that resolves to the home directory through a symlink is accepted now that the user.home boundary is dropped`() {
+    fun `deleting a path that resolves to the home directory through a symlink is accepted now that the user-home boundary is dropped`() {
         // The user.home boundary was deliberately removed: symlink resolution + the
         // Windows system-path blocklist already close the failure mode this test used
         // to guard. Pick a path that resolves to home through a symlink and confirm
@@ -105,7 +105,7 @@ class FileSystemDataProviderDeleteTest {
     }
 
     @Test
-    fun `deleting a top-level symlink whose target lives outside home is accepted now that the user.home boundary is dropped`() {
+    fun `deleting a top-level symlink whose target lives outside home is accepted now that the user-home boundary is dropped`() {
         // The user.home boundary was deliberately removed. This test used to pin that a
         // symlink whose target lives outside home was refused at the boundary - that gate
         // is gone, and the test must move with it. The remaining protection (no traversal
