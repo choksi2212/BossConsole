@@ -122,6 +122,7 @@ data class ProjectReport(
  * not require the marker to be at the root, because a Gradle project
  * checked into a monorepo subdirectory is still a Gradle project.
  */
+@Suppress("TooManyFunctions")
 class ProjectDetector {
     /**
      * Each entry pairs a path glob against a list of contributions.
@@ -405,10 +406,7 @@ class ProjectDetector {
         }
         val hasCargoTests =
             rootHasFileMatching(root, "Cargo.toml") &&
-                (
-                    rootHasDirMatching(root, "tests") ||
-                        rootHasFileMatching(root, "**/tests/*.rs")
-                    )
+                (rootHasDirMatching(root, "tests") || rootHasFileMatching(root, "**/tests/*.rs"))
         if (hasCargoTests) {
             contributions.getOrPut("testFrameworks") { mutableSetOf() }.add("Cargo test")
         }
