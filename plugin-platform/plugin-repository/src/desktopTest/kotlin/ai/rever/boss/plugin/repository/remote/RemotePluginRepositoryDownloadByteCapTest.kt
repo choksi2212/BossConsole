@@ -31,7 +31,8 @@ class RemotePluginRepositoryDownloadByteCapTest {
         val file =
             File(
                 root,
-                "plugin-platform/plugin-repository/src/desktopMain/kotlin/ai/rever/boss/plugin/repository/remote/RemotePluginRepository.kt",
+                "plugin-platform/plugin-repository/src/desktopMain/kotlin" +
+                    "/ai/rever/boss/plugin/repository/remote/RemotePluginRepository.kt",
             )
         assertTrue(file.isFile, "RemotePluginRepository.kt not found at ${file.absolutePath}")
         return file.readText()

@@ -452,14 +452,16 @@ class RemotePluginRepository(
                                 if (bytes > 0) {
                                     if (downloadedBytes + bytes > maxJarBytes) {
                                         throw DownloadException(
-                                            "Download exceeds $maxJarBytes bytes - refusing to write unbounded response",
+                                            "Download exceeds $maxJarBytes bytes - " +
+                                                "refusing to write unbounded response",
                                             pluginId,
                                             id,
                                         )
                                     }
                                     if (totalBytes > 0 && downloadedBytes + bytes > totalBytes) {
                                         throw DownloadException(
-                                            "Download exceeds advertised size of $totalBytes bytes - refusing to trust Content-Length",
+                                            "Download exceeds advertised size of $totalBytes bytes - " +
+                                                "refusing to trust Content-Length",
                                             pluginId,
                                             id,
                                         )
