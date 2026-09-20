@@ -44,7 +44,8 @@ import java.net.Socket
  * target could not be parsed or resolved.
  */
 class BossPortDoctorCommand : CliktCommand(name = "port-doctor") {
-    override fun help(context: Context) = "Probes TCP reachability for known BOSS endpoints (Supabase, plugin store, custom)"
+    override fun help(context: Context) =
+        "Probes TCP reachability for known BOSS endpoints (Supabase, plugin store, custom)"
 
     private val prober = PortProber()
 
@@ -52,7 +53,10 @@ class BossPortDoctorCommand : CliktCommand(name = "port-doctor") {
         "--target",
         help = "host:port to probe (repeatable); defaults to the Supabase + plugin-store endpoint set",
     ).multiple()
-    val timeoutMs by option("--timeout-ms", help = "TCP connect timeout in milliseconds (default 3000)").int().default(3000)
+    val timeoutMs by option(
+        "--timeout-ms",
+        help = "TCP connect timeout in milliseconds (default 3000)",
+    ).int().default(3000)
     val json by option("--json", help = "Output the report as JSON").flag(default = false)
 
     override fun run() {
