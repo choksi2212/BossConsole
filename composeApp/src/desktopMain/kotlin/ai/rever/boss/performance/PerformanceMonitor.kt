@@ -89,7 +89,8 @@ object PerformanceMonitor {
     // across the IO dispatcher boundary; without it, two concurrent start() calls can both
     // observe null and both launch a monitor loop. The supervisor above means a crashed
     // child does not cancel the scope; this flag is what stops two loops from racing.
-    @Volatile private var monitoringJob: Job? = null
+    @Volatile
+    private var monitoringJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     /** Test-only accessor for the currently active monitor job, or null if none. */
