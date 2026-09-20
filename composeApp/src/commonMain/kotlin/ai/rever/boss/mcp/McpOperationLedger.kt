@@ -110,7 +110,7 @@ class McpOperationLedger(
     }
 
     // Rotation walks numbered backups under a single write lock.
-    @Suppress("NestedBlockDepth", "TooGenericExceptionCaught")
+    @Suppress("NestedBlockDepth", "TooGenericExceptionCaught", "ReturnCount")
     private fun rotateIfNeeded(file: File) {
         if (!file.exists() || file.length() < maxFileSizeBytes) return
 
@@ -164,10 +164,17 @@ class McpOperationLedger(
      * succeeded - rotation cannot proceed, so the caller bails out and the next
      * attempt gets another chance rather than half-rotating.
      */
-    @Suppress("ReturnCount")
-    private fun rotateFile(src: File, dst: File, label: String): Boolean {
+    @Suppress("ReturnCount", "LongParameterList")
+    private fun rotateFile(
+        src: File,
+        dst: File,
+        label: String,
+    ): Boolean {
         if (src.renameTo(dst)) return true
-        val copied = runCatching { src.copyTo(dst, overwrite = true) }.getOrNull()
+        val copied =
+            runCatching {
+                src.copyTo(dst, overwrite = true)
+            }.getOrNull()
         if (copied != null && src.delete()) return true
         logger.warn(
             LogCategory.SYSTEM,
