@@ -19,6 +19,7 @@ import javax.imageio.ImageIO
  * File-based cache for browser tab favicons.
  * Stores favicons as PNG files in the application's cache directory.
  */
+@Suppress("TooManyFunctions")
 object FaviconCache {
     private val logger = BossLogger.forComponent("FaviconCache")
     private const val MAX_FAVICON_SIZE_BYTES = 100 * 1024 // 100KB limit
@@ -187,7 +188,8 @@ object FaviconCache {
     /**
      * Gets the total size of the favicon cache in bytes.
      */
-    fun getCacheSize(): Long = cacheDir.listFiles()?.filter { !Files.isSymbolicLink(it.toPath()) }?.sumOf { it.length() } ?: 0L
+    fun getCacheSize(): Long =
+        cacheDir.listFiles()?.filter { !Files.isSymbolicLink(it.toPath()) }?.sumOf { it.length() } ?: 0L
 
     /**
      * Gets the number of cached favicons.
