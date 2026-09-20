@@ -171,6 +171,7 @@ class WorkspaceApplierRestoreTest {
     private class Tab1211Component(
         ctx: ComponentContext,
         override val config: TabInfo,
+        override val tabTypeInfo: TabTypeInfo = Tab1211Type,
     ) : TabComponentWithUI,
         ComponentContext by ctx {
         @Composable
