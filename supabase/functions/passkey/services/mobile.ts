@@ -115,6 +115,21 @@ export const generateMobileAuthenticationPage = withErrorHandler(
 
     console.log('✅ Found userId from challenge:', userId)
 
+    // Resolve the email from the challenge's user, not from the URL parameter.
+    // The URL parameter is operator-supplied and can be intercepted/rewritten
+    // (BossConsole#924 covers session-id rebinding; this is the matching
+    // email-display rebind on the same magic-link surface - the page would
+    // otherwise show a victim the wrong account). The challenge row's user_id
+    // is the source of truth: it was set by /auth/challenge after Supabase
+    // resolved the email server-side.
+    const { data: userRow, error: userError } = await supabase
+      .from('users')
+      .select('email')
+      .eq('id', userId)
+      .single()
+
+    const resolvedEmail = userRow?.email ?? email
+
     // Get user's passkey credential
     const { data: passkey, error: passkeyError } = await supabase
       .from('user_passkeys')
@@ -148,7 +163,7 @@ export const generateMobileAuthenticationPage = withErrorHandler(
 
     return {
       success: true,
-      email,
+      email: resolvedEmail,
       challenge,
       sessionId,
       rpId,
