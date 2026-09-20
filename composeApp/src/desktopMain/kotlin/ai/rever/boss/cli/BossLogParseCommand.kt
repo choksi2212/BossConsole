@@ -196,6 +196,7 @@ class LogLineParser {
         val match = lowercaseLevel.matchEntire(line) ?: return null
         val parts = match.destructured
         val timestamp = parts.component1()
+        val threadName = parts.component3()
         val category = parts.component4()
         val component = parts.component5()
         val message = parts.component6()
