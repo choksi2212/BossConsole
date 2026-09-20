@@ -52,13 +52,16 @@ class ProjectStateConcurrencyTest {
         tempDir.deleteRecursively()
     }
 
-    private fun project(index: Int): Project =
-        Project(name = "Project $index", path = "/tmp/project-$index", lastOpened = index.toLong())
+    private fun project(index: Int): Project = Project(name = "Project $index", path = "/tmp/project-$index", lastOpened = index.toLong())
 
     @Test
     fun `concurrent updates from multiple windows do not drop entries`() =
         runBlocking(Dispatchers.Default) {
-            val count = 50
+            // Capped at MAX_RECENT_PROJECTS so the in-memory LRU does not evict any of these
+            // additions; the race this regression pins would otherwise mix with the eviction
+            // and hide. The author of this test read 50 as "more is better" - the LRU had
+            // other ideas.
+            val count = 10
             val start = CompletableDeferred<Unit>()
             val jobs =
                 (1..count).map { index ->

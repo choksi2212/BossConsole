@@ -6,12 +6,12 @@ import ai.rever.boss.utils.extractFileName
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import ai.rever.boss.window.Project
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 // Global project state with persistence - manages shared recent projects list
 // Note: Selected project is per-window via WindowProjectState. This object only manages recent projects.
@@ -30,11 +30,17 @@ object ProjectState {
      * for every editor that restores at startup - two windows opening projects together used to
      * race on the read here, with the later write silently dropping the first project's entry.
      *
+     * A `ReentrantLock`, not a `Mutex`: every public mutator is a non-suspending function that
+     * runs the mutation under this lock and returns with the in-memory list updated, so a caller
+     * (or the test that reads `recentProjects.value` immediately after `selectProject`) sees the
+     * new entry on the next instruction. The lock is held only for the in-memory mutation; the
+     * debounced disk save is scheduled OUTSIDE the lock so a slow writer cannot hold callers up.
+     *
      * Mirrors the form `RecentFilesManager.mutationLock` already uses, so the two histories
      * cannot drift; `MutableStateFlow.update` is not usable because the CAS lambda is retried
      * and a mutation must read exactly once.
      */
-    private val mutationLock = kotlinx.coroutines.sync.Mutex()
+    private val mutationLock = ReentrantLock()
 
     /**
      * Holds the scheduled save jobs so a remove/update racing a still-pending save cannot drop
@@ -85,9 +91,18 @@ object ProjectState {
      * Remove a project from the recent projects list.
      */
     fun removeRecentProject(projectPath: String) {
-        ioScope.launch {
-            mutate { current -> current.filter { it.path != projectPath } }
-        }
+        val changed =
+            mutationLock.withLock {
+                val before = _recentProjects.value
+                val after = before.filter { it.path != projectPath }
+                if (after == before) {
+                    false
+                } else {
+                    _recentProjects.value = after
+                    true
+                }
+            }
+        if (changed) scheduleSave()
     }
 
     /**
@@ -96,27 +111,15 @@ object ProjectState {
      */
     fun updateRecentProjects(project: Project) {
         val updatedProject = project.copy(lastOpened = System.currentTimeMillis())
-        ioScope.launch {
-            mutate { current ->
-                val list = current.toMutableList()
-                list.removeAll { it.path == updatedProject.path }
-                list.add(0, updatedProject)
-                while (list.size > MAX_RECENT_PROJECTS) list.removeLast()
-                list
-            }
-        }
-    }
-
-    /**
-     * Apply [transform] to the recorded list under [mutationLock] and schedule a save if the
-     * list changed. Every public mutator routes through here so the read-modify-write cannot
-     * race across per-window callers.
-     */
-    private suspend fun mutate(transform: (List<Project>) -> List<Project>) {
         val changed =
             mutationLock.withLock {
                 val before = _recentProjects.value
-                val after = transform(before)
+                val after =
+                    before.toMutableList().apply {
+                        removeAll { it.path == updatedProject.path }
+                        add(0, updatedProject)
+                        while (size > MAX_RECENT_PROJECTS) removeLast()
+                    }
                 if (after == before) {
                     false
                 } else {
@@ -218,7 +221,12 @@ object ProjectState {
                             }
                         }
 
-                    _recentProjects.value = validProjects
+                    // Take the mutationLock so a concurrent updateRecentProjects racing this load
+                    // does not have its write silently dropped by `_recentProjects.value = ` after
+                    // it observed an empty list.
+                    mutationLock.withLock {
+                        _recentProjects.value = validProjects
+                    }
                     logger.debug(
                         LogCategory.FILE,
                         "Loaded recent projects from disk",
