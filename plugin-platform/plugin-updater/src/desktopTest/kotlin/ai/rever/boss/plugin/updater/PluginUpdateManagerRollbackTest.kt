@@ -42,7 +42,10 @@ class PluginUpdateManagerRollbackTest {
         return PluginUpdateManager(repositoryManager = repos)
     }
 
-    private fun PluginUpdateManager.withAvailable(pluginId: String, currentVersion: String) {
+    private fun PluginUpdateManager.withAvailable(
+        pluginId: String,
+        currentVersion: String,
+    ) {
         // checkForUpdates seeds _availableUpdates from (pluginId -> installedVersion) vs the
         // store's advertised latest. The test calls this once per scenario before invoking
         // updatePlugin so the failure path can find its target.
@@ -74,13 +77,14 @@ class PluginUpdateManagerRollbackTest {
                     Result.success(Unit)
                 }
 
-            val result = mgr.updatePlugin(
-                pluginId = pluginId,
-                downloadPath = "/tmp/dl.jar",
-                unloadPlugin = unload,
-                loadPlugin = load,
-                rollback = rollback,
-            )
+            val result =
+                mgr.updatePlugin(
+                    pluginId = pluginId,
+                    downloadPath = "/tmp/dl.jar",
+                    unloadPlugin = unload,
+                    loadPlugin = load,
+                    rollback = rollback,
+                )
 
             assertTrue(result.isFailure, "the failed load must surface as a failure")
             assertEquals(1, rollbackCalls.get(), "rollback must be called exactly once on load failure")
