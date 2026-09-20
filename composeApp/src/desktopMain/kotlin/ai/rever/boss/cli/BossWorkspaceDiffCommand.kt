@@ -240,6 +240,7 @@ object WorkspaceDiffer {
         )
     }
 
+    @Suppress("LongParameterList")
     private fun collectPanelTabChanges(
         panelId: String,
         leftPanel: PanelConfig,
