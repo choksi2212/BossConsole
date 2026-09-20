@@ -44,13 +44,13 @@ import java.net.Socket
  * target could not be parsed or resolved.
  */
 class BossPortDoctorCommand : CliktCommand(name = "port-doctor") {
-    override fun help(context: Context) = "Probes TCP reachability for BOSS endpoints (Supabase, store, custom)"
+    override fun help(context: Context) = "Probes TCP reachability for BOSS endpoints"
 
     private val prober = PortProber()
 
     val target by option(
         "--target",
-        help = "host:port to probe (repeatable); defaults to the Supabase + plugin-store endpoint set",
+        help = "host:port to probe (repeatable)",
     ).multiple()
     val timeoutMs by option(
         "--timeout-ms",
