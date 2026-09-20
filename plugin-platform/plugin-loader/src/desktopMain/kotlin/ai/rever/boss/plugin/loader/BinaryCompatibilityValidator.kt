@@ -50,138 +50,178 @@ object BinaryCompatibilityValidator {
     fun validate(
         classLoader: ClassLoader,
         jarPath: String,
-    ): ValidationResult {
-        val errors = mutableListOf<String>()
+    ): ValidationResult =
+        when (val entries = readClassEntries(jarPath)) {
+            is ClassEntries.Failure -> {
+                entries.result
+            }
 
-        val classEntries =
-            try {
-                JarFile(jarPath).use { jar ->
+            is ClassEntries.Ok -> {
+                val classEntries = entries.value
+                val jarClassNames = classEntries.map { it.first }.toSet()
+                val errors = mutableListOf<String>()
+                for ((className, bytes) in classEntries) {
+                    validateSingleClass(
+                        className = className,
+                        bytes = bytes,
+                        classLoader = classLoader,
+                        jarClassNames = jarClassNames,
+                        errors = errors,
+                    )
+                }
+                logValidationResult(errors = errors, classCount = classEntries.size, jarPath = jarPath)
+                ValidationResult(
+                    isCompatible = errors.isEmpty(),
+                    errors = errors,
+                )
+            }
+        }
+
+    /**
+     * Result of opening a JAR and reading its class entries. `Failure` carries a
+     * ready-made [ValidationResult] for short-circuiting the validator; `Ok` is
+     * the list of (className, bytes) pairs to feed into per-class verification.
+     */
+    private sealed class ClassEntries {
+        data class Ok(
+            val value: List<Pair<String, ByteArray>>,
+        ) : ClassEntries()
+
+        data class Failure(
+            val result: ValidationResult,
+        ) : ClassEntries()
+    }
+
+    /**
+     * Open [jarPath], filter to non-META-INF `.class` entries, and read each entry's
+     * bytes bounded by [MAX_CLASS_BYTES]. A class whose decompressed size exceeds the
+     * cap is rejected with [PluginManifestException] before the validator reaches
+     * the constant-pool step. `readNBytes(MAX + 1)` is the streaming shape that
+     * `AGENTS.md` requires for zip-bomb safety: the size check below turns the extra
+     * byte into an outright refusal.
+     */
+    private fun readClassEntries(jarPath: String): ClassEntries =
+        try {
+            JarFile(jarPath).use { jar ->
+                val entries =
                     jar
                         .entries()
                         .asSequence()
                         .filter { it.name.endsWith(".class") && !it.name.startsWith("META-INF/") }
                         .map { entry ->
                             val className = entry.name.removeSuffix(".class").replace('/', '.')
-                            // Bound the read so a malicious class entry cannot decompress
-                            // to GBs and OOM the host before the binary-compat decision is
-                            // made. `readNBytes(MAX + 1)` reads at most one byte past the cap;
-                            // the size check below turns that into a rejection.
-                            val bytes =
-                                jar.getInputStream(entry).use { stream ->
-                                    stream.readNBytes(MAX_CLASS_BYTES + 1)
-                                }
-                            if (bytes.size > MAX_CLASS_BYTES) {
-                                throw PluginManifestException(
-                                    "Class $className exceeds $MAX_CLASS_BYTES bytes - " +
-                                        "refusing to read unbounded entry",
-                                )
-                            }
-                            className to bytes
+                            readCappedClassBytes(jar, entry, className)
                         }.toList()
-                }
-            } catch (e: PluginManifestException) {
-                logger.error(
-                    LogCategory.SYSTEM,
-                    "JAR failed class-size cap",
-                    mapOf("jarPath" to jarPath, "error" to (e.message ?: "unknown")),
-                )
-                return ValidationResult(
+                ClassEntries.Ok(entries)
+            }
+        } catch (e: PluginManifestException) {
+            logger.error(
+                LogCategory.SYSTEM,
+                "JAR failed class-size cap",
+                mapOf("jarPath" to jarPath, "error" to (e.message ?: "unknown")),
+            )
+            ClassEntries.Failure(
+                ValidationResult(
                     isCompatible = false,
                     errors = listOf(e.message ?: "class-size cap exceeded"),
-                )
-            } catch (e: Exception) {
-                logger.error(
-                    LogCategory.SYSTEM,
-                    "Failed to read JAR for validation",
-                    mapOf(
-                        "jarPath" to jarPath,
-                        "error" to (e.message ?: "unknown"),
-                    ),
-                )
-                return ValidationResult(
+                ),
+            )
+        } catch (e: Exception) {
+            logger.error(
+                LogCategory.SYSTEM,
+                "Failed to read JAR for validation",
+                mapOf("jarPath" to jarPath, "error" to (e.message ?: "unknown")),
+            )
+            ClassEntries.Failure(
+                ValidationResult(
                     isCompatible = false,
-                    errors =
-                        listOf(
-                            "Failed to read JAR: ${e.message}",
-                        ),
-                )
-            }
-
-        // Collect all class names in this JAR — references between them are
-        // self-consistent (compiled together) and don't need cross-validation.
-        val jarClassNames = classEntries.map { it.first }.toSet()
-
-        for ((className, bytes) in classEntries) {
-            // Only validate the plugin's OWN classes (ai.rever.boss.plugin.*)
-            // against the host. Bundled third-party classes (ktor, mcp-sdk,
-            // kotlin-logging, …) are the plugin's self-contained runtime; their
-            // internal linkage is not a host-contract concern and must not
-            // disable the plugin. In particular, libraries ship OPTIONAL adapter
-            // classes for backends the host doesn't bundle — e.g. kotlin-logging's
-            // io.github.oshai.kotlinlogging.logback.internal.LogbackLogEvent
-            // references ch.qos.logback.* which isn't present, so merely LOADING
-            // that (never-used) class throws NoClassDefFoundError. Skipping
-            // third-party classes here mirrors the member-ref scoping below.
-            if (!className.startsWith("ai.rever.boss.plugin.")) continue
-
-            // First, ensure the class itself can be loaded
-            try {
-                Class.forName(className, false, classLoader)
-            } catch (e: LinkageError) {
-                errors.add("$className: ${e.javaClass.simpleName} - ${e.message}")
-                continue
-            } catch (e: ClassNotFoundException) {
-                errors.add("$className: ClassNotFoundException - ${e.message}")
-                continue
-            }
-
-            // Parse constant pool and verify all symbolic references
-            try {
-                val refs = ConstantPoolParser.extractReferences(bytes)
-                for (ref in refs) {
-                    // Skip references to classes within the same JAR — they were
-                    // compiled together and are guaranteed to be consistent.
-                    if (ref.ownerClassName in jarClassNames) continue
-                    verifyReference(ref, classLoader, className, errors)
-                }
-            } catch (e: Exception) {
-                // Malformed class file — not a compatibility issue per se, skip
-                logger.debug(
-                    LogCategory.SYSTEM,
-                    "Failed to parse constant pool",
-                    mapOf(
-                        "className" to className,
-                        "error" to (e.message ?: "unknown"),
-                    ),
-                )
-            }
+                    errors = listOf("Failed to read JAR: ${e.message}"),
+                ),
+            )
         }
 
+    /**
+     * Read one class entry, throwing [PluginManifestException] if it would decompress past
+     * [MAX_CLASS_BYTES]. Kept separate from [readClassEntries] so the outer read is a flat
+     * `.map { … }.toList()` rather than a nested try/catch per entry, which detekt's
+     * NestedBlockDepth otherwise rejects.
+     */
+    private fun readCappedClassBytes(
+        jar: JarFile,
+        entry: java.util.jar.JarEntry,
+        className: String,
+    ): Pair<String, ByteArray> {
+        val bytes =
+            jar.getInputStream(entry).use { stream ->
+                stream.readNBytes(MAX_CLASS_BYTES + 1)
+            }
+        if (bytes.size > MAX_CLASS_BYTES) {
+            throw PluginManifestException(
+                "Class $className exceeds $MAX_CLASS_BYTES bytes - " +
+                    "refusing to read unbounded entry",
+            )
+        }
+        return className to bytes
+    }
+
+    /**
+     * Verify one class's contract references against [classLoader]. Only plugin classes
+     * (`ai.rever.boss.plugin.*`) are enforced - third-party classes bundled into the jar
+     * are the plugin's own concern, mirroring the member-ref scoping in [verifyReference].
+     */
+    @Suppress("NestedBlockDepth", "ReturnCount")
+    private fun validateSingleClass(
+        className: String,
+        bytes: ByteArray,
+        classLoader: ClassLoader,
+        jarClassNames: Set<String>,
+        errors: MutableList<String>,
+    ) {
+        if (!className.startsWith("ai.rever.boss.plugin.")) return
+
+        try {
+            Class.forName(className, false, classLoader)
+        } catch (e: LinkageError) {
+            errors.add("$className: ${e.javaClass.simpleName} - ${e.message}")
+            return
+        } catch (e: ClassNotFoundException) {
+            errors.add("$className: ClassNotFoundException - ${e.message}")
+            return
+        }
+
+        try {
+            val refs = ConstantPoolParser.extractReferences(bytes)
+            for (ref in refs) {
+                if (ref.ownerClassName in jarClassNames) continue
+                verifyReference(ref, classLoader, className, errors)
+            }
+        } catch (e: Exception) {
+            logger.debug(
+                LogCategory.SYSTEM,
+                "Failed to parse constant pool",
+                mapOf("className" to className, "error" to (e.message ?: "unknown")),
+            )
+        }
+    }
+
+    private fun logValidationResult(
+        errors: List<String>,
+        classCount: Int,
+        jarPath: String,
+    ) {
         if (errors.isNotEmpty()) {
             logger.warn(
                 LogCategory.SYSTEM,
                 "Binary compatibility validation failed",
-                mapOf(
-                    "jarPath" to jarPath,
-                    "errorCount" to errors.size,
-                    "errors" to errors.take(5),
-                ),
+                mapOf("jarPath" to jarPath, "errorCount" to errors.size, "errors" to errors.take(5)),
             )
         } else {
             logger.debug(
                 LogCategory.SYSTEM,
                 "Binary compatibility validation passed",
-                mapOf(
-                    "jarPath" to jarPath,
-                    "classCount" to classEntries.size,
-                ),
+                mapOf("jarPath" to jarPath, "classCount" to classCount),
             )
         }
-
-        return ValidationResult(
-            isCompatible = errors.isEmpty(),
-            errors = errors,
-        )
     }
 
     private fun verifyReference(
