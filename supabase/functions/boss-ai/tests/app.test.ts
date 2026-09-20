@@ -46,7 +46,7 @@ async function fixture(options: {
       // BossConsole#1252: a settlement RPC that never resolves. The fix
       // bounds the call so the edge function does not hang.
       if (name === "boss_ai_settle" && options.hangSettlement) {
-        await new Promise<void>(() => { /* never resolves */ })
+        await new Promise<void>(() => {/* never resolves */})
       }
       if (name === "boss_ai_settle" && options.failFirstSettlement && ++settlements === 1) {
         throw new Error("private database detail")
