@@ -189,132 +189,144 @@ class WorkspaceApplierRestoreTest {
             // through to the `else -> null` arm of `createTabFromWorkspaceConfig`.
         }
 
-    private fun newRestoreSplitViewState() =
-        SplitViewState(tab1211Registry, windowId = "restore-1211-window")
+    private fun newRestoreSplitViewState() = SplitViewState(tab1211Registry, windowId = "restore-1211-window")
 
     private fun workspaceWithRightPane(tabs: List<TabConfig>): LayoutWorkspace =
         LayoutWorkspace(
             id = "split-right",
             name = "Split with a right pane",
             description = "Outer vertical split with a right pane of tab configs",
-            layout = VerticalSplit(
-                left = SinglePanel(
-                    PanelConfig(
-                        id = "main",
-                        tabs = listOf(TabConfig("terminal", "Main Term")),
-                        pinnedCount = 0,
-                    ),
+            layout =
+                VerticalSplit(
+                    left =
+                        SinglePanel(
+                            PanelConfig(
+                                id = "main",
+                                tabs = listOf(TabConfig("terminal", "Main Term")),
+                                pinnedCount = 0,
+                            ),
+                        ),
+                    right =
+                        SinglePanel(
+                            PanelConfig(
+                                id = "right",
+                                tabs = tabs,
+                                pinnedCount = tabs.size.coerceAtMost(1),
+                            ),
+                        ),
                 ),
-                right = SinglePanel(
-                    PanelConfig(
-                        id = "right",
-                        tabs = tabs,
-                        pinnedCount = tabs.size.coerceAtMost(1),
-                    ),
-                ),
-            ),
         )
 
     private fun rightPaneTabs(state: SplitViewState): List<String> =
-        state.getPanel("right")?.tabsComponent?.tabsState?.value?.tabs?.map { it.title } ?: emptyList()
+        state
+            .getPanel("right")
+            ?.tabsComponent
+            ?.tabsState
+            ?.value
+            ?.tabs
+            ?.map { it.title } ?: emptyList()
 
     @Test
-    fun `unknown first tab does not drop a restorable editor behind it`() = runBlocking {
-        // [unknown, editor] in the right pane. The old code gated the whole
-        // subtree on whether the first tab resolved; the editor was dropped on
-        // every restart. The fix walks the subtree for the first restorable tab.
-        val state = newRestoreSplitViewState()
-        applyWorkspace(
-            workspaceWithRightPane(
-                listOf(
-                    TabConfig("unknown", "Unknown 1"),
-                    TabConfig("editor", "Editor 1"),
+    fun `unknown first tab does not drop a restorable editor behind it`() =
+        runBlocking {
+            // [unknown, editor] in the right pane. The old code gated the whole
+            // subtree on whether the first tab resolved; the editor was dropped on
+            // every restart. The fix walks the subtree for the first restorable tab.
+            val state = newRestoreSplitViewState()
+            applyWorkspace(
+                workspaceWithRightPane(
+                    listOf(
+                        TabConfig("unknown", "Unknown 1"),
+                        TabConfig("editor", "Editor 1"),
+                    ),
                 ),
-            ),
-            state,
-            windowProjectState = null,
-        )
+                state,
+                windowProjectState = null,
+            )
 
-        assertEquals(
-            listOf("Editor 1"),
-            rightPaneTabs(state),
-            "an unknown first tab must not silently drop the restorable tab behind it",
-        )
-    }
+            assertEquals(
+                listOf("Editor 1"),
+                rightPaneTabs(state),
+                "an unknown first tab must not silently drop the restorable tab behind it",
+            )
+        }
 
     @Test
-    fun `unknown trailing tab does not drop the restorable editor before it`() = runBlocking {
-        // The mirror case. Both panes must restore, regardless of which slot the
-        // unknown tab occupies.
-        val state = newRestoreSplitViewState()
-        applyWorkspace(
-            workspaceWithRightPane(
-                listOf(
-                    TabConfig("editor", "Editor 1"),
-                    TabConfig("unknown", "Unknown 1"),
+    fun `unknown trailing tab does not drop the restorable editor before it`() =
+        runBlocking {
+            // The mirror case. Both panes must restore, regardless of which slot the
+            // unknown tab occupies.
+            val state = newRestoreSplitViewState()
+            applyWorkspace(
+                workspaceWithRightPane(
+                    listOf(
+                        TabConfig("editor", "Editor 1"),
+                        TabConfig("unknown", "Unknown 1"),
+                    ),
                 ),
-            ),
-            state,
-            windowProjectState = null,
-        )
+                state,
+                windowProjectState = null,
+            )
 
-        assertEquals(
-            listOf("Editor 1"),
-            rightPaneTabs(state),
-            "an unknown trailing tab must not affect the restorable tabs before it",
-        )
-    }
+            assertEquals(
+                listOf("Editor 1"),
+                rightPaneTabs(state),
+                "an unknown trailing tab must not affect the restorable tabs before it",
+            )
+        }
 
     @Test
-    fun `every unknown tab in a pane skips the split without leaving a ghost panel`() = runBlocking {
-        // [unknown, unknown] in the right pane. Nothing restorable, so the split
-        // is refused (the whole reason the gate exists) - the right pane simply
-        // does not exist, and the left pane is alone. The old code created a
-        // ghost right panel via splitPanel(tabToMove = null) in this case; this
-        // test exists to pin the empty-apply contract.
-        val state = newRestoreSplitViewState()
-        applyWorkspace(
-            workspaceWithRightPane(
-                listOf(
-                    TabConfig("unknown", "Unknown 1"),
-                    TabConfig("unknown", "Unknown 2"),
+    fun `every unknown tab in a pane skips the split without leaving a ghost panel`() =
+        runBlocking {
+            // [unknown, unknown] in the right pane. Nothing restorable, so the split
+            // is refused (the whole reason the gate exists) - the right pane simply
+            // does not exist, and the left pane is alone. The old code created a
+            // ghost right panel via splitPanel(tabToMove = null) in this case; this
+            // test exists to pin the empty-apply contract.
+            val state = newRestoreSplitViewState()
+            applyWorkspace(
+                workspaceWithRightPane(
+                    listOf(
+                        TabConfig("unknown", "Unknown 1"),
+                        TabConfig("unknown", "Unknown 2"),
+                    ),
                 ),
-            ),
-            state,
-            windowProjectState = null,
-        )
+                state,
+                windowProjectState = null,
+            )
 
-        val panelIds = state.getAllPanels().map { it.id }.toSet()
-        assertEquals(
-            setOf("main"),
-            panelIds,
-            "a subtree with no restorable tab must not produce a ghost split",
-        )
-    }
+            val panelIds = state.getAllPanels().map { it.id }.toSet()
+            assertEquals(
+                setOf("main"),
+                panelIds,
+                "a subtree with no restorable tab must not produce a ghost split",
+            )
+        }
 
     @Test
-    fun `every restorable tab in a mixed pane lands in the new right panel`() = runBlocking {
-        // [editor, unknown, terminal, unknown] - two restorable tabs separated by
-        // two unknowns. The old code gated on the FIRST tab; the first unknown
-        // would have dropped everything.
-        val state = newRestoreSplitViewState()
-        applyWorkspace(
-            workspaceWithRightPane(
-                listOf(
-                    TabConfig("editor", "Editor 1"),
-                    TabConfig("unknown", "Unknown 1"),
-                    TabConfig("terminal", "Terminal 1"),
-                    TabConfig("unknown", "Unknown 2"),
+    fun `every restorable tab in a mixed pane lands in the new right panel`() =
+        runBlocking {
+            // [editor, unknown, terminal, unknown] - two restorable tabs separated by
+            // two unknowns. The old code gated on the FIRST tab; the first unknown
+            // would have dropped everything.
+            val state = newRestoreSplitViewState()
+            applyWorkspace(
+                workspaceWithRightPane(
+                    listOf(
+                        TabConfig("editor", "Editor 1"),
+                        TabConfig("unknown", "Unknown 1"),
+                        TabConfig("terminal", "Terminal 1"),
+                        TabConfig("unknown", "Unknown 2"),
+                    ),
                 ),
-            ),
-            state,
-            windowProjectState = null,
-        )
+                state,
+                windowProjectState = null,
+            )
 
-        assertEquals(
-            listOf("Editor 1", "Terminal 1"),
-            rightPaneTabs(state),
-            "every restorable tab in a mixed pane must land, with unknown tabs skipped",
-        )
-    }
+            assertEquals(
+                listOf("Editor 1", "Terminal 1"),
+                rightPaneTabs(state),
+                "every restorable tab in a mixed pane must land, with unknown tabs skipped",
+            )
+        }
 }

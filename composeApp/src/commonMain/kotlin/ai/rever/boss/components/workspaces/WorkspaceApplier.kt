@@ -525,16 +525,21 @@ private suspend fun firstRestorableTab(
     root: SplitConfig,
     projectPath: String,
     splitViewState: SplitViewState,
-): TabInfo? = when (root) {
-    is SinglePanel -> {
-        root.panel.tabs.firstNotNullOfOrNull { tabConfig ->
-            createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)
+): TabInfo? =
+    when (root) {
+        is SinglePanel -> {
+            root.panel.tabs.firstNotNullOfOrNull { tabConfig ->
+                createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)
+            }
+        }
+
+        is VerticalSplit -> {
+            firstRestorableTab(root.left, projectPath, splitViewState)
+                ?: firstRestorableTab(root.right, projectPath, splitViewState)
+        }
+
+        is HorizontalSplit -> {
+            firstRestorableTab(root.top, projectPath, splitViewState)
+                ?: firstRestorableTab(root.bottom, projectPath, splitViewState)
         }
     }
-
-    is VerticalSplit -> firstRestorableTab(root.left, projectPath, splitViewState)
-        ?: firstRestorableTab(root.right, projectPath, splitViewState)
-
-    is HorizontalSplit -> firstRestorableTab(root.top, projectPath, splitViewState)
-        ?: firstRestorableTab(root.bottom, projectPath, splitViewState)
-}
