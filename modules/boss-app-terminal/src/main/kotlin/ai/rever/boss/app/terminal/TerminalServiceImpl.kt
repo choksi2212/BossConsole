@@ -145,8 +145,13 @@ class TerminalServiceImpl(
             }
             try {
                 val owned = session(request.sessionId)
+                // session() did the IpcCall.requireOwner check once at stream start.
+                // Per-chunk auth is not needed here: revocation is handled by
+                // ProcessIdentityInterceptor, which closes the gRPC call when the
+                // caller's token is revoked, and the caller's authority cannot
+                // change mid-stream. The old per-chunk check (#1321) made every
+                // output byte pay a TLS lookup + permission path.
                 owned.output.stream().collect { chunk ->
-                    IpcCall.requireOwner(owned.ownerInstance)
                     emit(chunk)
                 }
             } finally {
