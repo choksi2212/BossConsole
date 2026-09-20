@@ -167,15 +167,37 @@ object WindowManager {
         }
 
     /**
-     * Close a window by ID
+     * Close a window by ID.
      *
-     * @param windowId The ID of the window to close
+     * Drops both any unconsumed [pendingInitialTabs] and [pendingInitialProjects] keyed
+     * to this window, so an early-close window does not strand a `TabInfo` / `Project`
+     * against an id no window will ever consume. Without this, every `createNewWindowWithTab`
+     * / `createNewWindowWithProject` for a window that closes before its `LaunchedEffect`
+     * consumer runs leaks one entry in those maps; over a long session that's an
+     * unbounded growth keyed by random ids. See #1224.
      */
     fun closeWindow(windowId: String) {
         val window = _windows.find { it.id == windowId }
         if (window != null) {
             _windows.remove(window)
-            logger.debug(LogCategory.UI, "Closed window", mapOf("windowId" to windowId, "remainingWindows" to _windows.size))
+            val leakedTab = pendingInitialTabs.remove(windowId)
+            val leakedProject = pendingInitialProjects.remove(windowId)
+            logger.debug(
+                LogCategory.UI,
+                "Closed window",
+                mapOf(
+                    "windowId" to windowId,
+                    "remainingWindows" to _windows.size,
+                    "droppedPendingTab" to (leakedTab != null).toString(),
+                    "droppedPendingProject" to (leakedProject != null).toString(),
+                ),
+            )
+        } else {
+            // An unknown window id still drops its pending entries: a stale id from
+            // a cancelled create-window flow is the only case this branch handles,
+            // and the entries ARE leaked under that flow if we do not clean them up.
+            pendingInitialTabs.remove(windowId)
+            pendingInitialProjects.remove(windowId)
         }
     }
 
