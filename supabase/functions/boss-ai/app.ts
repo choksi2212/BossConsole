@@ -199,9 +199,10 @@ export function createHandler(deps: Dependencies): (request: Request) => Promise
         // BossConsole#1252: bound the settlement RPC so a slow database
         // cannot wedge the edge function. The upstream response has already
         // been (or is about to be) streamed to the client; the settlement
-        // is a side write that must not block returning. The 5 second
+        // is a side write that must not block returning. The 2 second
         // budget is generous for PostgREST in healthy operation and short
-        // enough to keep the function within Supabase's edge time budget.
+        // enough to keep the function within Supabase's edge time budget,
+        // even across the retry path.
         const settleRpc = deps.rpc("boss_ai_settle", {
           p_request_id: requestId,
           p_tokens: tokens,
@@ -209,7 +210,7 @@ export function createHandler(deps: Dependencies): (request: Request) => Promise
         await Promise.race([
           settleRpc,
           new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("settlement_timeout")), 5_000)
+            setTimeout(() => reject(new Error("settlement_timeout")), 2_000)
           ),
         ])
       }
