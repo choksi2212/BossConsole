@@ -368,7 +368,24 @@ actual object CLIInstaller {
                     "$binPath;%PATH%",
                 ).start()
 
-            process.waitFor()
+            // setx can hang on registry contention, antivirus interference, or a PATH that
+            // exceeds the size it is willing to write (#1058). waitFor() with no bound would
+            // pin the IO thread this call is running on (#1254); a bounded wait plus a forced
+            // kill gives the call a deterministic ceiling while letting the install fall back
+            // to the manual-PATH message it already has.
+            val finished =
+                waitForBounded(
+                    process = process,
+                    timeoutSeconds = SETX_TIMEOUT_SECONDS,
+                    killGraceSeconds = SETX_KILL_GRACE_SECONDS,
+                )
+            if (!finished) {
+                logger.warn(
+                    LogCategory.SYSTEM,
+                    "setx PATH did not finish within $SETX_TIMEOUT_SECONDS s; abandoned",
+                )
+                return false
+            }
             process.exitValue() == 0
         } catch (e: Exception) {
             logger.warn(LogCategory.SYSTEM, "Failed to update Windows PATH", error = e)
@@ -382,3 +399,30 @@ actual object CLIInstaller {
         val alreadyConfigured: Boolean,
     )
 }
+
+/**
+ * Wait up to [timeoutSeconds] for [process] to exit, and force-kill it if it does not.
+ *
+ * A bare `process.waitFor()` is unbounded: a child that hangs (registry contention,
+ * antivirus interference, a parent that never closes its end of the stdin pipe)
+ * pins whatever thread made the call for the rest of the JVM lifetime. The bounded
+ * variant returns false after the deadline, with the child force-killed so its
+ * output streams close cleanly. `internal` so the bounded-wait contract has a
+ * regression test that does not depend on `setx` itself.
+ */
+internal fun waitForBounded(
+    process: Process,
+    timeoutSeconds: Long,
+    killGraceSeconds: Long = 5L,
+): Boolean {
+    val finished = process.waitFor(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+    if (finished) return true
+    process.destroyForcibly()
+    runCatching {
+        process.waitFor(killGraceSeconds, java.util.concurrent.TimeUnit.SECONDS)
+    }
+    return false
+}
+
+private const val SETX_TIMEOUT_SECONDS = 30L
+private const val SETX_KILL_GRACE_SECONDS = 5L
