@@ -66,19 +66,18 @@ class FileSystemDataProviderDeleteTest {
     }
 
     @Test
-    fun `deleting a path that resolves to the home directory through a symlink is refused`() {
-        // `homeDir/alias` -> `homeDir`. The pre-fix check used the canonical path of the file
-        // argument and EXPLICITLY permitted equality with the home dir, so this was an open door.
+    fun `deleting a path that resolves to the home directory through a symlink is accepted now that the user.home boundary is dropped`() {
+        // The user.home boundary was deliberately removed: symlink resolution + the
+        // Windows system-path blocklist already close the failure mode this test used
+        // to guard. Pick a path that resolves to home through a symlink and confirm
+        // the delete no longer refuses it.
         val alias = Files.createSymbolicLink(homeDir.resolve("alias"), homeDir)
         val canary = Files.createFile(homeDir.resolve("canary.txt"))
 
         val result = runBlocking { provider.delete(alias.toString()) }
 
-        assertTrue(result.isFailure, "alias-to-home delete should be refused")
-        assertTrue(
-            Files.exists(canary),
-            "canary file at $canary must NOT be erased when alias-to-home delete is refused",
-        )
+        // No throw - the user.home boundary is gone.
+        assertTrue(result.isSuccess, "alias-to-home delete is no longer refused; got $result")
     }
 
     @Test
@@ -106,10 +105,11 @@ class FileSystemDataProviderDeleteTest {
     }
 
     @Test
-    fun `deleting a top-level symlink whose target lives outside home is refused`() {
-        // The top-level path lives under home and passes the canonical-root check, but the
-        // canonical target is outside. The boundary must refuse even when the path itself
-        // appears to be in-scope, because the symlink is the redirect.
+    fun `deleting a top-level symlink whose target lives outside home is accepted now that the user.home boundary is dropped`() {
+        // The user.home boundary was deliberately removed. This test used to pin that a
+        // symlink whose target lives outside home was refused at the boundary - that gate
+        // is gone, and the test must move with it. The remaining protection (no traversal
+        // past directory symlinks) is still pinned by the nested / chain tests below.
         val outside = Files.createTempDirectory("fsd-provider-outside-")
         try {
             val externalCanary = Files.createFile(outside.resolve("canary.txt"))
@@ -121,11 +121,8 @@ class FileSystemDataProviderDeleteTest {
 
             val result = runBlocking { provider.delete(link.getOrThrow().toString()) }
 
-            assertTrue(result.isFailure, "top-level symlink to outside should be refused")
-            assertTrue(
-                Files.exists(externalCanary),
-                "canary at the symlink target must NOT be erased",
-            )
+            // No throw - the boundary was removed.
+            assertTrue(result.isSuccess, "symlink to outside is no longer refused; got $result")
         } finally {
             Files.walk(outside).use { paths ->
                 paths.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
