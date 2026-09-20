@@ -21,6 +21,17 @@ import java.util.jar.JarFile
 object BinaryCompatibilityValidator {
     private val logger = BossLogger.forComponent("BinaryCompatibilityValidator")
 
+    /**
+     * Hard upper bound on the bytes one class entry may decompress to.
+     *
+     * Real class files are under a megabyte; the cap is set generously above any
+     * plausible JVM class so the normal case is unaffected, and below anything
+     * that could plausibly exhaust the host's heap on install. A jar whose single
+     * class entry decompresses past this cap is rejected before the constant pool
+     * is parsed, the same way `PluginManifestReader` bounds the manifest entry.
+     */
+    const val MAX_CLASS_BYTES: Int = 8 * 1024 * 1024
+
     data class ValidationResult(
         val isCompatible: Boolean,
         val errors: List<String> = emptyList(),
@@ -50,10 +61,32 @@ object BinaryCompatibilityValidator {
                         .filter { it.name.endsWith(".class") && !it.name.startsWith("META-INF/") }
                         .map { entry ->
                             val className = entry.name.removeSuffix(".class").replace('/', '.')
-                            val bytes = jar.getInputStream(entry).use { it.readBytes() }
+                            // Bound the read so a malicious class entry cannot decompress
+                            // to GBs and OOM the host before the binary-compat decision is
+                            // made. `readNBytes(MAX + 1)` reads at most one byte past the cap;
+                            // the size check below turns that into a rejection.
+                            val bytes =
+                                jar.getInputStream(entry).use { stream ->
+                                    stream.readNBytes(MAX_CLASS_BYTES + 1)
+                                }
+                            if (bytes.size > MAX_CLASS_BYTES) {
+                                throw PluginManifestException(
+                                    "Class $className exceeds $MAX_CLASS_BYTES bytes - refusing to read unbounded entry",
+                                )
+                            }
                             className to bytes
                         }.toList()
                 }
+            } catch (e: PluginManifestException) {
+                logger.error(
+                    LogCategory.SYSTEM,
+                    "JAR failed class-size cap",
+                    mapOf("jarPath" to jarPath, "error" to (e.message ?: "unknown")),
+                )
+                return ValidationResult(
+                    isCompatible = false,
+                    errors = listOf(e.message ?: "class-size cap exceeded"),
+                )
             } catch (e: Exception) {
                 logger.error(
                     LogCategory.SYSTEM,
