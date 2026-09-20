@@ -899,6 +899,14 @@ async function extractFileFromZip(
   const cdSize = view.getUint32(eocdOffset + 12, true)
   const cdOffset = view.getUint32(eocdOffset + 16, true)
 
+  // Mirror the remote path's cap so an in-memory JAR cannot bypass the
+  // EOCD-reported bound either. The remote path checks first; this matches.
+  if (cdSize > MAX_CENTRAL_DIR_BYTES) {
+    throw new Error(
+      `EOCD declares cdSize ${cdSize}, over the ${MAX_CENTRAL_DIR_BYTES}-byte cap`
+    )
+  }
+
   // ZIP64 — sentinel values indicate the real fields live in a ZIP64 EOCD
   // record. JARs that hit this path in memory are rare (50 MB+ goes through
   // the range-request path), but fail loudly instead of silently corrupting.
