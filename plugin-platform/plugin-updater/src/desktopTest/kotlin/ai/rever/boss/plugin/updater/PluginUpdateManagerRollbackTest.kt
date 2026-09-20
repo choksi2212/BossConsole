@@ -67,15 +67,15 @@ class PluginUpdateManagerRollbackTest {
             // Simulate a successful unload followed by a failed load: exactly the case the
             // manager's swap branch calls "rollback". A no-op rollback would still satisfy
             // the count but not the path argument, which is the second half of the contract.
-            val unload = suspend { _: String -> Result.success(Unit) }
-            val load =
-                suspend { _: String -> Result.failure<String>(IllegalStateException("binary-incompat")) }
-            val rollback =
-                suspend { oldJar: String ->
-                    rollbackCalls.incrementAndGet()
-                    rollbackArg.set(oldJar)
-                    Result.success(Unit)
-                }
+            val unload: suspend (String) -> Result<Unit> = { Result.success(Unit) }
+            val load: suspend (String) -> Result<Unit> = {
+                Result.failure(IllegalStateException("binary-incompat"))
+            }
+            val rollback: suspend (String) -> Result<Unit> = { oldJar: String ->
+                rollbackCalls.incrementAndGet()
+                rollbackArg.set(oldJar)
+                Result.success(Unit)
+            }
 
             val result =
                 mgr.updatePlugin(

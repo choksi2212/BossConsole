@@ -454,6 +454,7 @@ class PluginUpdateManager(
      *   the plugin unloaded.
      * @return Result indicating success or failure
      */
+    @Suppress("LongParameterList", "ReturnCount")
     suspend fun updatePlugin(
         pluginId: String,
         downloadPath: String,
@@ -515,6 +516,7 @@ class PluginUpdateManager(
      * Split out so the whole swap can run under `NonCancellable` in one expression;
      * see the comment at the call site for why it must.
      */
+    @Suppress("LongParameterList", "ReturnCount")
     private suspend fun swapPlugin(
         pluginId: String,
         update: UpdateInfo,
