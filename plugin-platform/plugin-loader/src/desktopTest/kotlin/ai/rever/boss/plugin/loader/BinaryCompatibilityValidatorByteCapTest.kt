@@ -47,7 +47,7 @@ class BinaryCompatibilityValidatorByteCapTest {
             assertNotNull(entry, "test setup: entry not in jar")
             assertTrue(
                 entry.size.toInt() == payloadSize,
-                "test setup: expected ${payloadSize} bytes stored, got ${entry.size}",
+                "test setup: expected $payloadSize bytes stored, got ${entry.size}",
             )
         }
         return jar.absolutePath
@@ -55,9 +55,8 @@ class BinaryCompatibilityValidatorByteCapTest {
 
     @Test
     fun `validate rejects a class entry whose decompressed size exceeds MAX_CLASS_BYTES`() {
-        // 8 MiB stored - well above any plausible class file. The validator must refuse
-        // it on the read cap, not OOM on `it.readBytes()`.
-        val jarPath = jarWithClassOfSize(payloadSize = 8 * 1024 * 1024)
+        // Exceeds MAX_CLASS_BYTES. The validator must refuse it on the read cap, not OOM on `it.readBytes()`.
+        val jarPath = jarWithClassOfSize(payloadSize = BinaryCompatibilityValidator.MAX_CLASS_BYTES + 1024)
 
         val result =
             BinaryCompatibilityValidator.validate(
@@ -67,7 +66,8 @@ class BinaryCompatibilityValidatorByteCapTest {
 
         assertTrue(
             !result.isCompatible || result.errors.isNotEmpty(),
-            "an 8 MiB class entry must be rejected, got isCompatible=${result.isCompatible} errors=${result.errors}",
+            "an oversized class entry must be rejected, " +
+                "got isCompatible=${result.isCompatible} errors=${result.errors}",
         )
     }
 
@@ -82,11 +82,10 @@ class BinaryCompatibilityValidatorByteCapTest {
                     .firstOrNull { File(it, "plugin-platform").isDirectory },
                 "could not locate the plugin-platform root",
             )
-        val file =
-            File(
-                root,
-                "plugin-platform/plugin-loader/src/desktopMain/kotlin/ai/rever/boss/plugin/loader/BinaryCompatibilityValidator.kt",
-            )
+        val path =
+            "plugin-platform/plugin-loader/src/desktopMain/kotlin/ai/rever/boss/plugin/loader/" +
+                "BinaryCompatibilityValidator.kt"
+        val file = File(root, path)
         assertTrue(file.isFile, "BinaryCompatibilityValidator.kt not found at ${file.absolutePath}")
         val text = file.readText()
 

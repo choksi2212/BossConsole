@@ -46,6 +46,7 @@ object BinaryCompatibilityValidator {
      * via reflection. This forces resolution of all symbolic references that
      * the JVM would otherwise defer until first execution.
      */
+    @Suppress("ReturnCount")
     fun validate(
         classLoader: ClassLoader,
         jarPath: String,
@@ -71,7 +72,8 @@ object BinaryCompatibilityValidator {
                                 }
                             if (bytes.size > MAX_CLASS_BYTES) {
                                 throw PluginManifestException(
-                                    "Class $className exceeds $MAX_CLASS_BYTES bytes - refusing to read unbounded entry",
+                                    "Class $className exceeds $MAX_CLASS_BYTES bytes - " +
+                                        "refusing to read unbounded entry",
                                 )
                             }
                             className to bytes
