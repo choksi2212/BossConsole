@@ -148,20 +148,30 @@ class LogLineParser {
         val records = mutableListOf<LogRecord>()
         val unparsed = mutableListOf<String>()
         for (line in lines) {
-            val trimmed = line.trimEnd()
-            if (trimmed.isEmpty() || trimmed == "--") continue
-            val primary = pattern.matchEntire(trimmed)
-            val match = primary ?: tryLowercaseLevelMatch(trimmed)
-            if (match == null) {
-                unparsed += trimmed
-                continue
+            val record = parseLine(line.trimEnd(), threshold, unparsed)
+            if (record != null) {
+                records += record
             }
-            val (timestamp, levelName, threadName, category, component, message) = match.destructured
-            val level = parseLevel(levelName)
-            if (level.priority < threshold.priority) continue
-            records += LogRecord(timestamp, level, category, component, message)
         }
         return LogReport(records = records, unparsed = unparsed)
+    }
+
+    private fun parseLine(
+        trimmed: String,
+        threshold: LogLevel,
+        unparsed: MutableList<String>,
+    ): LogRecord? {
+        if (trimmed.isEmpty() || trimmed == "--") return null
+        val primary = pattern.matchEntire(trimmed)
+        val match = primary ?: tryLowercaseLevelMatch(trimmed)
+        if (match == null) {
+            unparsed += trimmed
+            return null
+        }
+        val (timestamp, levelName, _, category, component, message) = match.destructured
+        val level = parseLevel(levelName)
+        if (level.priority < threshold.priority) return null
+        return LogRecord(timestamp, level, category, component, message)
     }
 
     /**
