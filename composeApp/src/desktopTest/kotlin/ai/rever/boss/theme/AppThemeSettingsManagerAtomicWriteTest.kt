@@ -22,10 +22,11 @@ import kotlin.test.assertTrue
  * This test pins the post-fix property: every save lands a fully decodable file.
  */
 class AppThemeSettingsManagerAtomicWriteTest {
-    private val tempFile: File = File(
-        System.getProperty("user.home") ?: error("user.home not set"),
-        ".boss/app-theme-settings.json",
-    ).also { it.parentFile?.mkdirs() }
+    private val tempFile: File =
+        File(
+            System.getProperty("user.home") ?: error("user.home not set"),
+            ".boss/app-theme-settings.json",
+        ).also { it.parentFile?.mkdirs() }
 
     @BeforeTest
     fun setUp() {
@@ -53,16 +54,18 @@ class AppThemeSettingsManagerAtomicWriteTest {
         assertTrue(tempFile.exists(), "save must produce a file")
         val raw = tempFile.readText()
         // Round-trip through the same decoder the load uses.
-        val decoded = AppThemeSettings.storageJson.decodeFromString(
-            AppThemeSettings.serializer(),
-            raw,
-        )
+        val decoded =
+            AppThemeSettings.storageJson.decodeFromString(
+                AppThemeSettings.serializer(),
+                raw,
+            )
         assertNotNull(decoded)
         // The persisted value must be the one we just selected.
-        val text = AppThemeSettings.storageJson.encodeToString(
-            AppThemeSettings.serializer(),
-            decoded,
-        )
+        val text =
+            AppThemeSettings.storageJson.encodeToString(
+                AppThemeSettings.serializer(),
+                decoded,
+            )
         assertTrue(
             text.contains("\"appThemeId\":\"$themeId\"") || decoded.appThemeId == themeId,
             "saved file must contain the selected theme - got $decoded",
@@ -88,10 +91,11 @@ class AppThemeSettingsManagerAtomicWriteTest {
 
         Thread.sleep(500L)
 
-        val decoded = AppThemeSettings.storageJson.decodeFromString(
-            AppThemeSettings.serializer(),
-            tempFile.readText(),
-        )
+        val decoded =
+            AppThemeSettings.storageJson.decodeFromString(
+                AppThemeSettings.serializer(),
+                tempFile.readText(),
+            )
         assertNotNull(decoded)
         assertEquals(
             candidates.last { it != first },
