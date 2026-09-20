@@ -854,14 +854,15 @@ object UpdateInstaller {
 
             if (currentFile != null) {
                 // Walk up the directory tree looking for .app bundle
-                var currentFileVar = currentFile
+                var curr: File = currentFile
                 for (i in 0..5) {
-                    logger.trace(LogCategory.SYSTEM, "Checking parent", mapOf("index" to i, "path" to currentFileVar.absolutePath))
-                    if (currentFileVar.name.endsWith(".app")) {
-                        logger.debug(LogCategory.SYSTEM, "Found app bundle via directory traversal", mapOf("path" to currentFileVar.absolutePath))
-                        return resolveRealAppPath(currentFileVar.absolutePath)
+                    logger.trace(LogCategory.SYSTEM, "Checking parent", mapOf("index" to i, "path" to curr.absolutePath))
+                    if (curr.name.endsWith(".app")) {
+                        logger.debug(LogCategory.SYSTEM, "Found app bundle via directory traversal", mapOf("path" to curr.absolutePath))
+                        return resolveRealAppPath(curr.absolutePath)
                     }
-                    currentFileVar = currentFileVar.parentFile ?: break
+                    val parent = curr.parentFile ?: break
+                    curr = parent
                 }
             }
 

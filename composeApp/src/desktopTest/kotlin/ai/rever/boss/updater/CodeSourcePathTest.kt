@@ -25,31 +25,28 @@ class CodeSourcePathTest {
     @Test
     fun `URL path is URL-encoded and a File from it fails to resolve a real path with a space`() {
         val realPath = "/Users/Bob Smith/Applications/BOSS.app/Contents/app/composeApp.jar"
-        val url = URL("file://$realPath")
+        val url = File(realPath).toURI().toURL()
 
         // `URL.path` is URL-encoded: spaces become %20, etc.
         val pathFromUrl = url.path
         assertTrue(
-            pathFromUrl.contains("%20") || pathFromUrl != realPath,
+            pathFromUrl.contains("%20"),
             "URL.path must be URL-encoded",
         )
 
-        // `File(URL.path)` reads a path that does not exist on disk.
+        // `File(URL.path)` reads a path that contains %20.
         val fileFromUrlPath = File(pathFromUrl)
-        assertEquals(
-            false,
-            fileFromUrlPath.exists(),
-            "File from URL-encoded path must not resolve the real file",
+        assertTrue(
+            fileFromUrlPath.path.contains("%20"),
+            "File from URL-encoded path retains percent escape",
         )
 
         // The fix: go through URI so the path is decoded first.
-        val fileFromUri = File(url.toURI().path)
-        // The real file does not exist on this CI machine, but the resulting File's
-        // path is now the decoded one and matches what would be on disk.
+        val fileFromUri = File(url.toURI())
         assertEquals(
-            realPath,
-            fileFromUri.path.replace('/', java.io.File.separatorChar),
-            "URL.toURI().path must be decoded before File uses it",
+            File(realPath).absolutePath,
+            fileFromUri.absolutePath,
+            "URL.toURI() must be decoded before File uses it",
         )
     }
 
@@ -63,10 +60,10 @@ class CodeSourcePathTest {
     @Test
     fun `File from URL path and File from URL URI are different and only the URI one decodes`() {
         val realPath = "/Users/Ana Pereira/code/BOSS.app"
-        val url = URL("file://$realPath")
+        val url = File(realPath).toURI().toURL()
 
         val fromPath = File(url.path)
-        val fromUri = File(url.toURI().path)
+        val fromUri = File(url.toURI())
 
         assertNotNull(fromPath)
         assertNotNull(fromUri)
@@ -75,13 +72,13 @@ class CodeSourcePathTest {
         // version, the URI form is the decoded one. `fromPath.absolutePath` still
         // carries `%20` because `File` does not decode percent escapes on the way in.
         assertTrue(
-            fromPath.path.contains("%20") || fromPath.path.contains("%20"),
+            fromPath.path.contains("%20"),
             "from URL.path must retain %20 (File does not decode)",
         )
         assertEquals(
-            realPath,
-            fromUri.path.replace('/', java.io.File.separatorChar),
-            "from URI.path must decode to the original path",
+            File(realPath).absolutePath,
+            fromUri.absolutePath,
+            "from URI must decode to the original path",
         )
     }
 }
