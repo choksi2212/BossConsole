@@ -125,15 +125,19 @@ const SAMPLE_MANIFEST = JSON.stringify({
 
 Deno.test("jar bounds: a normal JAR's manifest is parsed", async () => {
   const jar = buildJarWithManifest(SAMPLE_MANIFEST)
-  const manifest = await extractManifestFromJar(jar.buffer)
+  // Uint8Array.buffer is typed ArrayBufferLike (includes SharedArrayBuffer),
+  // so slice first to hand the parser a plain ArrayBuffer.
+  const manifest = await extractManifestFromJar(jar.slice().buffer)
   assertEquals(manifest.pluginId, "com.example.fix914")
 })
 
 Deno.test("jar bounds: an EOCD-declared cdSize above MAX_CENTRAL_DIR_BYTES is rejected", async () => {
   const oversize = MAX_CENTRAL_DIR_BYTES + 1
   const jar = buildJarWithManifest(SAMPLE_MANIFEST, { eocdCdSize: oversize })
+  // Uint8Array.buffer is typed ArrayBufferLike (includes SharedArrayBuffer),
+  // so slice first to hand the parser a plain ArrayBuffer.
   const err = await assertRejects(() =>
-    Promise.resolve(extractManifestFromJar(jar.buffer))
+    Promise.resolve(extractManifestFromJar(jar.slice().buffer))
   )
   // The fix raises from the in-memory path before any allocation happens;
   // the rejection must name the cap so an operator can recognise it.
@@ -146,7 +150,7 @@ Deno.test("jar bounds: an EOCD-declared cdSize above MAX_CENTRAL_DIR_BYTES is re
 Deno.test("jar bounds: an EOCD-declared cdOffset past end of JAR is rejected", async () => {
   // Use a cdOffset well past the actual JAR end (the JAR is tiny).
   const jar = buildJarWithManifest(SAMPLE_MANIFEST, { eocdCdOffset: 0xfffffffe })
-  await assertRejects(() => Promise.resolve(extractManifestFromJar(jar.buffer)))
+  await assertRejects(() => Promise.resolve(extractManifestFromJar(jar.slice().buffer)))
 })
 
 Deno.test("jar bounds: a central-directory entry compressedSize above MAX_ENTRY_FETCH_BYTES is rejected", async () => {
@@ -155,7 +159,7 @@ Deno.test("jar bounds: a central-directory entry compressedSize above MAX_ENTRY_
     entryCompressedSize: oversize,
   })
   const err = await assertRejects(() =>
-    Promise.resolve(extractManifestFromJar(jar.buffer))
+    Promise.resolve(extractManifestFromJar(jar.slice().buffer))
   )
   assertStringIncludes(
     (err as Error).message,
