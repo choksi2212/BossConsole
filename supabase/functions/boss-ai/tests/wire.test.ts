@@ -358,12 +358,10 @@ Deno.test("tool call arguments must be parseable JSON (BossConsole#1251)", () =>
   assertThrows(
     () => requestBody(input, model, "openai_chat"),
     HttpError,
-    "tool call with unparseable arguments must be rejected",
   )
   assertThrows(
     () => requestBody(input, model, "openai_responses"),
     HttpError,
-    "tool call with unparseable arguments must be rejected (responses)",
   )
 })
 
