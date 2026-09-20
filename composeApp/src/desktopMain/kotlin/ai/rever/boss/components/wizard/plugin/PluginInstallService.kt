@@ -7,6 +7,7 @@ import ai.rever.boss.plugin.PluginPersistence
 import ai.rever.boss.plugin.PluginStoreSetup
 import ai.rever.boss.plugin.api.PluginManifest
 import ai.rever.boss.plugin.api.PluginState
+import ai.rever.boss.plugin.loader.PluginSignatureSidecar
 import ai.rever.boss.plugin.repository.PluginWithSource
 import ai.rever.boss.utils.atomicMoveFrom
 import ai.rever.boss.utils.logging.BossLogger
@@ -200,6 +201,14 @@ class PluginInstallService(
                         // Was delete-then-renameTo, which works on Windows but leaves a window in
                         // which neither file exists — a crash there loses an installed plugin jar.
                         finalFile.atomicMoveFrom(downloadedFile)
+                        // Move the signature sidecar alongside the jar: downloadPlugin writes it
+                        // next to the path it was given, so without this it lands at the
+                        // -downloading.jar.sig name while the jar moves to the versioned name,
+                        // and the installed plugin loads unsigned. Mirrors
+                        // StoreMissingDependencyInstaller.InstallerHooks.promoteFiles.
+                        val sidecar = PluginSignatureSidecar.read(downloadedPath)
+                        PluginSignatureSidecar.persist(finalFile.absolutePath, sidecar)
+                        PluginSignatureSidecar.delete(downloadedPath)
                     }
                     val jarPath = finalFile.absolutePath
 
