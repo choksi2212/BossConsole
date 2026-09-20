@@ -157,6 +157,7 @@ class LogLineParser {
         return LogReport(records = records, unparsed = unparsed)
     }
 
+    @Suppress("ReturnCount")
     private fun parseLine(
         trimmed: String,
         threshold: LogLevel,
