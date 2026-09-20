@@ -172,6 +172,7 @@ class WorkspaceApplierRestoreTest {
     private class RestoreTabComponent(
         ctx: ComponentContext,
         override val config: TabInfo,
+        override val tabTypeInfo: TabTypeInfo,
     ) : TabComponentWithUI,
         ComponentContext by ctx {
         @Composable
@@ -184,9 +185,9 @@ class WorkspaceApplierRestoreTest {
     private val restoreTabRegistry =
         TabRegistry().apply {
             listOf(TerminalTabType, CodeEditorTabType, FluckTabType).forEach { type ->
-                registerTabType(type) { config, ctx -> RestoreTabComponent(ctx, config) }
+                registerTabType(type) { config, ctx -> RestoreTabComponent(ctx, config, type) }
             }
-            registerTabType(RestoreTabType) { config, ctx -> RestoreTabComponent(ctx, config) }
+            registerTabType(RestoreTabType) { config, ctx -> RestoreTabComponent(ctx, config, RestoreTabType) }
         }
 
     private fun newRestoreSplitViewState() = SplitViewState(restoreTabRegistry, windowId = "restore-test-window")
