@@ -47,10 +47,10 @@ class EditorServiceImpl : EditorServiceGrpcKt.EditorServiceCoroutineImplBase() {
             add("/sys")
             add("/proc")
             if (isWindows()) {
-                add("c:\\windows")
-                add("c:\\program files")
-                add("c:\\program files (x86)")
-                add("c:\\system volume information")
+                add("c:/windows")
+                add("c:/program files")
+                add("c:/program files (x86)")
+                add("c:/system volume information")
             }
         }
 

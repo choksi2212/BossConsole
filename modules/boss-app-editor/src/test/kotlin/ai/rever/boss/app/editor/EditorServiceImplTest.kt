@@ -268,14 +268,16 @@ class EditorServiceSecurityTest {
     }
 
     @Test
-    fun `a symlink inside user home pointing outside is refused`() {
+    fun `a symlink inside user home pointing outside is accepted now that the user-home boundary is dropped`() {
         val inside = tempDir("boss-editor-inside-")
         val target = outsideHomeFile() ?: return
         val link = symlink(File(inside, "alias.txt"), target) ?: return
 
-        assertFailsWith<IllegalArgumentException> {
-            service.validatePath(link.absolutePath)
-        }
+        // No throw - the user-home boundary was dropped. The remaining
+        // protection (Windows system-path blocklist, no traversal) does not
+        // apply to a path that happens to be a symlink whose target lies
+        // outside the test runner's home.
+        service.validatePath(link.absolutePath)
     }
 
     @Test
