@@ -59,7 +59,11 @@ class BinaryCompatibilityValidatorByteCapTest {
         // it on the read cap, not OOM on `it.readBytes()`.
         val jarPath = jarWithClassOfSize(payloadSize = 8 * 1024 * 1024)
 
-        val result = BinaryCompatibilityValidator.validate(classLoader = this::class.java.classLoader, jarPath = jarPath)
+        val result =
+            BinaryCompatibilityValidator.validate(
+                classLoader = this::class.java.classLoader,
+                jarPath = jarPath,
+            )
 
         assertTrue(
             !result.isCompatible || result.errors.isNotEmpty(),
