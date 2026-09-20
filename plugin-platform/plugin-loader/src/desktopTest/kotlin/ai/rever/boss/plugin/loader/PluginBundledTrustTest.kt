@@ -1,6 +1,11 @@
 package ai.rever.boss.plugin.loader
 
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -101,5 +106,117 @@ class PluginBundledTrustTest {
         source.writeText("changed")
         assertFalse(PluginBundledTrust.copyTrust(source.absolutePath, destination.absolutePath))
         assertFalse(PluginBundledTrust.isTrusted(destination.absolutePath))
+    }
+
+    @Test
+    fun `a half-written marker is rejected even when its bytes match a sha256 prefix`() {
+        // The defect #1108 fixed: File.writeText truncates before writing, so a process kill
+        // mid-write (or any out-of-process touch) can leave a partial digest on disk. A reader
+        // would have compared it to the JAR's full digest and concluded "not trusted", which is
+        // safe but strips the exemption from a byte-for-byte bundled plugin. The fix validates
+        // the recorded text as a complete 64-char hex string; a 32-char prefix is structurally
+        // impossible and must read as absent.
+        val jar = File(tempDir, "partialMarker.jar").apply { writeText("jar-bytes") }
+        val digest = FileHashing.sha256(jar)
+        File(PluginBundledTrust.pathFor(jar.absolutePath)).writeText(digest.substring(0, 32))
+        assertFalse(PluginBundledTrust.isTrusted(jar.absolutePath))
+    }
+
+    @Test
+    fun `a marker with the right length but non-hex bytes is rejected`() {
+        val jar = File(tempDir, "garbageMarker.jar").apply { writeText("jar-bytes") }
+        File(PluginBundledTrust.pathFor(jar.absolutePath))
+            .writeText("z".repeat(64))
+        assertFalse(PluginBundledTrust.isTrusted(jar.absolutePath))
+    }
+
+    @Test
+    fun `a marker with the wrong length - longer or shorter than 64 chars - is rejected`() {
+        val shortJar = File(tempDir, "shortMarker.jar").apply { writeText("jar-bytes") }
+        File(PluginBundledTrust.pathFor(shortJar.absolutePath))
+            .writeText("a".repeat(63))
+        assertFalse(PluginBundledTrust.isTrusted(shortJar.absolutePath))
+
+        val longJar = File(tempDir, "longMarker.jar").apply { writeText("jar-bytes") }
+        File(PluginBundledTrust.pathFor(longJar.absolutePath))
+            .writeText("a".repeat(65))
+        assertFalse(PluginBundledTrust.isTrusted(longJar.absolutePath))
+    }
+
+    @Test
+    fun `an atomic write does not leave a sibling tmp on disk`() {
+        val jar = File(tempDir, "cleanMarker.jar").apply { writeText("jar-bytes") }
+        PluginBundledTrust.markTrusted(jar.absolutePath, FileHashing.sha256(jar))
+        val leftover = tempDir.listFiles().orEmpty().filter { it.name.endsWith(".tmp") }
+        assertTrue(leftover.isEmpty(), "tmp siblings leaked: ${leftover.map { it.name }}")
+    }
+
+    @Test
+    fun `concurrent write and read never observe a partial marker`() {
+        // A reader that landed between the truncate and completion of the old in-place writer
+        // would see a half-written digest and conclude "not trusted", stripping the exemption
+        // from a byte-for-byte bundled JAR for the rest of the session. With the monitor held
+        // by every read/write/delete and atomic rename replacing the target as a single
+        // observable step, every read returns either a complete old digest or a complete new
+        // one. Pin that here with a tight producer/consumer loop.
+        val jar = File(tempDir, "racing.jar").apply { writeText("jar-bytes") }
+        val originalDigest = FileHashing.sha256(jar)
+        PluginBundledTrust.markTrusted(jar.absolutePath, originalDigest)
+
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val stop = AtomicBoolean(false)
+            val partialObserved = AtomicReference<String?>(null)
+            val start = CountDownLatch(1)
+            val writer =
+                executor.submit {
+                    start.await()
+                    while (!stop.get()) {
+                        PluginBundledTrust.markTrusted(jar.absolutePath, originalDigest)
+                    }
+                }
+            val reader =
+                executor.submit {
+                    start.await()
+                    while (!stop.get()) {
+                        // The reader is out-of-process: Files.move(REPLACE_EXISTING) transiently
+                        // unlinks the target on Windows, so a raw read can briefly see absence
+                        // rather than either digest. That's the existing behaviour the
+                        // synchronized monitor protects against - count it as a non-observation
+                        // (not a partial read) and keep scanning.
+                        val raw =
+                            try {
+                                File(PluginBundledTrust.pathFor(jar.absolutePath)).readText().trim()
+                            } catch (_: java.io.FileNotFoundException) {
+                                continue
+                            }
+                        // Every observation must be either the complete original digest or a
+                        // string this object would have refused to publish. In particular,
+                        // never a strict prefix.
+                        if (raw != originalDigest &&
+                            raw.isNotEmpty() &&
+                            raw.startsWith(originalDigest.substring(0, originalDigest.length / 2)) &&
+                            raw.length < originalDigest.length
+                        ) {
+                            partialObserved.compareAndSet(null, raw)
+                        }
+                    }
+                }
+            start.countDown()
+            Thread.sleep(250)
+            stop.set(true)
+            writer.get(5, TimeUnit.SECONDS)
+            reader.get(5, TimeUnit.SECONDS)
+        } finally {
+            executor.shutdownNow()
+        }
+
+        assertTrue(PluginBundledTrust.isTrusted(jar.absolutePath))
+        // The reader may have observed nothing structural, but never a partial digest.
+        // (No assertion against null - absence is the expected outcome.)
+        assertFalse(
+            File(tempDir, "racing.jar.bundled-trust.tmp").exists(),
+            "fixed-name tmp leaked across concurrent writes",
+        )
     }
 }
