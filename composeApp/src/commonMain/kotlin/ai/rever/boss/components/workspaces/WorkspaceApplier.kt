@@ -1,3 +1,5 @@
+@file:Suppress("TooManyFunctions")
+
 package ai.rever.boss.components.workspaces
 
 import ai.rever.boss.cache.loadFaviconFromCache
@@ -290,9 +292,9 @@ private suspend fun applyWorkspaceNode(
                         // was "is the FIRST one restorable", not "is this one restorable".
                         rightNode.panel.tabs.forEach { tabConfig ->
                             createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)
-                                ?.let { tabsComponent.addTab(it) }
+                                ?.let { tabsComponent?.addTab(it) }
                         }
-                        tabsComponent.setPinnedCount(rightNode.panel.pinnedCount)
+                        tabsComponent?.setPinnedCount(rightNode.panel.pinnedCount)
                     }
                 }
 
@@ -346,9 +348,9 @@ private suspend fun applyWorkspaceNode(
                         val tabsComponent = splitViewState.getPanelTabsComponent(bottomPanelId)
                         bottomNode.panel.tabs.forEach { tabConfig ->
                             createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)
-                                ?.let { tabsComponent.addTab(it) }
+                                ?.let { tabsComponent?.addTab(it) }
                         }
-                        tabsComponent.setPinnedCount(bottomNode.panel.pinnedCount)
+                        tabsComponent?.setPinnedCount(bottomNode.panel.pinnedCount)
                     }
                 }
 
@@ -525,7 +527,7 @@ private suspend fun firstRestorableTab(
     splitViewState: SplitViewState,
 ): TabInfo? = when (root) {
     is SinglePanel -> {
-        root.panel.tabs.firstNotNullOfOr { tabConfig ->
+        root.panel.tabs.firstNotNullOfOrNull { tabConfig ->
             createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)
         }
     }
