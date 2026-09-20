@@ -2,7 +2,6 @@ package ai.rever.boss.components.workspaces
 
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -24,15 +23,15 @@ import kotlin.test.assertTrue
  * behavioural property that the field survives a concurrent put/get workload - a plain
  * HashMap would corrupt under that load, a `ConcurrentHashMap` retains every entry.
  *
- * `WorkspaceManager` is an `object` whose singleton is built once at class init time, so the test
- * reads the field via reflection to verify the type without leaking access into production code.
+ * `WorkspaceManager` is a class with a private field, so the test instantiates one and reads
+ * the field via reflection to verify the type without leaking access into production code.
  */
 class WorkspaceFileNamesConcurrencyTest {
     @Test
     fun `loadedFileNames is a ConcurrentHashMap`() {
         val field = WorkspaceManager::class.java.getDeclaredField("loadedFileNames")
         field.isAccessible = true
-        val instance = field.get(WorkspaceManager)
+        val instance = field.get(WorkspaceManager())
         assertTrue(
             instance is ConcurrentHashMap<*, *>,
             "loadedFileNames must be a ConcurrentHashMap so concurrent IO and Main " +
@@ -50,14 +49,13 @@ class WorkspaceFileNamesConcurrencyTest {
         val field = WorkspaceManager::class.java.getDeclaredField("loadedFileNames")
         field.isAccessible = true
         @Suppress("UNCHECKED_CAST")
-        val map = field.get(WorkspaceManager) as ConcurrentHashMap<String, String>
+        val map = field.get(WorkspaceManager()) as ConcurrentHashMap<String, String>
 
         // Keep the count well under the 10 the manager actually deals with; the test is about
         // corruption, not scaling.
         val writes = 100
         val start = CountDownLatch(1)
         val done = CountDownLatch(2)
-        val seen = AtomicInteger(0)
 
         val writer =
             Thread {
@@ -71,8 +69,10 @@ class WorkspaceFileNamesConcurrencyTest {
             Thread {
                 start.await()
                 for (i in 0 until writes) {
+                    // Reader does no work other than the read - the contract is that every
+                    // put survives a concurrent read, asserted after `done.await()`.
+                    @Suppress("UNUSED_VARIABLE")
                     val value = map["ws-$i"]
-                    if (value != null) seen.incrementAndGet()
                 }
                 done.countDown()
             }
@@ -83,7 +83,10 @@ class WorkspaceFileNamesConcurrencyTest {
         done.await()
 
         // Every entry the writer put is in the map at the end - a plain HashMap would
-        // lose entries under this exact workload.
+        // lose entries under this exact workload. This is the actual thread-safety contract;
+        // asserting on a "reader observed an in-flight put" counter would be timing-dependent
+        // (a fast host can let the writer finish before the reader does its first get) and
+        // would not be a meaningful contract check on its own.
         for (i in 0 until writes) {
             assertEquals(
                 "Workspace_$i.json",
@@ -91,6 +94,5 @@ class WorkspaceFileNamesConcurrencyTest {
                 "every put must survive concurrent reads - entry ws-$i is missing",
             )
         }
-        assertTrue(seen.get() > 0, "the reader must have observed at least some entries")
     }
 }
