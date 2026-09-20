@@ -74,7 +74,9 @@ export function createHandler(deps: Dependencies): (request: Request) => Promise
         // distinguishable signal. The RPC keeps both halves of the function
         // honest about who is allowed.
         const eligible = await deps.rpc("boss_ai_token_eligible", { p_user_id: user })
-        if (eligible !== true) throw new HttpError(401, "unauthorized", "Sign in to BOSS to use AI.")
+        if (eligible !== true) {
+          throw new HttpError(401, "unauthorized", "Sign in to BOSS to use AI.")
+        }
         return json(await mintToken(user, key), 200, requestId)
       }
       const user = await verifyToken(token, key)
