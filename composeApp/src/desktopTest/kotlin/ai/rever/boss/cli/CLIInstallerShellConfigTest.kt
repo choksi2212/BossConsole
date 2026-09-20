@@ -2,7 +2,6 @@ package ai.rever.boss.cli
 
 import ai.rever.boss.utils.CLIInstaller
 import java.nio.file.Files
-import kotlin.io.path.createSymbolicLinkPointingTo
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -31,11 +30,11 @@ class CLIInstallerShellConfigTest {
         homeDir.mkdirs()
         // A real file that the symlink will point at. Anything the test would
         // NOT want overwritten lives here.
-        realZshrcTarget = java.io.File(homeDir, "real-zshrc-target.md").apply {
-            writeText(
-                "# my notes\ndo not overwrite me\n",
-            )
-        }
+        realZshrcTarget =
+            java.io.File(homeDir, "real-zshrc-target.md")
+                .apply {
+                    writeText("# my notes\ndo not overwrite me\n")
+                }
     }
 
     @AfterTest
@@ -56,7 +55,7 @@ class CLIInstallerShellConfigTest {
     @Test
     fun `refuses to write through a symlinked shell rc and leaves the target intact`() {
         val zshrc = java.io.File(homeDir, ".zshrc")
-        Files.createSymbolicLinkPointingTo(zshrc.toPath(), realZshrcTarget.toPath())
+        Files.createSymbolicLink(zshrc.toPath(), realZshrcTarget.toPath())
 
         val result = CLIInstaller.testUpdateShellConfigForHome(homeDir)
 
@@ -84,9 +83,11 @@ class CLIInstallerShellConfigTest {
      */
     @Test
     fun `writes a real shell rc and appends the PATH export`() {
-        val zshrc = java.io.File(homeDir, ".zshrc").apply {
-            writeText("# my shell config\n")
-        }
+        val zshrc =
+            java.io.File(homeDir, ".zshrc")
+                .apply {
+                    writeText("# my shell config\n")
+                }
         runCatching { zshrc.delete() }
         java.io.File(homeDir, ".zshrc").writeText("# my shell config\n")
 
