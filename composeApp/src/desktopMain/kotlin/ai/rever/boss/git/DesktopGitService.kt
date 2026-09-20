@@ -167,6 +167,12 @@ actual object GitService {
                 // slashes intact - stripping unconditionally checked out `x` (or failed).
                 // Only when no local branch matches is the name read as remote-tracking
                 // (`origin/feature` -> `feature`, git sets up tracking itself).
+                //
+                // The pre-strip gate (isSafeRefName above) accepts `origin/-f` because
+                // the FULL refname does not start with `-`, but the strip yields `-f`,
+                // which `git checkout` reads as a flag. `--` only terminates the PATH
+                // list, not the revision list - so re-validate AFTER stripping, and
+                // refuse anything starting with `-` (issue #919).
                 val isLocalBranch =
                     runGitCommand(projectPath, "show-ref", "--verify", "--quiet", "refs/heads/$branchName")
                         .exitCode == 0
@@ -176,6 +182,9 @@ actual object GitService {
                     } else {
                         branchName
                     }
+                if (!isSafeRefName(localName)) {
+                    return@withContext GitError("Refused an unsafe ref: branch")
+                }
                 // `--` terminates the revision list: without it `checkout <name>`
                 // on a name that is also a path checks OUT THE PATH, discarding
                 // that file's uncommitted changes.

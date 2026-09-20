@@ -605,7 +605,11 @@ fun BossDraggableComponent.BossTopLeftBar(
                     isLoading = isGitLoading,
                     onCheckout = { branchName ->
                         scope.launch {
-                            val result = GitService.checkout(branchName, windowId = windowId)
+                            // Pass the window's project path like every other verb
+                            // here - the global currentProjectPath belongs to whichever
+                            // window ALIGNED last, so without the override a checkout
+                            // can run in another window's repo (issue #919).
+                            val result = GitService.checkout(branchName, windowId = windowId, projectPathOverride = windowProjectPath)
                             when (result) {
                                 is GitSuccess -> gitSuccessMessage = "Switched to '$branchName'"
                                 is GitError -> gitErrorMessage = result.message
