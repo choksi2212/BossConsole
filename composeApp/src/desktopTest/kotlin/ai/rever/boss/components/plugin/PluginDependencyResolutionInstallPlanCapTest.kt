@@ -50,7 +50,10 @@ class PluginDependencyResolutionInstallPlanCapTest {
             // MAX_PLAN_SIZE ids visited are kept; the rest are dropped because the cap
             // trips at the top of `visit`, not after the parent is added. We assert that
             // one specific id (the last in the chain) is NOT in the plan.
-            assertTrue(chain.last() !in plan.order, "the offender above the cap must be dropped, found ${chain.last()} in ${plan.order}")
+            assertTrue(
+                chain.last() !in plan.order,
+                "the offender above the cap must be dropped, found ${chain.last()} in ${plan.order}",
+            )
             assertTrue(plan.truncated, "truncated flag must be set when the cap fires")
         }
 }
