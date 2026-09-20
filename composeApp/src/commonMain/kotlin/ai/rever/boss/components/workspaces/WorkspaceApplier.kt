@@ -273,14 +273,15 @@ private suspend fun applyWorkspaceNode(
             // Skip the split (and the whole right subtree) when the right's first tab can't
             // be built — an unsupported type, a legacy panel-host entry, or no tabs at all.
             // An empty splitPanel(tabToMove = null) call would otherwise create a "ghost"
-            // panel that nothing fills.
+            // panel that nothing fills, except in the nested case below, where the recursion
+            // owns every panel it walks through and the new panel is filled by it.
             //
             // Nested (non-SinglePanel) right side: do NOT pre-split on the first tab and then
             // recurse. The recursion's own SinglePanel branch would add the same first tab a
             // second time — once from the splitPanel copy and once from its own tabs.forEach —
             // so a nested VerticalSplit inside the right would materialise its first tab twice.
-            // Recurse directly on the same currentPanelId; the recursion creates its own split
-            // panels for every nested level it walks through. See #1210.
+            // Split empty and let the recursion walk the new panel; no tab is duplicated
+            // because nothing was moved into the split. See #1210.
             val rightNode = node.right
             val firstRightTabInfo =
                 getFirstTab(rightNode)?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
@@ -303,8 +304,16 @@ private suspend fun applyWorkspaceNode(
                 }
 
                 else -> {
-                    // Nested: let the recursion own every panel it walks through. No pre-split.
-                    applyWorkspaceNode(rightNode, splitViewState, currentPanelId, projectPath)
+                    // Nested: split empty (no tab consumed) and let the recursion own the new
+                    // panel. The recursion fills it via its own SinglePanel branches; nothing
+                    // is duplicated because splitPanel did not move a tab into it.
+                    val rightPanelId =
+                        splitViewState.splitPanel(
+                            panelId = currentPanelId,
+                            orientation = SplitOrientation.VERTICAL,
+                            tabToMove = null,
+                        )
+                    applyWorkspaceNode(rightNode, splitViewState, rightPanelId, projectPath)
                 }
             }
         }
@@ -333,7 +342,8 @@ private suspend fun applyWorkspaceNode(
             // Then split current panel for the bottom side.
             //
             // Same shape as VerticalSplit above: nested bottom must NOT pre-split on the first
-            // tab, or the recursion duplicates it. See #1210.
+            // tab, or the recursion duplicates it. Split empty and let the recursion own the
+            // new panel. See #1210.
             val bottomNode = node.bottom
             val firstBottomTabInfo =
                 getFirstTab(bottomNode)?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
@@ -356,8 +366,15 @@ private suspend fun applyWorkspaceNode(
                 }
 
                 else -> {
-                    // Nested: let the recursion own every panel it walks through. No pre-split.
-                    applyWorkspaceNode(bottomNode, splitViewState, currentPanelId, projectPath)
+                    // Nested: split empty (no tab consumed) and let the recursion own the new
+                    // panel. See the VerticalSplit mirror above.
+                    val bottomPanelId =
+                        splitViewState.splitPanel(
+                            panelId = currentPanelId,
+                            orientation = SplitOrientation.HORIZONTAL,
+                            tabToMove = null,
+                        )
+                    applyWorkspaceNode(bottomNode, splitViewState, bottomPanelId, projectPath)
                 }
             }
         }

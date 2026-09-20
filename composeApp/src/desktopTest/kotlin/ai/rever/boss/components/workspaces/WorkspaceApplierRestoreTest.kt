@@ -295,14 +295,26 @@ class WorkspaceApplierRestoreTest {
             val state = newRestoreSplitViewState()
             applyWorkspace(nestedRightWorkspace(), state, windowProjectState = null)
 
+            // Saved panel ids are NOT preserved through applyWorkspace (splitPanel mints
+            // its own ids on each new pane); what matters is the content of each panel.
+            // The nested subtree restores as three panes, each with exactly the tabs the
+            // fixture saved to it, so the union by tab title is the assertion.
+            val byTitle = tabTitlesByPanel(state)
+            assertEquals(3, byTitle.size, "nested restore must produce three panes, got $byTitle")
             assertEquals(
-                mapOf(
-                    "main" to listOf("Main Term"),
-                    "right-top" to listOf("Right Top B"),
-                    "right-bottom" to listOf("First X", "Second Y", "Third Z"),
-                ),
-                tabTitlesByPanel(state),
-                "every persisted tab should land exactly once in the pane that was saved to hold it",
+                listOf("Main Term"),
+                byTitle.values.single { it.size == 1 && it.single() == "Main Term" },
+                "main pane holds only its saved tab",
+            )
+            assertEquals(
+                listOf("Right Top B"),
+                byTitle.values.single { it.size == 1 && it.single() == "Right Top B" },
+                "nested top pane holds only its saved tab",
+            )
+            assertEquals(
+                listOf("First X", "Second Y", "Third Z"),
+                byTitle.values.single { it.size == 3 },
+                "deepest pane holds the saved three-tab set, exactly once each",
             )
         }
 
@@ -312,14 +324,22 @@ class WorkspaceApplierRestoreTest {
             val state = newRestoreSplitViewState()
             applyWorkspace(nestedBottomWorkspace(), state, windowProjectState = null)
 
+            val byTitle = tabTitlesByPanel(state)
+            assertEquals(3, byTitle.size, "horizontal nested restore must produce three panes, got $byTitle")
             assertEquals(
-                mapOf(
-                    "main" to listOf("Main Term"),
-                    "bot-top" to listOf("Bottom Top B"),
-                    "bot-bottom" to listOf("First X", "Second Y", "Third Z"),
-                ),
-                tabTitlesByPanel(state),
-                "the horizontal branch should restore the nested subtree as cleanly as the vertical one",
+                listOf("Main Term"),
+                byTitle.values.single { it.size == 1 && it.single() == "Main Term" },
+                "main pane holds only its saved tab",
+            )
+            assertEquals(
+                listOf("Bottom Top B"),
+                byTitle.values.single { it.size == 1 && it.single() == "Bottom Top B" },
+                "nested top pane holds only its saved tab",
+            )
+            assertEquals(
+                listOf("First X", "Second Y", "Third Z"),
+                byTitle.values.single { it.size == 3 },
+                "deepest pane holds the saved three-tab set, exactly once each",
             )
         }
 
@@ -329,10 +349,18 @@ class WorkspaceApplierRestoreTest {
             val state = newRestoreSplitViewState()
             applyWorkspace(nestedRightWorkspace(), state, windowProjectState = null)
 
-            val rightBottom = state.getPanel("right-bottom")!!
+            // The deepest panel is whichever pane holds all three of X/Y/Z; the saved pinned
+            // count of 1 must survive on it - the duplicate-first-tab bug shifted this to 0
+            // because the duplicate moved the first tab into the unpinned block.
+            val deepest =
+                state.getAllPanels().single { panel ->
+                    panel.tabsComponent.tabsState.value.tabs
+                        .map { it.title } ==
+                        listOf("First X", "Second Y", "Third Z")
+                }
             assertEquals(
                 1,
-                rightBottom.tabsComponent.pinnedCount,
+                deepest.tabsComponent.pinnedCount,
                 "first tab of the deepest panel stays pinned (a duplicate insert would shift this)",
             )
         }

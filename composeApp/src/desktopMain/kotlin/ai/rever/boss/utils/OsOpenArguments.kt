@@ -48,16 +48,6 @@ internal object OsOpenArguments {
             "mcp",
             "completion",
             "plugin",
-            // New subcommands added in the boss-* CLI suite:
-            "config",
-            "secrets",
-            "diff",
-            "workspace-diff",
-            "project-detect",
-            "port-doctor",
-            "log-parse",
-            "recent",
-            "report",
         )
 
     /** What a path on disk is, for deciding which deep link to build. */
