@@ -6,6 +6,7 @@ import ai.rever.boss.utils.extractFileName
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import ai.rever.boss.window.Project
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,11 +50,38 @@ object ProjectState {
 
     private val ioScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
 
+    /**
+     * Retained so [resetForTesting] can cancel it: the init load reads [recentProjectsFile] at
+     * execution time, and a test that re-points the file must not have the first load merge
+     * the real user's list into its hermetic state. Mirrors
+     * [ai.rever.boss.dashboard.RecentFilesManager.initialLoadJob].
+     */
+    private var initialLoadJob: Job? = null
+
     init {
         // Load recent projects from disk on startup (async to avoid blocking main thread)
-        ioScope.launch {
-            loadRecentProjects()
-        }
+        initialLoadJob =
+            ioScope.launch {
+                loadRecentProjects()
+            }
+    }
+
+    /**
+     * Redirect [recentProjectsFile] to a hermetic test file and clear the in-memory list, so
+     * a test that runs after another has not already populated `_recentProjects` with stale
+     * entries. Cancels the init's deferred load so it cannot merge the real user's file in
+     * after this redirect.
+     *
+     * Tests must call this again with the real path before finishing, so the singleton is
+     * left where the app and other tests expect it - matching
+     * [ai.rever.boss.dashboard.RecentFilesManager.resetForTesting] and
+     * [ai.rever.boss.window.WindowAppearanceSettingsManager.resetForTesting].
+     */
+    internal fun resetForTesting(testFile: File) {
+        initialLoadJob?.cancel()
+        initialLoadJob = null
+        recentProjectsFile = testFile
+        _recentProjects.value = emptyList()
     }
 
     /**

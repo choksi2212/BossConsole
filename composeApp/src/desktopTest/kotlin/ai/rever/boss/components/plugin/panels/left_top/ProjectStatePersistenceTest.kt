@@ -51,13 +51,14 @@ class ProjectStatePersistenceTest {
     @BeforeTest
     fun setUp() {
         tempFile = File.createTempFile("project-state-persistence-", ".json").apply { delete() }
-        ProjectState.recentProjectsFile = tempFile
+        ProjectState.resetForTesting(tempFile)
     }
 
     @AfterTest
     fun tearDown() {
-        ProjectState.recentProjectsFile =
-            File(BossDirectories.rootDir, "recent-projects.json")
+        ProjectState.resetForTesting(
+            File(BossDirectories.rootDir, "recent-projects.json"),
+        )
         tempFile.delete()
     }
 
