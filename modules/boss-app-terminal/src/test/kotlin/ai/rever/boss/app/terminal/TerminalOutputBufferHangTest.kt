@@ -116,7 +116,8 @@ class TerminalOutputBufferHangTest {
                 }
             assertTrue(
                 timedOut,
-                "stream() must NOT hang silently: a consumer that does not pass a timeout gets stuck for the life of the collector",
+                "stream() must NOT hang silently: a consumer that does not pass a timeout " +
+                    "gets stuck for the life of the collector",
             )
         }
 
