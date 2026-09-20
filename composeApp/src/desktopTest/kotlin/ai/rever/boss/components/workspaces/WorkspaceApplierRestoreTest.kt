@@ -169,14 +169,6 @@ class WorkspaceApplierRestoreTest {
         override val icon = Icons.Outlined.Language
     }
 
-    private data class RestoreTabInfo(
-        override val id: String,
-        override val title: String,
-    ) : TabInfo {
-        override val typeId: TabTypeId = RestoreTabType.typeId
-        override val icon get() = Icons.Outlined.Language
-    }
-
     private class RestoreTabComponent(
         ctx: ComponentContext,
         override val config: TabInfo,
@@ -197,8 +189,7 @@ class WorkspaceApplierRestoreTest {
             registerTabType(RestoreTabType) { config, ctx -> RestoreTabComponent(ctx, config) }
         }
 
-    private fun newRestoreSplitViewState() =
-        SplitViewState(restoreTabRegistry, windowId = "restore-test-window")
+    private fun newRestoreSplitViewState() = SplitViewState(restoreTabRegistry, windowId = "restore-test-window")
 
     /**
      * Outer vertical split whose right is itself a vertical split (top = `B`, bottom =
@@ -210,35 +201,41 @@ class WorkspaceApplierRestoreTest {
             id = "nested-right",
             name = "Nested Right",
             description = "Outer vertical split whose right is a vertical split",
-            layout = VerticalSplit(
-                left = SinglePanel(
-                    PanelConfig(
-                        id = "main",
-                        tabs = listOf(TabConfig("terminal", "Main Term")),
-                        pinnedCount = 0,
-                    ),
-                ),
-                right = VerticalSplit(
-                    left = SinglePanel(
-                        PanelConfig(
-                            id = "right-top",
-                            tabs = listOf(TabConfig("terminal", "Right Top B")),
-                            pinnedCount = 0,
-                        ),
-                    ),
-                    right = SinglePanel(
-                        PanelConfig(
-                            id = "right-bottom",
-                            tabs = listOf(
-                                TabConfig("terminal", "First X"),
-                                TabConfig("terminal", "Second Y"),
-                                TabConfig("terminal", "Third Z"),
+            layout =
+                VerticalSplit(
+                    left =
+                        SinglePanel(
+                            PanelConfig(
+                                id = "main",
+                                tabs = listOf(TabConfig("terminal", "Main Term")),
+                                pinnedCount = 0,
                             ),
-                            pinnedCount = 1,
                         ),
-                    ),
+                    right =
+                        VerticalSplit(
+                            left =
+                                SinglePanel(
+                                    PanelConfig(
+                                        id = "right-top",
+                                        tabs = listOf(TabConfig("terminal", "Right Top B")),
+                                        pinnedCount = 0,
+                                    ),
+                                ),
+                            right =
+                                SinglePanel(
+                                    PanelConfig(
+                                        id = "right-bottom",
+                                        tabs =
+                                            listOf(
+                                                TabConfig("terminal", "First X"),
+                                                TabConfig("terminal", "Second Y"),
+                                                TabConfig("terminal", "Third Z"),
+                                            ),
+                                        pinnedCount = 1,
+                                    ),
+                                ),
+                        ),
                 ),
-            ),
         )
 
     /** Mirror image using the horizontal branch, which carries the same shape of bug. */
@@ -247,100 +244,112 @@ class WorkspaceApplierRestoreTest {
             id = "nested-bottom",
             name = "Nested Bottom",
             description = "Outer horizontal split whose bottom is a horizontal split",
-            layout = HorizontalSplit(
-                top = SinglePanel(
-                    PanelConfig(
-                        id = "main",
-                        tabs = listOf(TabConfig("terminal", "Main Term")),
-                        pinnedCount = 0,
-                    ),
-                ),
-                bottom = HorizontalSplit(
-                    top = SinglePanel(
-                        PanelConfig(
-                            id = "bot-top",
-                            tabs = listOf(TabConfig("terminal", "Bottom Top B")),
-                            pinnedCount = 0,
-                        ),
-                    ),
-                    bottom = SinglePanel(
-                        PanelConfig(
-                            id = "bot-bottom",
-                            tabs = listOf(
-                                TabConfig("terminal", "First X"),
-                                TabConfig("terminal", "Second Y"),
-                                TabConfig("terminal", "Third Z"),
+            layout =
+                HorizontalSplit(
+                    top =
+                        SinglePanel(
+                            PanelConfig(
+                                id = "main",
+                                tabs = listOf(TabConfig("terminal", "Main Term")),
+                                pinnedCount = 0,
                             ),
-                            pinnedCount = 1,
                         ),
-                    ),
+                    bottom =
+                        HorizontalSplit(
+                            top =
+                                SinglePanel(
+                                    PanelConfig(
+                                        id = "bot-top",
+                                        tabs = listOf(TabConfig("terminal", "Bottom Top B")),
+                                        pinnedCount = 0,
+                                    ),
+                                ),
+                            bottom =
+                                SinglePanel(
+                                    PanelConfig(
+                                        id = "bot-bottom",
+                                        tabs =
+                                            listOf(
+                                                TabConfig("terminal", "First X"),
+                                                TabConfig("terminal", "Second Y"),
+                                                TabConfig("terminal", "Third Z"),
+                                            ),
+                                        pinnedCount = 1,
+                                    ),
+                                ),
+                        ),
                 ),
-            ),
         )
 
     private fun tabTitlesByPanel(state: SplitViewState): Map<String, List<String>> =
         state.getAllPanels().associate { panel ->
-            panel.id to panel.tabsComponent.tabsState.value.tabs.map { it.title }
+            panel.id to
+                panel.tabsComponent.tabsState.value.tabs
+                    .map { it.title }
         }
 
     @Test
-    fun `nested vertical split restores every tab exactly once`() = runBlocking {
-        val state = newRestoreSplitViewState()
-        applyWorkspace(nestedRightWorkspace(), state, windowProjectState = null)
+    fun `nested vertical split restores every tab exactly once`() =
+        runBlocking {
+            val state = newRestoreSplitViewState()
+            applyWorkspace(nestedRightWorkspace(), state, windowProjectState = null)
 
-        assertEquals(
-            mapOf(
-                "main" to listOf("Main Term"),
-                "right-top" to listOf("Right Top B"),
-                "right-bottom" to listOf("First X", "Second Y", "Third Z"),
-            ),
-            tabTitlesByPanel(state),
-            "every persisted tab should land exactly once in the pane that was saved to hold it",
-        )
-    }
-
-    @Test
-    fun `nested horizontal split restores every tab exactly once`() = runBlocking {
-        val state = newRestoreSplitViewState()
-        applyWorkspace(nestedBottomWorkspace(), state, windowProjectState = null)
-
-        assertEquals(
-            mapOf(
-                "main" to listOf("Main Term"),
-                "bot-top" to listOf("Bottom Top B"),
-                "bot-bottom" to listOf("First X", "Second Y", "Third Z"),
-            ),
-            tabTitlesByPanel(state),
-            "the horizontal branch should restore the nested subtree as cleanly as the vertical one",
-        )
-    }
+            assertEquals(
+                mapOf(
+                    "main" to listOf("Main Term"),
+                    "right-top" to listOf("Right Top B"),
+                    "right-bottom" to listOf("First X", "Second Y", "Third Z"),
+                ),
+                tabTitlesByPanel(state),
+                "every persisted tab should land exactly once in the pane that was saved to hold it",
+            )
+        }
 
     @Test
-    fun `nested split restores the saved pinned count on the deepest panel`() = runBlocking {
-        val state = newRestoreSplitViewState()
-        applyWorkspace(nestedRightWorkspace(), state, windowProjectState = null)
+    fun `nested horizontal split restores every tab exactly once`() =
+        runBlocking {
+            val state = newRestoreSplitViewState()
+            applyWorkspace(nestedBottomWorkspace(), state, windowProjectState = null)
 
-        val rightBottom = state.getPanel("right-bottom")!!
-        assertEquals(
-            1,
-            rightBottom.tabsComponent.pinnedCount,
-            "first tab of the deepest panel stays pinned (a duplicate insert would shift this)",
-        )
-    }
+            assertEquals(
+                mapOf(
+                    "main" to listOf("Main Term"),
+                    "bot-top" to listOf("Bottom Top B"),
+                    "bot-bottom" to listOf("First X", "Second Y", "Third Z"),
+                ),
+                tabTitlesByPanel(state),
+                "the horizontal branch should restore the nested subtree as cleanly as the vertical one",
+            )
+        }
 
     @Test
-    fun `nested split restore yields exactly one tab per persisted title`() = runBlocking {
-        val state = newRestoreSplitViewState()
-        applyWorkspace(nestedRightWorkspace(), state, windowProjectState = null)
+    fun `nested split restores the saved pinned count on the deepest panel`() =
+        runBlocking {
+            val state = newRestoreSplitViewState()
+            applyWorkspace(nestedRightWorkspace(), state, windowProjectState = null)
 
-        // The real signal for the duplicate path: two tabs of the same title in the same
-        // (or different) pane. applier-generated tab ids would hide this; titles survive.
-        val titles = tabTitlesByPanel(state).values.flatten()
-        assertEquals(
-            titles.size,
-            titles.distinct().size,
-            "no tab title appears twice in the restored tree",
-        )
-        assertEquals(5, titles.size, "Main + B + X + Y + Z = 5 tabs after restore")
-    }
+            val rightBottom = state.getPanel("right-bottom")!!
+            assertEquals(
+                1,
+                rightBottom.tabsComponent.pinnedCount,
+                "first tab of the deepest panel stays pinned (a duplicate insert would shift this)",
+            )
+        }
+
+    @Test
+    fun `nested split restore yields exactly one tab per persisted title`() =
+        runBlocking {
+            val state = newRestoreSplitViewState()
+            applyWorkspace(nestedRightWorkspace(), state, windowProjectState = null)
+
+            // The real signal for the duplicate path: two tabs of the same title in the same
+            // (or different) pane. applier-generated tab ids would hide this; titles survive.
+            val titles = tabTitlesByPanel(state).values.flatten()
+            assertEquals(
+                titles.size,
+                titles.distinct().size,
+                "no tab title appears twice in the restored tree",
+            )
+            assertEquals(5, titles.size, "Main + B + X + Y + Z = 5 tabs after restore")
+        }
 }
