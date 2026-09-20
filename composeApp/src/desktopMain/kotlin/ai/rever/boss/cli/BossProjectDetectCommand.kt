@@ -35,7 +35,7 @@ import java.io.File
  * missing or not a directory.
  */
 class BossProjectDetectCommand : CliktCommand(name = "project-detect") {
-    override fun help(context: Context) = "Identifies the languages, build tools, and test frameworks in a project directory"
+    override fun help(context: Context) = "Identifies languages, build tools, and test frameworks in a directory"
 
     private val detector = ProjectDetector()
 
@@ -354,19 +354,7 @@ class ProjectDetector {
         val seenPaths = mutableSetOf<String>()
 
         for (marker in markers) {
-            // Match by exact path or by file-name only (no directory), so
-            // monorepo subprojects with a build.gradle.kts in foo/bar/ are
-            // picked up.
-            val matches = findMatchingFiles(root, marker)
-            if (matches.isNotEmpty()) {
-                val pathKey = marker.path
-                if (seenPaths.add(pathKey)) {
-                    foundMarkers += pathKey
-                    for (c in marker.contributes) {
-                        contributions.getOrPut(c.bucket) { mutableSetOf() }.add(c.value)
-                    }
-                }
-            }
+            applyMarker(marker, root, contributions, foundMarkers, seenPaths)
         }
 
         // Special-case: package.json dependencies are inspected for known
@@ -379,14 +367,7 @@ class ProjectDetector {
         // Test framework detection by source files: Go test is the only
         // one without a marker file at the project root, so we look for
         // any *_test.go file as a Go test indicator.
-        if (rootHasFileMatching(root, "*_test.go")) {
-            contributions.getOrPut("testFrameworks") { mutableSetOf() }.add("Go testing")
-        }
-        if (rootHasFileMatching(root, "Cargo.toml") &&
-            (rootHasDirMatching(root, "tests") || rootHasFileMatching(root, "**/tests/*.rs"))
-        ) {
-            contributions.getOrPut("testFrameworks") { mutableSetOf() }.add("Cargo test")
-        }
+        applyFileBasedTestFrameworks(root, contributions)
 
         return ProjectReport(
             root = root.absolutePath,
@@ -397,6 +378,40 @@ class ProjectDetector {
             frameworks = sorted(contributions["frameworks"]),
             markers = foundMarkers.sorted(),
         )
+    }
+
+    private fun applyMarker(
+        marker: Marker,
+        root: File,
+        contributions: MutableMap<String, MutableSet<String>>,
+        foundMarkers: MutableList<String>,
+        seenPaths: MutableSet<String>,
+    ) {
+        if (findMatchingFiles(root, marker).isEmpty()) return
+        val pathKey = marker.path
+        if (!seenPaths.add(pathKey)) return
+        foundMarkers += pathKey
+        for (c in marker.contributes) {
+            contributions.getOrPut(c.bucket) { mutableSetOf() }.add(c.value)
+        }
+    }
+
+    private fun applyFileBasedTestFrameworks(
+        root: File,
+        contributions: MutableMap<String, MutableSet<String>>,
+    ) {
+        if (rootHasFileMatching(root, "*_test.go")) {
+            contributions.getOrPut("testFrameworks") { mutableSetOf() }.add("Go testing")
+        }
+        val hasCargoTests =
+            rootHasFileMatching(root, "Cargo.toml") &&
+                (
+                    rootHasDirMatching(root, "tests") ||
+                        rootHasFileMatching(root, "**/tests/*.rs")
+                    )
+        if (hasCargoTests) {
+            contributions.getOrPut("testFrameworks") { mutableSetOf() }.add("Cargo test")
+        }
     }
 
     private fun sorted(set: MutableSet<String>?): List<String> = set?.sorted() ?: emptyList()
@@ -461,35 +476,55 @@ class ProjectDetector {
         val regex = StringBuilder("^")
         var i = 0
         while (i < glob.length) {
-            val c = glob[i]
-            when {
-                c == '*' && i + 1 < glob.length && glob[i + 1] == '*' -> {
-                    regex.append(".*")
-                    i += 2
-                }
-
-                c == '*' -> {
-                    regex.append("[^/]*")
-                }
-
-                c == '?' -> {
-                    regex.append("[^/]")
-                }
-
-                c == '.' || c == '(' || c == ')' || c == '+' || c == '|' ||
-                    c == '^' || c == '$' || c == '{' || c == '}' || c == '\\' -> {
-                    regex.append('\\').append(c)
-                }
-
-                else -> {
-                    regex.append(c)
-                }
-            }
-            i += 1
+            i = appendGlobClass(regex, glob, i)
         }
         regex.append('$')
         return Regex(regex.toString()).matches(input)
     }
+
+    /**
+     * Translate one glob token at [i] in [glob] into the corresponding
+     * regex fragment in [out], and return the index of the next glob
+     * position to consume. Split out so [matchGlob] stays a linear
+     * scan with one branch per character.
+     */
+    private fun appendGlobClass(
+        out: StringBuilder,
+        glob: String,
+        i: Int,
+    ): Int {
+        val c = glob[i]
+        return when {
+            c == '*' && i + 1 < glob.length && glob[i + 1] == '*' -> {
+                out.append(".*")
+                i + 2
+            }
+
+            c == '*' -> {
+                out.append("[^/]*")
+                i + 1
+            }
+
+            c == '?' -> {
+                out.append("[^/]")
+                i + 1
+            }
+
+            isRegexMeta(c) -> {
+                out.append('\\').append(c)
+                i + 1
+            }
+
+            else -> {
+                out.append(c)
+                i + 1
+            }
+        }
+    }
+
+    private fun isRegexMeta(c: Char): Boolean =
+        c == '.' || c == '(' || c == ')' || c == '+' || c == '|' ||
+            c == '^' || c == '$' || c == '{' || c == '}' || c == '\\'
 
     /**
      * Inspect package.json for test runners and frameworks that don't
@@ -500,34 +535,62 @@ class ProjectDetector {
         file: File,
         sink: MutableMap<String, MutableSet<String>>,
     ) {
+        val deps = readPackageJsonDependencies(file) ?: return
+        applyPackageJsonTestRunners(deps, sink)
+        applyPackageJsonFrameworks(deps, sink)
+    }
+
+    private fun readPackageJsonDependencies(file: File): Set<String>? =
         try {
             val obj =
                 kotlinx.serialization.json.Json
                     .parseToJsonElement(file.readText(Charsets.UTF_8))
-                    .let { it as? kotlinx.serialization.json.JsonObject ?: return }
-            val deps =
-                obj["dependencies"].let { (it as? kotlinx.serialization.json.JsonObject)?.keys.orEmpty() } +
-                    obj["devDependencies"].let { (it as? kotlinx.serialization.json.JsonObject)?.keys.orEmpty() }
-
-            // Test runners
-            if (deps.any { it.startsWith("jest") || it == "vitest" }) {
-                sink.getOrPut("testFrameworks") { mutableSetOf() }.add(if (deps.any { it.startsWith("jest") }) "Jest" else "Vitest")
-            }
-            if (deps.contains("mocha")) sink.getOrPut("testFrameworks") { mutableSetOf() }.add("Mocha")
-            if (deps.any { it.startsWith("@playwright/test") }) sink.getOrPut("testFrameworks") { mutableSetOf() }.add("Playwright")
-            if (deps.contains("cypress")) sink.getOrPut("testFrameworks") { mutableSetOf() }.add("Cypress")
-
-            // Frameworks
-            if (deps.contains("react")) sink.getOrPut("frameworks") { mutableSetOf() }.add("React")
-            if (deps.contains("vue")) sink.getOrPut("frameworks") { mutableSetOf() }.add("Vue")
-            if (deps.contains("@angular/core")) sink.getOrPut("frameworks") { mutableSetOf() }.add("Angular")
-            if (deps.contains("svelte")) sink.getOrPut("frameworks") { mutableSetOf() }.add("Svelte")
-            if (deps.contains("next")) sink.getOrPut("frameworks") { mutableSetOf() }.add("Next.js")
-            if (deps.contains("nuxt")) sink.getOrPut("frameworks") { mutableSetOf() }.add("Nuxt")
-            if (deps.contains("express")) sink.getOrPut("frameworks") { mutableSetOf() }.add("Express")
+                    .let { it as? kotlinx.serialization.json.JsonObject ?: return null }
+            obj["dependencies"].let { (it as? kotlinx.serialization.json.JsonObject)?.keys.orEmpty() } +
+                obj["devDependencies"].let { (it as? kotlinx.serialization.json.JsonObject)?.keys.orEmpty() }
         } catch (_: Exception) {
             // Malformed package.json is not a hard failure; we just lose the
             // dependency-driven findings for that project.
+            null
+        }
+
+    private fun applyPackageJsonTestRunners(
+        deps: Set<String>,
+        sink: MutableMap<String, MutableSet<String>>,
+    ) {
+        if (deps.any { it.startsWith("jest") || it == "vitest" }) {
+            val name = if (deps.any { it.startsWith("jest") }) "Jest" else "Vitest"
+            sink.getOrPut("testFrameworks") { mutableSetOf() }.add(name)
+        }
+        if (deps.contains("mocha")) {
+            sink.getOrPut("testFrameworks") { mutableSetOf() }.add("Mocha")
+        }
+        if (deps.any { it.startsWith("@playwright/test") }) {
+            sink.getOrPut("testFrameworks") { mutableSetOf() }.add("Playwright")
+        }
+        if (deps.contains("cypress")) {
+            sink.getOrPut("testFrameworks") { mutableSetOf() }.add("Cypress")
+        }
+    }
+
+    private fun applyPackageJsonFrameworks(
+        deps: Set<String>,
+        sink: MutableMap<String, MutableSet<String>>,
+    ) {
+        val frameworkByDep =
+            mapOf(
+                "react" to "React",
+                "vue" to "Vue",
+                "@angular/core" to "Angular",
+                "svelte" to "Svelte",
+                "next" to "Next.js",
+                "nuxt" to "Nuxt",
+                "express" to "Express",
+            )
+        for ((dep, name) in frameworkByDep) {
+            if (deps.contains(dep)) {
+                sink.getOrPut("frameworks") { mutableSetOf() }.add(name)
+            }
         }
     }
 }
