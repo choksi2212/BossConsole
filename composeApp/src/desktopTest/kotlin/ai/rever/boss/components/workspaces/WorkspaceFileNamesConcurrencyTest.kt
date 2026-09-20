@@ -59,21 +59,23 @@ class WorkspaceFileNamesConcurrencyTest {
         val done = CountDownLatch(2)
         val seen = AtomicInteger(0)
 
-        val writer = Thread {
-            start.await()
-            for (i in 0 until writes) {
-                map["ws-$i"] = "Workspace_$i.json"
+        val writer =
+            Thread {
+                start.await()
+                for (i in 0 until writes) {
+                    map["ws-$i"] = "Workspace_$i.json"
+                }
+                done.countDown()
             }
-            done.countDown()
-        }
-        val reader = Thread {
-            start.await()
-            for (i in 0 until writes) {
-                val value = map["ws-$i"]
-                if (value != null) seen.incrementAndGet()
+        val reader =
+            Thread {
+                start.await()
+                for (i in 0 until writes) {
+                    val value = map["ws-$i"]
+                    if (value != null) seen.incrementAndGet()
+                }
+                done.countDown()
             }
-            done.countDown()
-        }
 
         writer.start()
         reader.start()
