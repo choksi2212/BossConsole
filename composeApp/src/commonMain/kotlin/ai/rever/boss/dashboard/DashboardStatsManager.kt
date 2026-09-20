@@ -1,6 +1,7 @@
 package ai.rever.boss.dashboard
 
 import ai.rever.boss.plugin.pathutils.BossDirectories
+import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import kotlinx.coroutines.CoroutineScope
@@ -54,7 +55,11 @@ data class DashboardStats(
  */
 object DashboardStatsManager {
     private const val SAVE_DEBOUNCE_MS = 5000L // Debounce saves to max once per 5 seconds
-    private val settingsFile = BossDirectories.resolve("dashboard-stats.json")
+    /**
+     * Redirected by [resetForTesting] for hermetic unit tests; production code never reassigns
+     * it, the same way the sibling RecentFilesManager does.
+     */
+    internal var settingsFile: File = BossDirectories.resolve("dashboard-stats.json")
     private val json =
         Json {
             prettyPrint = false
@@ -63,6 +68,13 @@ object DashboardStatsManager {
         }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /**
+     * Holds the scheduled-save job. The cancel-then-launch pair sits inside the lock so
+     * concurrent recorders never overwrite the reference to a still-pending save (the
+     * RecentFilesManager pattern; #820 named the same shape).
+     */
+    private val saveJobLock = Any()
     private var saveJob: Job? = null
 
     private val _stats = MutableStateFlow(DashboardStats())
@@ -77,6 +89,24 @@ object DashboardStatsManager {
             // Reset daily activity if it's a new day
             checkAndResetDailyActivity()
         }
+    }
+
+    /**
+     * Reset manager state for hermetic unit testing and redirect [settingsFile] to [testFile].
+     * Cancels any pending debounced save, clears in-memory state, and re-runs the load so the
+     * state matches [testFile]. Tests must call this again with the real path before finishing,
+     * so the singleton is left where the app and other tests expect it. Mirrors
+     * [ai.rever.boss.dashboard.RecentFilesManager.resetForTesting].
+     */
+    internal suspend fun resetForTesting(testFile: File) {
+        synchronized(saveJobLock) {
+            saveJob?.cancel()
+            saveJob = null
+        }
+        settingsFile = testFile
+        _stats.value = DashboardStats()
+        _sessionStartTime.value = System.currentTimeMillis()
+        loadAsync()
     }
 
     /**
@@ -103,12 +133,18 @@ object DashboardStatsManager {
      * Cancels any pending save and schedules a new one after SAVE_DEBOUNCE_MS.
      */
     private fun scheduleSave() {
-        saveJob?.cancel()
-        saveJob =
-            scope.launch {
-                delay(SAVE_DEBOUNCE_MS)
-                saveImmediately()
-            }
+        // The cancel-then-launch pair is inside [saveJobLock] so concurrent recorders from
+        // multiple callers (recordFileOpen racing recordPageVisit from the same window open)
+        // cannot overwrite the reference to a still-pending job, leaving a timer nothing
+        // will cancel. Same shape as RecentFilesManager and ProjectState.
+        synchronized(saveJobLock) {
+            saveJob?.cancel()
+            saveJob =
+                scope.launch {
+                    delay(SAVE_DEBOUNCE_MS)
+                    saveImmediately()
+                }
+        }
     }
 
     /**
@@ -119,7 +155,11 @@ object DashboardStatsManager {
             try {
                 settingsFile.parentFile?.mkdirs()
                 val content = json.encodeToString(DashboardStats.serializer(), _stats.value)
-                settingsFile.writeText(content)
+                // Atomic: writeText truncates the target and then streams into it, so a crash
+                // or a concurrent writer arriving mid-write leaves JSON that fails to parse
+                // and the load path drops every counter rather than one. atomicWriteText
+                // writes a unique sibling temp and moves it into place.
+                settingsFile.atomicWriteText(content)
             } catch (e: Exception) {
                 dashboardStatsLogger.warn(LogCategory.SYSTEM, "Error saving stats", error = e)
             }
