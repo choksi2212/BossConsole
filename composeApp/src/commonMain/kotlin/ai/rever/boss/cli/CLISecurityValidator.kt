@@ -122,9 +122,28 @@ object CLISecurityValidator {
      */
     private val WINDOWS_RESERVED_NAMES: Set<String> =
         setOf(
-            "CON", "PRN", "AUX", "NUL",
-            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+            "CON",
+            "PRN",
+            "AUX",
+            "NUL",
+            "COM1",
+            "COM2",
+            "COM3",
+            "COM4",
+            "COM5",
+            "COM6",
+            "COM7",
+            "COM8",
+            "COM9",
+            "LPT1",
+            "LPT2",
+            "LPT3",
+            "LPT4",
+            "LPT5",
+            "LPT6",
+            "LPT7",
+            "LPT8",
+            "LPT9",
         )
 
     private val DRIVE_ROOT_REGEX = Regex("^[A-Za-z]:[\\\\/]?$")
@@ -147,6 +166,7 @@ object CLISecurityValidator {
      * - Reserved-name path component (CON, PRN, AUX, NUL, COM1-9, LPT1-9) -
      *   opens a device, not the directory the string names.
      */
+    @Suppress("ReturnCount")
     internal fun hasWindowsDangerousShape(path: String): Boolean {
         if (path.isEmpty()) return false
         if (path.any { it.isISOControl() }) return true
