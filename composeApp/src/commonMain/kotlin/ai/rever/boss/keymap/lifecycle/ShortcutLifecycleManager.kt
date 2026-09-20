@@ -240,15 +240,17 @@ object ShortcutLifecycleManager {
         } catch (e: Exception) {
             logger.warn(LogCategory.UI, "Error evaluating condition", mapOf("actionId" to actionId), error = e)
 
-            _states.update { it + (
-                actionId to
-                    ShortcutLifecycleState(
-                        actionId = actionId,
-                        enabled = false,
-                        reason = "Error: ${e.message}",
-                        condition = condition,
-                    )
-            ) }
+            _states.update {
+                it + (
+                    actionId to
+                        ShortcutLifecycleState(
+                            actionId = actionId,
+                            enabled = false,
+                            reason = "Error: ${e.message}",
+                            condition = condition,
+                        )
+                )
+            }
         }
     }
 
