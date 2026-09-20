@@ -22,14 +22,22 @@ import kotlin.test.assertTrue
  * from "a leaked timer wrote stale state on top of newer one".
  *
  * `user.home` points at composeApp's hermetic test-home directory, so `BossDirectories.rootDir`
- * resolves to a temp file this test owns.
+ * resolves to a temp file this test owns. The test still has to reset state up front - see the
+ * body for why a hermetic home is not enough on its own.
  */
 class DashboardStatsScheduleTest {
     private val tempFile: File = BossDirectoriesPath.resolve("dashboard-stats.json")
 
     @Test
     fun `concurrent recorders schedule exactly one persisted save`() {
-        // Ensure manager has initialized and completed any initial load
+        // Establish a clean baseline. DashboardStatsManager is a process-wide singleton, so a
+        // sibling test in this task (or Fluck navigating during it) may have called recordX
+        // without its debounced save ever firing - in that case `_stats` carries leftover
+        // increments while the file is still empty, and the delta vs. an empty `before`
+        // over-counts. resetStats() schedules a save, but the first recordSave below cancels
+        // it; the next save to land is the one carrying the test's own 50 increments.
+        DashboardStatsManager.resetStats()
+        tempFile.delete()
         DashboardStatsManager.stats.value
         Thread.sleep(500L)
         val before = read()
@@ -56,9 +64,10 @@ class DashboardStatsScheduleTest {
         start.countDown()
         done.await()
 
-        // Poll until the debounced save fires and writes the expected count (up to 15s)
+        // Poll until the debounced save fires and writes the expected count (30s gives
+        // busy CI runners enough headroom past the 5s debounce + write).
         var recorded = 0
-        val deadline = System.currentTimeMillis() + 15_000L
+        val deadline = System.currentTimeMillis() + 30_000L
         while (System.currentTimeMillis() < deadline) {
             val after = read()
             recorded =
@@ -75,8 +84,9 @@ class DashboardStatsScheduleTest {
             calls,
             recorded,
             "every concurrent recorder must persist exactly once; " +
-                "the unsynchronised cancel-and-assign leaked prior saveJob references and " +
-                "wrote stale stats on top of newer ones",
+                "expected <$calls> recorders to produce a delta of <$calls> but file " +
+                "shows <$recorded>; the unsynchronised cancel-and-assign leaked prior " +
+                "saveJob references and wrote stale stats on top of newer ones",
         )
         // And the file must be fully decodable.
         assertTrue(tempFile.exists(), "the file must exist")
