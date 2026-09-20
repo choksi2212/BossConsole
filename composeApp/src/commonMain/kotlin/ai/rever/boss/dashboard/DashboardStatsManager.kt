@@ -53,6 +53,7 @@ data class DashboardStats(
  * Thread-safe: All file I/O operations run on Dispatchers.IO.
  * Uses StateFlow for reactive UI updates.
  */
+@Suppress("TooManyFunctions")
 object DashboardStatsManager {
     private const val SAVE_DEBOUNCE_MS = 5000L // Debounce saves to max once per 5 seconds
 

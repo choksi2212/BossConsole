@@ -6,7 +6,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.AfterTest
@@ -32,12 +31,6 @@ import kotlin.test.assertEquals
 class DashboardStatsManagerConcurrencyTest {
     private lateinit var tempDir: File
     private lateinit var tempFile: File
-    private val json =
-        Json {
-            prettyPrint = false
-            ignoreUnknownKeys = true
-            encodeDefaults = false
-        }
 
     @BeforeTest
     fun setUp() {
