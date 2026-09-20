@@ -426,5 +426,6 @@ actual object CLIInstaller {
      * why an explicit parameter is needed for tests that want a different home.
      */
     @Suppress("unused", "ktlint:standard:max-line-length", "MaxLineLength")
-    internal fun testUpdateShellConfigForHome(homeDir: File): ShellConfigResult = updateShellConfig(homeDir.absolutePath)
+    internal fun testUpdateShellConfigForHome(homeDir: File): ShellConfigResult =
+        updateShellConfig(homeDir.absolutePath)
 }

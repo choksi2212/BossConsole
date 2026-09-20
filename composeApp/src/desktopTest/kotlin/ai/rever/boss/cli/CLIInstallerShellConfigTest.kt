@@ -32,7 +32,9 @@ class CLIInstallerShellConfigTest {
         // A real file that the symlink will point at. Anything the test would
         // NOT want overwritten lives here.
         realZshrcTarget = java.io.File(homeDir, "real-zshrc-target.md").apply {
-            writeText("# my notes\ndo not overwrite me\n")
+            writeText(
+                "# my notes\ndo not overwrite me\n",
+            )
         }
     }
 
