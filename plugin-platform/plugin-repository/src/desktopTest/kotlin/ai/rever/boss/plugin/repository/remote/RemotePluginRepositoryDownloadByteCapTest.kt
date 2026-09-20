@@ -52,7 +52,7 @@ class RemotePluginRepositoryDownloadByteCapTest {
         assertTrue(
             Regex("""downloadPlugin[\s\S]{0,4000}downloadNBytes|downloadNBytes[\s\S]{0,200}MAX""")
                 .containsMatchIn(text) ||
-                Regex("""if\s*\(\s*downloadedBytes\s*>\s*MAX_JAR_BYTES""").containsMatchIn(text) ||
+                Regex("""if\s*\(\s*downloadedBytes.*>\s*(MAX_JAR_BYTES|maxJarBytes)""").containsMatchIn(text) ||
                 Regex("""downloadNBytes\(\s*MAX_JAR_BYTES""").containsMatchIn(text),
             "downloadPlugin must check the byte cap as it reads, not just declare one",
         )
