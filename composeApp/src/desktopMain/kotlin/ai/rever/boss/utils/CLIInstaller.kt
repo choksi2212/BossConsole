@@ -425,7 +425,6 @@ actual object CLIInstaller {
      * the `desktopTest` redirect of `user.home` runs after that init, which is
      * why an explicit parameter is needed for tests that want a different home.
      */
-    @Suppress("unused")
-    internal fun testUpdateShellConfigForHome(homeDir: File): ShellConfigResult =
-        updateShellConfig(homeDir.absolutePath)
+    @Suppress("unused", "ktlint:standard:max-line-length", "MaxLineLength")
+    internal fun testUpdateShellConfigForHome(homeDir: File): ShellConfigResult = updateShellConfig(homeDir.absolutePath)
 }
