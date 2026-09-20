@@ -229,17 +229,16 @@ object PluginDependencyResolution {
         var truncated = false
 
         suspend fun visit(pluginId: String) {
-            // Cap at the TOP of visit, before the parent is added: counting visited.size
-            // only after `visited.add` would let the parent itself slip past the cap, so a
-            // 33-deep chain plans 33 plugins and sets `truncated` without actually dropping
-            // the offender. The dialog would then list one more "also installs" entry than
-            // the cap promises.
-            if (visited.size >= MAX_PLAN_SIZE) {
-                truncated = true
-                return
-            }
+            // Add FIRST so a revisit sets `cyclic` (the visited.add check below reports
+            // already-visited plugins by failing to add) before the cap check trips.
             if (!visited.add(pluginId)) {
                 if (pluginId in onStack) cyclic = true
+                return
+            }
+            // Cap AFTER visited.add so a 33-deep chain plans 32 plugins and drops the
+            // offender, and a cycle that fills the cap still trips `cyclic` on the revisit.
+            if (visited.size > MAX_PLAN_SIZE) {
+                truncated = true
                 return
             }
             onStack += pluginId

@@ -36,7 +36,7 @@ class PluginDependencyResolutionInstallPlanCapTest {
 
             val plan =
                 PluginDependencyResolution.installPlan(
-                    rootId = chain.first(),
+                    rootId = chain.last(),
                     isPresent = { false },
                     dependenciesOf = { id -> deps[id] ?: emptyList() },
                 )
@@ -48,11 +48,11 @@ class PluginDependencyResolutionInstallPlanCapTest {
             )
             // The walk visits the root first, then its children in order. The first
             // MAX_PLAN_SIZE ids visited are kept; the rest are dropped because the cap
-            // trips at the top of `visit`, not after the parent is added. We assert that
-            // one specific id (the last in the chain) is NOT in the plan.
+            // trips after `visited.add`, not after the parent is added. We assert that
+            // one specific id (the deepest one walked, dropped by the cap) is NOT in the plan.
             assertTrue(
-                chain.last() !in plan.order,
-                "the offender above the cap must be dropped, found ${chain.last()} in ${plan.order}",
+                chain.first() !in plan.order,
+                "the offender above the cap must be dropped, found ${chain.first()} in ${plan.order}",
             )
             assertTrue(plan.truncated, "truncated flag must be set when the cap fires")
         }
