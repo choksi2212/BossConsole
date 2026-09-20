@@ -214,6 +214,7 @@ class McpPolicyEngine(
      * The previous `policyFor` keeps its name-only signature for the rate-limited
      * policy consult path; the gate that runs at invocation time uses this one.
      */
+    @Suppress("ReturnCount")
     fun policyForWithArgs(
         toolName: String,
         args: McpToolArgs,
