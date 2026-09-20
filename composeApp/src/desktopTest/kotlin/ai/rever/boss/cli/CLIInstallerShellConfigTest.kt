@@ -30,11 +30,8 @@ class CLIInstallerShellConfigTest {
         homeDir.mkdirs()
         // A real file that the symlink will point at. Anything the test would
         // NOT want overwritten lives here.
-        realZshrcTarget =
-            java.io.File(homeDir, "real-zshrc-target.md")
-                .apply {
-                    writeText("# my notes\ndo not overwrite me\n")
-                }
+        realZshrcTarget = java.io.File(homeDir, "real-zshrc-target.md")
+        realZshrcTarget.writeText("# my notes\ndo not overwrite me\n")
     }
 
     @AfterTest
@@ -83,11 +80,7 @@ class CLIInstallerShellConfigTest {
      */
     @Test
     fun `writes a real shell rc and appends the PATH export`() {
-        val zshrc =
-            java.io.File(homeDir, ".zshrc")
-                .apply {
-                    writeText("# my shell config\n")
-                }
+        val zshrc = java.io.File(homeDir, ".zshrc")
         runCatching { zshrc.delete() }
         java.io.File(homeDir, ".zshrc").writeText("# my shell config\n")
 
