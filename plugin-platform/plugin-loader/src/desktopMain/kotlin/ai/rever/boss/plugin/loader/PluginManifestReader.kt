@@ -18,6 +18,16 @@ object PluginManifestReader {
     private val logger = BossLogger.forComponent("PluginManifestReader")
 
     /**
+     * Hard byte cap for a plugin manifest payload.
+     *
+     * Real plugin manifests are well under 64 KiB; the cap is chosen so a zip-bomb
+     * entry that decompresses to gigabytes is rejected before it lands in memory.
+     * Bumped explicitly from zero rather than relying on JVM defaults, because the
+     * reader runs on every install path and a single hostile jar wedges the host.
+     */
+    const val MAX_MANIFEST_BYTES: Int = 64 * 1024
+
+    /**
      * JSON parser with lenient settings for reading manifests.
      */
     private val json =
@@ -57,10 +67,21 @@ object PluginManifestReader {
                             null,
                         )
 
-                val manifestContent =
-                    jar.getInputStream(manifestEntry).bufferedReader().use {
-                        it.readText()
+                // Read with a hard byte cap so a hostile manifest entry
+                // cannot decompress to gigabytes and OOM the host. The reader
+                // sits on every install path (loadPlugin, update, reconciler,
+                // ApiClassLoader.fromPluginDir, external-scan), so the bound is
+                // the single point at which zip-bomb manifests get refused.
+                val bytes =
+                    jar.getInputStream(manifestEntry).use { stream ->
+                        stream.readNBytes(MAX_MANIFEST_BYTES + 1)
                     }
+                if (bytes.size > MAX_MANIFEST_BYTES) {
+                    throw PluginManifestException(
+                        "Plugin manifest entry exceeds $MAX_MANIFEST_BYTES bytes",
+                    )
+                }
+                val manifestContent = bytes.toString(Charsets.UTF_8)
 
                 parseManifest(manifestContent, jarPath)
             }
