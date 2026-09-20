@@ -3,16 +3,26 @@ import type { PluginVersion, PluginDependency } from "../types/plugin.ts"
 import { signVersionAnchor } from "../utils/signing.ts"
 
 /**
- * Get all versions of a plugin
+ * Get all published versions of a plugin.
+ *
+ * Pending rows (inserted by `createVersion` but not yet finalized) are NOT
+ * returned: they have `sha256='pending'`, `jar_size=0` and a `jar_path`
+ * pointing at a storage key that may not exist yet. Returning them to the
+ * storefront would let users click on a version that 404s on download. See
+ * #912 for the broken-state history.
  */
 export async function getPluginVersions(
   supabase: SupabaseClient,
   pluginId: string
 ): Promise<PluginVersion[]> {
   const { data, error } = await supabase
-    .rpc('get_plugin_versions', {
-      p_plugin_id: pluginId
-    })
+    .from('plugin_versions')
+    .select('*')
+    .eq('plugin_id', pluginId)
+    // Filtered in code rather than via an RPC so the new column is consulted
+    // immediately, without a migration on `get_plugin_versions`.
+    .eq('status', 'published')
+    .order('published_at', { ascending: false })
 
   if (error) {
     console.error('Error getting plugin versions:', error)
@@ -37,7 +47,15 @@ export async function getPluginVersions(
 }
 
 /**
- * Get the latest version of a plugin
+ * Get the latest published version of a plugin.
+ *
+ * Filters `status = 'published'` so a half-baked row - inserted by
+ * `createVersion` before the JAR was uploaded - never wins this lookup.
+ * Before this filter, the schema default of `published_at = NOW()` made
+ * every freshly inserted row the "latest" version by ordering, and users
+ * asking for `GET /:pluginId/download` got a row whose `sha256` was the
+ * literal string `pending` and whose `jar_path` pointed at a storage key
+ * that did not exist. See #912.
  */
 export async function getLatestVersion(
   supabase: SupabaseClient,
@@ -47,15 +65,17 @@ export async function getLatestVersion(
     .from('plugin_versions')
     .select('*')
     .eq('plugin_id', pluginUuid)
+    .eq('status', 'published')
     .order('published_at', { ascending: false })
     .limit(1)
-    .single()
+    .maybeSingle()
 
   if (error) {
-    if (error.code === 'PGRST116') return null // Not found
     console.error('Error getting latest version:', error)
     throw new Error(`Failed to get latest version: ${error.message}`)
   }
+
+  if (!data) return null
 
   return {
     id: data.id,
@@ -75,7 +95,12 @@ export async function getLatestVersion(
 }
 
 /**
- * Get a specific version by plugin UUID and version string
+ * Get a specific published version by plugin UUID and version string.
+ *
+ * Pending rows are excluded: a name lookup for an unfinalized version is
+ * indistinguishable, from the caller's point of view, from a version that
+ * does not exist at all, and both should 404 rather than serve a broken or
+ * poisoned jar.
  */
 export async function getVersion(
   supabase: SupabaseClient,
@@ -87,13 +112,15 @@ export async function getVersion(
     .select('*')
     .eq('plugin_id', pluginUuid)
     .eq('version', version)
-    .single()
+    .eq('status', 'published')
+    .maybeSingle()
 
   if (error) {
-    if (error.code === 'PGRST116') return null // Not found
     console.error('Error getting version:', error)
     throw new Error(`Failed to get version: ${error.message}`)
   }
+
+  if (!data) return null
 
   return {
     id: data.id,
@@ -149,7 +176,14 @@ export async function getVersionById(
 }
 
 /**
- * Create a new version (pending JAR upload)
+ * Create a new version (pending JAR upload).
+ *
+ * The row is inserted in `status = 'pending'`, with `published_at` explicitly
+ * null, so it is invisible to `getLatestVersion` and `getPluginVersions`
+ * until `finalizeVersion` runs. Before this, the schema default of
+ * `published_at = NOW()` made every freshly inserted row the "latest"
+ * version by ordering, and consumers downloaded a row whose jar did not yet
+ * exist. See #912.
  */
 export async function createVersion(
   supabase: SupabaseClient,
@@ -173,8 +207,16 @@ export async function createVersion(
       min_api_version: minApiVersion,
       dependencies,
       jar_path: jarPath,
+      // The row is in the `pending` lifecycle until `finalizeVersion`
+      // observes the uploaded JAR and flips it to `published`. Filtering on
+      // status (not on `sha256 <> 'pending'`) is deliberate: a finalized
+      // row whose JAR truly did hash to `pending` would be impossible
+      // anyway, but a string check is one more implicit invariant this
+      // service should not have.
+      status: 'pending',
       sha256: 'pending', // Will be updated after upload
-      jar_size: 0
+      jar_size: 0,
+      published_at: null
     })
     .select('id')
     .single()
@@ -191,7 +233,14 @@ export async function createVersion(
 }
 
 /**
- * Finalize a version after JAR upload
+ * Finalize a version after JAR upload.
+ *
+ * Single point at which the row transitions `pending -> published`. The
+ * same update records the real `sha256`, `jar_size` and (if configured)
+ * the store signature, and stamps `published_at` to now. The row becomes
+ * eligible for `getLatestVersion` only after this returns successfully -
+ * a half-applied update (e.g. client died mid-update) would leave the row
+ * `pending` and invisible, not `published` with a `pending` hash.
  */
 export async function finalizeVersion(
   supabase: SupabaseClient,
@@ -216,9 +265,19 @@ export async function finalizeVersion(
   const { error } = await supabase
     .from('plugin_versions')
     .update({
+      // Flip the lifecycle. Without this, the row inserted by createVersion
+      // stays `pending` and is invisible to every "latest" / "list" lookup.
+      // Pairing the status flip with the sha256/jar_size/signature update
+      // means a half-applied update leaves the row pending rather than
+      // half-correct.
+      status: 'published',
       sha256,
       jar_size: jarSize,
-      signature
+      signature,
+      // `published_at` is the column `getLatestVersion` orders by; setting
+      // it here (rather than at createVersion) is what makes the finalized
+      // row the new latest. NULL up to now.
+      published_at: new Date().toISOString()
     })
     .eq('id', versionId)
 
