@@ -30,9 +30,10 @@ class FaviconCacheSymlinkTest {
         tempDir = Files.createTempDirectory("favicon-cache-symlink-test").toFile()
         // An arbitrary file the symlink will point at. Anything the test would
         // NOT want deleted lives here.
-        realTarget = java.io.File(tempDir, "real-target.txt").apply {
-            writeText("important user data - do not delete\n")
-        }
+        realTarget =
+            java.io.File(tempDir, "real-target.txt").apply {
+                writeText("important user data - do not delete\n")
+            }
     }
 
     @AfterTest
@@ -111,9 +112,10 @@ class FaviconCacheSymlinkTest {
     @Test
     fun `FaviconCache clearCache still removes real png entries`() {
         tempDir.mkdirs()
-        val realEntry = java.io.File(tempDir, "real.png").apply {
-            writeText("a real cache entry\n")
-        }
+        val realEntry =
+            java.io.File(tempDir, "real.png").apply {
+                writeText("a real cache entry\n")
+            }
 
         FaviconCache.clearCacheInDirectoryForTest(tempDir)
 

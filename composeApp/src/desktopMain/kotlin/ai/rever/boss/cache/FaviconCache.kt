@@ -189,7 +189,10 @@ object FaviconCache {
      * Gets the total size of the favicon cache in bytes.
      */
     fun getCacheSize(): Long =
-        cacheDir.listFiles()?.filter { !Files.isSymbolicLink(it.toPath()) }?.sumOf { it.length() } ?: 0L
+        cacheDir
+            .listFiles()
+            ?.filter { !Files.isSymbolicLink(it.toPath()) }
+            ?.sumOf { it.length() } ?: 0L
 
     /**
      * Gets the number of cached favicons.
