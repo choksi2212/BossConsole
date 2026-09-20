@@ -43,9 +43,10 @@ class MenuActionsHandlerConcurrencyTest {
 
             // The map must contain the entry the last writer left. It is not safe to assume
             // which value that was, only that it is one of the values any caller wrote.
+            val actualKey = MenuActionsHandler.splitEnabledState.value.keys.first()
             assertEquals(
                 windowId,
-                MenuActionsHandler.splitEnabledState.value.keys.first(),
+                actualKey,
                 "the window id must be present after concurrent updates",
             )
         }
@@ -70,9 +71,10 @@ class MenuActionsHandlerConcurrencyTest {
             // overwrite the same key with two different maps and end up with the union
             // (or with both old and new entries under the same key), which `update { }`
             // rules out by atomically replacing the map.
+            val actualKeys = MenuActionsHandler.panelCountState.value.keys
             assertEquals(
                 setOf(windowId),
-                MenuActionsHandler.panelCountState.value.keys,
+                actualKeys,
                 "the only key left under the window must be the window id, not a stale union",
             )
         }
