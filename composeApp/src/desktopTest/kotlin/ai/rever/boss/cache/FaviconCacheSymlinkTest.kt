@@ -1,7 +1,9 @@
 package ai.rever.boss.cache
 
+import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Assumptions.assumeTrue
+import java.nio.file.FileSystemException
 import java.nio.file.Files
-import kotlin.io.path.createSymbolicLinkPointingTo
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -20,26 +22,56 @@ import kotlin.test.assertTrue
  * The caches are singletons with no injection seam; the tests redirect
  * `cacheDir` to a per-test temp directory and verify the symlink survives a
  * cleanup sweep that should only have touched cache entries.
+ *
+ * Symlink creation needs SeCreateSymbolicLinkPrivilege on Windows. Tests skip
+ * via [assumeTrue] when the host denies both a symlink and any fallback link -
+ * the behaviour under test is JVM-level and the assertions cannot run without
+ * one.
  */
 class FaviconCacheSymlinkTest {
     private lateinit var tempDir: java.io.File
+    private lateinit var targetDir: java.io.File
     private lateinit var realTarget: java.io.File
 
     @BeforeTest
     fun setUp() {
-        tempDir = Files.createTempDirectory("favicon-cache-symlink-test").toFile()
-        // An arbitrary file the symlink will point at. Anything the test would
-        // NOT want deleted lives here.
+        // `targetDir` lives OUTSIDE the cache directory the code under test
+        // scans, so the cache's own cleanup cannot reach the target even by
+        // accident. The target is what the symlink points at, and what the
+        // test would not want deleted.
+        targetDir = Files.createTempDirectory("favicon-cache-symlink-target").toFile()
         realTarget =
-            java.io.File(tempDir, "real-target.txt").apply {
+            java.io.File(targetDir, "real-target.txt").apply {
                 writeText("important user data - do not delete\n")
             }
+        // Cache directory under test - separate from the target's directory.
+        tempDir = Files.createTempDirectory("favicon-cache-symlink-test").toFile()
     }
 
     @AfterTest
     fun tearDown() {
         tempDir.deleteRecursively()
+        targetDir.deleteRecursively()
     }
+
+    /**
+     * Best-effort symlink. Returns true on success so the test can `assumeTrue`
+     * it; returns false when the host denies the privilege, which on Windows
+     * means an ordinary developer account or a CI runner without developer
+     * mode.
+     */
+    private fun tryCreateSymlink(
+        link: java.io.File,
+        target: java.io.File,
+    ): Boolean =
+        try {
+            Files.createSymbolicLink(link.toPath(), target.toPath())
+            true
+        } catch (_: UnsupportedOperationException) {
+            false
+        } catch (_: FileSystemException) {
+            false
+        }
 
     /**
      * Pins the bug: a symlink planted in the favicon cache directory must
@@ -49,10 +81,12 @@ class FaviconCacheSymlinkTest {
      */
     @Test
     fun `FaviconCache clearCache skips symlinks and leaves the target intact`() {
-        // Cache directory needs to exist for the cache to operate on it.
         tempDir.mkdirs()
         val symlinkInCache = java.io.File(tempDir, "link.png")
-        Files.createSymbolicLinkPointingTo(symlinkInCache.toPath(), realTarget.toPath())
+        assumeTrue(
+            tryCreateSymlink(symlinkInCache, realTarget),
+            "host does not allow symlink creation; cannot exercise this path",
+        )
 
         FaviconCache.clearCacheInDirectoryForTest(tempDir)
 
@@ -74,7 +108,10 @@ class FaviconCacheSymlinkTest {
     fun `FaviconCache cleanupStaleEntries skips symlinks and leaves the target intact`() {
         tempDir.mkdirs()
         val symlinkInCache = java.io.File(tempDir, "link.png")
-        Files.createSymbolicLinkPointingTo(symlinkInCache.toPath(), realTarget.toPath())
+        assumeTrue(
+            tryCreateSymlink(symlinkInCache, realTarget),
+            "host does not allow symlink creation; cannot exercise this path",
+        )
 
         // daysOld = 0 means "older than now" - the cutoff matches nothing real,
         // so a real entry would survive. We want the symlink to also survive.
@@ -93,9 +130,12 @@ class FaviconCacheSymlinkTest {
         // HQ cache has its own subdirectory; mirror the layout.
         val hqDir = java.io.File(tempDir, "favicon-hq-cache").apply { mkdirs() }
         val symlinkInCache = java.io.File(hqDir, "link.png")
-        Files.createSymbolicLinkPointingTo(symlinkInCache.toPath(), realTarget.toPath())
+        assumeTrue(
+            tryCreateSymlink(symlinkInCache, realTarget),
+            "host does not allow symlink creation; cannot exercise this path",
+        )
 
-        HqFaviconDiskCache.clearInDirectoryForTest(hqDir)
+        runBlocking { HqFaviconDiskCache.clearInDirectoryForTest(hqDir) }
 
         assertTrue(symlinkInCache.exists())
         assertEquals(
