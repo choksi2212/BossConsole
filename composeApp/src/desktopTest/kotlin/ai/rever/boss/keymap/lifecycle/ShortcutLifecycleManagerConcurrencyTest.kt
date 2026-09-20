@@ -101,8 +101,11 @@ class ShortcutLifecycleManagerConcurrencyTest {
     }
 
     /** A condition whose `isEnabled` returns whatever value it was constructed with. */
-    private class StubCondition(private val enabled: Boolean) : ShortcutLifecycleCondition {
+    private class StubCondition(
+        private val enabled: Boolean,
+    ) : ShortcutLifecycleCondition {
         override suspend fun isEnabled(): Boolean = enabled
+
         override val disabledReason: String? = if (enabled) null else "stub-disabled"
     }
 }
