@@ -196,13 +196,24 @@ goto :eof
 
 REM URL encode subroutine
 REM Usage: call :urlencode "string to encode" OUTPUT_VAR
+REM
+REM The argument is passed to PowerShell through an environment variable
+REM rather than interpolated into a single-quoted PowerShell literal, so a
+REM single quote, semicolon or backtick in the argument cannot break out of
+REM the PS string and execute as code (fixes #1057). Delayed expansion is
+REM disabled inside the routine so a literal `!` survives the round trip
+REM instead of being eaten by `!var!` expansion.
 :urlencode
-setlocal enabledelayedexpansion
+setlocal DisableDelayedExpansion
 set "str=%~1"
 set "encoded="
 
-REM PowerShell is more reliable for URL encoding on Windows
-for /f "delims=" %%i in ('powershell -NoProfile -Command "[System.Uri]::EscapeDataString('%str%')"') do set "encoded=%%i"
+REM Pass the value via an env var; PowerShell reads it back as a string
+REM and escapes it - no shell metacharacters in the value ever reach the
+REM PS parser.
+set "BOSS_URLENCODE_ARG=%str%"
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "[System.Uri]::EscapeDataString($env:BOSS_URLENCODE_ARG)"`) do set "encoded=%%i"
+set "BOSS_URLENCODE_ARG="
 
 endlocal & set "%~2=%encoded%"
 goto :eof

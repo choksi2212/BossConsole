@@ -239,6 +239,16 @@ jobs:
           ./gradlew --stop || true
         shell: bash
 
+      - name: 🧪 Boss.bat :urlencode injection test
+        # Guards the script's :urlencode subroutine (regressed as #1057).
+        # The unpatched script interpolated the CLI argument into a
+        # single-quoted PowerShell literal, so a single quote in any
+        # argument let the rest execute as PowerShell as the user. The
+        # five cases below are the cheapest way to catch that and its
+        # siblings (semicolon, backtick, bang, percent). Windows-only.
+        if: matrix.os == 'windows-latest'
+        run: bash scripts/test/test-boss-bat-urlencode.sh
+
       - name: 🔨 Build and Test Application
         shell: bash
         run: |
