@@ -9,8 +9,10 @@ import ai.rever.boss.plugin.api.PluginState
 import ai.rever.boss.plugin.api.PluginUnloadIntent
 import ai.rever.boss.plugin.api.TransferKind
 import ai.rever.boss.plugin.api.TransferPhase
+import ai.rever.boss.plugin.loader.PluginManifestReader
 import ai.rever.boss.plugin.loader.PluginSignatureSidecar
 import ai.rever.boss.plugin.readDeferredPluginManifest
+import ai.rever.boss.plugin.updater.PluginUpdateManager
 import ai.rever.boss.plugin.updater.UpdateInfo
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
@@ -95,6 +97,17 @@ actual object PluginUpdateBridge {
     actual suspend fun performUpdate(
         pluginId: String,
         manager: DynamicPluginManager,
+    ): Result<String> = updates.run(pluginId) { performAdmittedUpdate(pluginId, manager) }
+
+    // Guard returns preserve the distinct preflight failures before any destructive update stage.
+    // LongMethod suppression: the verifyDownload lambda added for #927 (#927) pushed this
+    // function one line past the threshold; extracting it would force a context object
+    // through `runSwap` and back, and the gate's correctness is easier to review alongside
+    // the swap it gates. Lift this if the gate grows.
+    @Suppress("ReturnCount", "LongMethod")
+    private suspend fun performAdmittedUpdate(
+        pluginId: String,
+        manager: DynamicPluginManager,
     ): Result<String> {
         val mgr =
             PluginStoreSetup.updateManager
@@ -164,6 +177,9 @@ actual object PluginUpdateBridge {
                     onInstalling = {
                         swapStarted = true
                         DownloadCenter.phase(pluginId, TransferPhase.INSTALLING)
+                    },
+                    verifyDownload = { downloadedPath ->
+                        verifyUpdateIdentity(pluginId, downloadedPath)
                     },
                 )
             } catch (e: CancellationException) {
@@ -332,5 +348,70 @@ actual object PluginUpdateBridge {
             )
         }
         runCatching { PluginSignatureSidecar.delete(jar.absolutePath) }
+    }
+
+    /**
+     * Refuse an Update whose downloaded jar declares a different pluginId than the one being
+     * updated, or declares an id in [PluginDependencyResolution.NOT_USER_INSTALLABLE].
+     *
+     * The store installers (`StoreVersionInstaller.activate`, `StoreMissingDependencyInstaller.vetAndLoad`)
+     * apply the same pair of conditions BEFORE swapping; without an equivalent gate here, a
+     * mismatched jar reaches `DynamicPluginManager.installPlugin`, which:
+     *
+     *  - force-unloads the running plugin for the swap, then
+     *  - reads the incoming manifest and, for an `ai.rever.boss.plugin.api` jar, routes into
+     *    `hotSwapApiLayer` - a process-wide unload-all / swap / reload-all - exactly what
+     *    `NOT_USER_INSTALLABLE` exists to keep out of a one-click dialog. An id that matches an
+     *    already-loaded plugin fails with ALREADY_LOADED and leaves the original plugin gone for
+     *    the session (`swapPlugin`'s "we just report the failure" rollback is a no-op).
+     *
+     * Both halves of the check are load-bearing. The mismatch check closes the silent-uninstall
+     * case; the `NOT_USER_INSTALLABLE` check closes the api-hot-swap case. A jar with no
+     * readable manifest is also refused: a missing or unreadable manifest is exactly what an
+     * admin uploading the wrong jar produces, and `installPlugin` would only know which one by
+     * reading it after the running instance is already gone.
+     *
+     * Returning `Result.failure` here propagates through `updatePlugin` as the update's overall
+     * result WITHOUT reaching `swapPlugin`, so neither `unloadPlugin` nor `loadPlugin` runs. The
+     * caller (`performAdmittedUpdate`) drops the partial download in the failure branch.
+     *
+     * Visible to tests so the bridge's gate can be exercised without standing up a real
+     * `PluginUpdateManager`. End-to-end coverage lives in `PluginUpdateBridgeUpdateIdentityVetTest`.
+     */
+    internal fun verifyUpdateIdentity(
+        expectedPluginId: String,
+        downloadedPath: String,
+    ): Result<Unit> {
+        val declared =
+            runCatching { PluginManifestReader.readFromJar(downloadedPath) }
+                .getOrNull()
+        val declaredId = declared?.pluginId
+        return when {
+            declaredId == null -> {
+                val message =
+                    "Refused update for $expectedPluginId: " +
+                        "downloaded jar has no readable manifest at $downloadedPath"
+                Result.failure(IllegalStateException(message))
+            }
+
+            declaredId != expectedPluginId -> {
+                val message =
+                    "Refused update for $expectedPluginId: " +
+                        "downloaded jar declares pluginId $declaredId"
+                Result.failure(IllegalStateException(message))
+            }
+
+            declaredId in PluginDependencyResolution.NOT_USER_INSTALLABLE -> {
+                val message =
+                    "Refused update for $expectedPluginId: " +
+                        "downloaded jar declares $declaredId, " +
+                        "which cannot be installed from the Update button"
+                Result.failure(IllegalStateException(message))
+            }
+
+            else -> {
+                Result.success(Unit)
+            }
+        }
     }
 }

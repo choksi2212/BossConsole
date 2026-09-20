@@ -452,6 +452,14 @@ class PluginUpdateManager(
      * @param onInstalling Called once the download is done and the swap begins. The
      *   caller uses it to withdraw its Cancel: from here on, cancelling would leave
      *   the plugin unloaded.
+     * @param verifyDownload Runs against the downloaded jar BEFORE the running
+     *   instance is unloaded. The host uses this to refuse a download whose declared
+     *   identity does not match the plugin being updated - the same gate the store
+     *   installers apply, so an Update button cannot hot-swap the api layer or
+     *   uninstall a working plugin for an identity-mismatched jar (reopens #927).
+     *   The default is a no-op so callers that do not need the gate are unchanged.
+     *   Returning a failure here returns the update as failed WITHOUT unloading
+     *   anything; the caller is responsible for any cleanup of [downloadPath].
      * @return Result indicating success or failure
      */
     suspend fun updatePlugin(
@@ -461,6 +469,7 @@ class PluginUpdateManager(
         loadPlugin: suspend (String) -> Result<Unit>,
         onProgress: ((Float) -> Unit)? = null,
         onInstalling: (() -> Unit)? = null,
+        verifyDownload: suspend (downloadedPath: String) -> Result<Unit> = { Result.success(Unit) },
     ): Result<Unit> {
         val update =
             _availableUpdates.value.find { it.pluginId == pluginId }
@@ -483,6 +492,33 @@ class PluginUpdateManager(
         }
 
         val downloadedPath = downloadResult.getOrThrow()
+
+        // Vet the downloaded jar BEFORE unloading anything. The store installers
+        // (StoreVersionInstaller, StoreMissingDependencyInstaller) gate on this
+        // exact pair of conditions because nothing binds a store row to the plugin
+        // id its jar declares; doing it here closes the same gap on the Update path,
+        // where a mismatched jar would otherwise unload the running instance first
+        // and only then be caught by `installPlugin` reading the manifest for the
+        // api-hot-swap branch - too late, because the original plugin is already
+        // gone. A failure here returns without reaching `swapPlugin`, so neither
+        // `unloadPlugin` nor `loadPlugin` runs. The caller owns the cleanup of
+        // [downloadedPath] because it built the path.
+        val verification = verifyDownload(downloadedPath)
+        if (verification.isFailure) {
+            val error = verification.exceptionOrNull()?.message ?: "Update verification failed"
+            logger.warn(
+                LogCategory.SYSTEM,
+                "Refusing a plugin update whose downloaded jar did not pass the host's verify step",
+                mapOf(
+                    "pluginId" to pluginId,
+                    "downloadedPath" to downloadedPath,
+                    "error" to error,
+                ),
+            )
+            _state.value = UpdateState.Failed(pluginId, error)
+            listeners.forEach { it.onUpdateFailed(pluginId, error) }
+            return verification
+        }
 
         // Install
         _state.value = UpdateState.Installing(pluginId)
