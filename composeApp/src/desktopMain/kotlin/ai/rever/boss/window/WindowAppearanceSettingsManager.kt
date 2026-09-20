@@ -78,7 +78,9 @@ actual object WindowAppearanceSettingsManager {
                     // Written back immediately, so the step is not re-applied on every launch -
                     // and so a value the user changes afterwards is never overwritten by it.
                     runCatching {
-                        settingsFile.atomicWriteText(json.encodeToString(WindowAppearanceSettings.serializer(), migrated))
+                        settingsFile.atomicWriteText(
+                            json.encodeToString(WindowAppearanceSettings.serializer(), migrated),
+                        )
                     }.onFailure { e ->
                         logger.warn(LogCategory.SYSTEM, "Could not write migrated settings", error = e)
                     }

@@ -1,5 +1,6 @@
 package ai.rever.boss.window
 
+import ai.rever.boss.layout.ChromeDensity
 import ai.rever.boss.plugin.pathutils.BossDirectories
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json

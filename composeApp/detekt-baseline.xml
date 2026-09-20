@@ -990,6 +990,7 @@
     <ID>PackageNaming:SplitViewWorkspaceTransferTest.kt$package ai.rever.boss.components.window_panel</ID>
     <ID>PackageNaming:TabMenuVisibilityReportTest.kt$package ai.rever.boss.components.window_panel</ID>
     <ID>PackageNaming:BookmarksDialogProviderImpl.kt$package ai.rever.boss.components.plugin.panels.left_top</ID>
+    <ID>PackageNaming:ProjectStatePersistenceTest.kt$package ai.rever.boss.components.plugin.panels.left_top</ID>
     <ID>PackageNaming:BarMenuItems.kt$package ai.rever.boss.components.window_panel.components.main_window_panels</ID>
     <ID>PackageNaming:VerticalTabBarResizeHandle.kt$package ai.rever.boss.components.window_panel.components.main_window_panels</ID>
     <ID>PackageNaming:BossMainWindowPanel.kt$package ai.rever.boss.components.window_panel.components.main_window_panels</ID>
