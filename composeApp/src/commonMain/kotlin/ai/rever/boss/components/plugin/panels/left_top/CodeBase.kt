@@ -6,10 +6,10 @@ import ai.rever.boss.utils.extractFileName
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import ai.rever.boss.window.Project
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 
@@ -50,9 +50,10 @@ object ProjectState {
      * not cancel the load-on-init that races it. Owned for the lifetime of the JVM - this is
      * an `object`, so there is no caller that could cancel it.
      */
-    private val ioScope = kotlinx.coroutines.CoroutineScope(
-        kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob(),
-    )
+    private val ioScope =
+        kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob(),
+        )
 
     init {
         // Load recent projects from disk on startup (async to avoid blocking main thread)
@@ -116,7 +117,12 @@ object ProjectState {
             mutationLock.withLock {
                 val before = _recentProjects.value
                 val after = transform(before)
-                if (after == before) false else { _recentProjects.value = after; true }
+                if (after == before) {
+                    false
+                } else {
+                    _recentProjects.value = after
+                    true
+                }
             }
         if (changed) scheduleSave()
     }
@@ -171,9 +177,7 @@ object ProjectState {
             }
         }
 
-    private companion object {
-        const val SAVE_DEBOUNCE_MS = 5000L
-    }
+    private const val SAVE_DEBOUNCE_MS = 5000L
 
     private suspend fun loadRecentProjects() =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {

@@ -52,8 +52,7 @@ class ProjectStateConcurrencyTest {
         tempDir.deleteRecursively()
     }
 
-    private fun project(index: Int): Project =
-        Project(name = "Project $index", path = "/tmp/project-$index", lastOpened = index.toLong())
+    private fun project(index: Int): Project = Project(name = "Project $index", path = "/tmp/project-$index", lastOpened = index.toLong())
 
     @Test
     fun `concurrent updates from multiple windows do not drop entries`() =
@@ -92,7 +91,10 @@ class ProjectStateConcurrencyTest {
             val start = CompletableDeferred<Unit>()
             val jobs =
                 listOf(
-                    async { start.await(); ProjectState.removeRecentProject("/tmp/project-1") },
+                    async {
+                        start.await()
+                        ProjectState.removeRecentProject("/tmp/project-1")
+                    },
                     async {
                         start.await()
                         ProjectState.updateRecentProjects(project(3))
