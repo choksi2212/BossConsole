@@ -289,7 +289,7 @@ class EditorServiceSecurityTest {
     }
 
     @Test
-    fun `a path outside user home is refused`() {
+    fun `a path outside user home is accepted now that the boundary is dropped`() {
         // user.home for the test JVM is the test runner's home. Pick a path that is
         // almost certainly outside it (filesystem root on POSIX, drive root on Windows).
         val outside =
@@ -298,9 +298,8 @@ class EditorServiceSecurityTest {
             } else {
                 File("/__boss_editor_test_outside__/file.txt")
             }
-        assertFailsWith<IllegalArgumentException> {
-            service.validatePath(outside.absolutePath)
-        }
+        // No throw - the user.home boundary was dropped.
+        service.validatePath(outside.absolutePath)
     }
 
     @Test
