@@ -269,35 +269,40 @@ private suspend fun applyWorkspaceNode(
             }
 
             // Then create vertical split for right side
-            // Resolve the first tab up front; if it doesn't map to a supported tab type
-            // (e.g. a legacy panel-host entry in a recovered workspace), skip the split
-            // instead of creating an empty "ghost" panel via splitPanel(tabToMove = null).
-            val firstRightTabInfo = getFirstTab(node.right)?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
-            if (firstRightTabInfo != null) {
-                val rightPanelId =
-                    splitViewState.splitPanel(
-                        panelId = currentPanelId,
-                        orientation = SplitOrientation.VERTICAL,
-                        tabToMove = firstRightTabInfo,
-                    )
-
-                // Add remaining tabs or process splits for right side
-                when (val rightNode = node.right) {
-                    is SinglePanel -> {
-                        // Add remaining tabs
+            // Resolve the first restorable tab up front. Skip the split (and the whole right
+            // subtree) ONLY when the subtree has no restorable tab — an empty "ghost" panel
+            // is the whole reason we gate this. Gating on the first tab alone used to drop every
+            // restorable tab behind one unknown entry: `[unknown, editor]` in a right pane lost
+            // the editor on restart, even though `[editor, unknown]` restored it. See #1211.
+            val rightNode = node.right
+            val firstRestorableRight = firstRestorableTab(rightNode, projectPath, splitViewState)
+            when {
+                rightNode is SinglePanel -> {
+                    if (firstRestorableRight != null) {
+                        val rightPanelId =
+                            splitViewState.splitPanel(
+                                panelId = currentPanelId,
+                                orientation = SplitOrientation.VERTICAL,
+                                tabToMove = firstRestorableRight,
+                            )
                         val tabsComponent = splitViewState.getPanelTabsComponent(rightPanelId)
-                        rightNode.panel.tabs.drop(1).forEach { tabConfig ->
-                            createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)?.let { tabsComponent?.addTab(it) }
+                        // Add every restorable tab; the gate that cost us the rest of the pane
+                        // was "is the FIRST one restorable", not "is this one restorable".
+                        rightNode.panel.tabs.forEach { tabConfig ->
+                            createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)
+                                ?.let { tabsComponent.addTab(it) }
                         }
-                        // One call per panel restores the whole pinning state, and it is clamped inside setPinnedCount:
-                        // a tab whose type no longer resolves comes back as null above, so fewer tabs can land
-                        // than were saved with this count.
-                        tabsComponent?.setPinnedCount(rightNode.panel.pinnedCount)
+                        tabsComponent.setPinnedCount(rightNode.panel.pinnedCount)
                     }
+                }
 
-                    else -> {
-                        // Recursively apply right workspace config
-                        applyWorkspaceNode(rightNode, splitViewState, rightPanelId, projectPath)
+                else -> {
+                    // Nested: let the recursion own every panel it walks through.
+                    if (firstRestorableRight != null) {
+                        // Same recursion contract as #1210: don't pre-split on the first tab
+                        // here either, or the recursion duplicates it. The recursion will create
+                        // its own split for every nested level.
+                        applyWorkspaceNode(rightNode, splitViewState, currentPanelId, projectPath)
                     }
                 }
             }
@@ -324,35 +329,32 @@ private suspend fun applyWorkspaceNode(
                 }
             }
 
-            // Then create horizontal split for bottom side
-            // Resolve the first tab up front (see the VerticalSplit note) — never create an
-            // empty split panel for an unsupported first tab.
-            val firstBottomTabInfo = getFirstTab(node.bottom)?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
-            if (firstBottomTabInfo != null) {
-                val bottomPanelId =
-                    splitViewState.splitPanel(
-                        panelId = currentPanelId,
-                        orientation = SplitOrientation.HORIZONTAL,
-                        tabToMove = firstBottomTabInfo,
-                    )
-
-                // Add remaining tabs or process splits for bottom side
-                when (val bottomNode = node.bottom) {
-                    is SinglePanel -> {
-                        // Add remaining tabs
+            // Then create horizontal split for bottom side. Same shape as VerticalSplit
+            // above: gate the subtree on whether any tab is restorable, not on the first
+            // one. See #1211.
+            val bottomNode = node.bottom
+            val firstRestorableBottom = firstRestorableTab(bottomNode, projectPath, splitViewState)
+            when {
+                bottomNode is SinglePanel -> {
+                    if (firstRestorableBottom != null) {
+                        val bottomPanelId =
+                            splitViewState.splitPanel(
+                                panelId = currentPanelId,
+                                orientation = SplitOrientation.HORIZONTAL,
+                                tabToMove = firstRestorableBottom,
+                            )
                         val tabsComponent = splitViewState.getPanelTabsComponent(bottomPanelId)
-                        bottomNode.panel.tabs.drop(1).forEach { tabConfig ->
-                            createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)?.let { tabsComponent?.addTab(it) }
+                        bottomNode.panel.tabs.forEach { tabConfig ->
+                            createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)
+                                ?.let { tabsComponent.addTab(it) }
                         }
-                        // One call per panel restores the whole pinning state, and it is clamped inside setPinnedCount:
-                        // a tab whose type no longer resolves comes back as null above, so fewer tabs can land
-                        // than were saved with this count.
-                        tabsComponent?.setPinnedCount(bottomNode.panel.pinnedCount)
+                        tabsComponent.setPinnedCount(bottomNode.panel.pinnedCount)
                     }
+                }
 
-                    else -> {
-                        // Recursively apply bottom workspace config
-                        applyWorkspaceNode(bottomNode, splitViewState, bottomPanelId, projectPath)
+                else -> {
+                    if (firstRestorableBottom != null) {
+                        applyWorkspaceNode(bottomNode, splitViewState, currentPanelId, projectPath)
                     }
                 }
             }
@@ -505,4 +507,32 @@ private fun createEditorTab(
                 .Vector(fileIconInfo.icon, fileIconInfo.color),
         filePath = filePath,
     )
+}
+
+/**
+ * The first [TabInfo] that would actually land in a panel if [root] were applied, or null
+ * if [root] contains no restorable tab at all.
+ *
+ * Two adjacent decisions used to share one wrong gate: "is the FIRST tab of this subtree
+ * restorable?" — answered at the top of `applyWorkspaceNode`'s split branches. When the
+ * first tab was unknown and a later one was a fully supported editor, the editor was
+ * dropped on restart. The right predicate is "does this subtree contain any restorable
+ * tab?" — answered by walking down to the leaves and building the first one that resolves.
+ */
+private suspend fun firstRestorableTab(
+    root: SplitConfig,
+    projectPath: String,
+    splitViewState: SplitViewState,
+): TabInfo? = when (root) {
+    is SinglePanel -> {
+        root.panel.tabs.firstNotNullOfOr { tabConfig ->
+            createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)
+        }
+    }
+
+    is VerticalSplit -> firstRestorableTab(root.left, projectPath, splitViewState)
+        ?: firstRestorableTab(root.right, projectPath, splitViewState)
+
+    is HorizontalSplit -> firstRestorableTab(root.top, projectPath, splitViewState)
+        ?: firstRestorableTab(root.bottom, projectPath, splitViewState)
 }
