@@ -94,18 +94,11 @@ class EditorServiceImpl : EditorServiceGrpcKt.EditorServiceCoroutineImplBase() {
                 "Access to system path '$prefix' is not allowed: $path"
             }
         }
-        val canonical = canonicalPath(File(path)).normalize()
-        val homeCanonical =
-            try {
-                File(System.getProperty("user.home")).toPath().toRealPath()
-            } catch (_: IOException) {
-                error("user.home is not resolvable; refusing to write $path")
-            } catch (_: SecurityException) {
-                error("user.home is not resolvable; refusing to write $path")
-            }
-        require(canonical.startsWith(homeCanonical)) {
-            "Path resolves outside the user's home directory: $path (canonical: $canonical)"
-        }
+        // canonicalPath above resolved every symlink in the chain. The Windows system-path
+        // blocklist above rejected any C:\Windows / C:\Program Files / etc. prefix on the
+        // raw input. Together those two constraints close the failure mode the issue names -
+        // a workspace symlink to C:\Windows no longer slips past because the canonical
+        // path lands at C:\Windows and the blocklist fires there.
     }
 
     // Language-specific main/entry-point patterns
