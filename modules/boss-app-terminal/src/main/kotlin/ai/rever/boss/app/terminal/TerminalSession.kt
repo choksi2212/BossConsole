@@ -194,11 +194,16 @@ internal fun drainWhileAlive(
 ) {
     while (isAlive()) {
         onReadAttempt()
-        val count = input.read(buffer)
-        if (count > 0) {
-            onChunk(buffer, count)
-        } else if (count < 0) {
-            break
+        val available = input.available()
+        if (available > 0) {
+            val count = input.read(buffer, 0, minOf(available, buffer.size))
+            if (count > 0) {
+                onChunk(buffer, count)
+            } else if (count < 0) {
+                break
+            }
+        } else {
+            Thread.sleep(50)
         }
     }
 }
