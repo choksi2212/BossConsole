@@ -42,7 +42,7 @@ import java.io.File
  */
 @Suppress("LongMethod", "CyclomaticComplexMethod")
 class BossSecretsScanCommand : CliktCommand(name = "secrets") {
-    override fun help(context: Context) = "Scans a directory for plaintext secrets (AWS, GitHub, OpenAI, JWT, basic-auth URLs)"
+    override fun help(context: Context) = "Scans a directory for plaintext secrets"
 
     private val scanner = SecretsScanner()
 
@@ -104,7 +104,10 @@ class BossSecretsScanCommand : CliktCommand(name = "secrets") {
                 }.toString(),
             )
         } else {
-            echo("Secrets scan of ${report.root} (${report.scannedFiles} files scanned, ${report.skippedFiles} skipped)")
+            echo(
+                "Secrets scan of ${report.root} " +
+                    "(${report.scannedFiles} files scanned, ${report.skippedFiles} skipped)",
+            )
             if (report.findings.isEmpty()) {
                 echo("No findings at severity >= ${threshold.name.lowercase()}.")
             } else {
@@ -284,14 +287,10 @@ class SecretsScanner {
         findings: MutableList<SecretsFinding>,
     ) {
         val bytes = runCatching { file.readBytes() }.getOrNull() ?: return
-        if (bytes.size > 8 * 1024) {
-            val head = bytes.copyOf(8 * 1024)
-            if (head.any { it == 0.toByte() }) return
-            scanChunk(head, file, root, threshold, findings)
-        } else {
-            if (bytes.any { it == 0.toByte() }) return
-            scanChunk(bytes, file, root, threshold, findings)
-        }
+        val chunk =
+            if (bytes.size > 8 * 1024) bytes.copyOf(8 * 1024) else bytes
+        if (chunk.any { it == 0.toByte() }) return
+        scanChunk(chunk, file, root, threshold, findings)
     }
 
     private fun scanChunk(
@@ -371,31 +370,7 @@ internal class PathMatcher(
         val sb = StringBuilder("^")
         var i = 0
         while (i < bodyStripped.length) {
-            val c = bodyStripped[i]
-            when {
-                c == '*' && i + 1 < bodyStripped.length && bodyStripped[i + 1] == '*' -> {
-                    sb.append(".*")
-                    i += 2
-                }
-
-                c == '*' -> {
-                    sb.append("[^/]*")
-                }
-
-                c == '?' -> {
-                    sb.append("[^/]")
-                }
-
-                c == '.' || c == '(' || c == ')' || c == '+' || c == '|' ||
-                    c == '^' || c == '$' || c == '{' || c == '}' || c == '\\' -> {
-                    sb.append('\\').append(c)
-                }
-
-                else -> {
-                    sb.append(c)
-                }
-            }
-            i += 1
+            i = appendGlobClass(sb, bodyStripped, i)
         }
         // The trailing `/**` was stripped, so a pattern like `node_modules/**`
         // compiled to `^node_modules$` matches both `node_modules` (the dir)
@@ -403,11 +378,48 @@ internal class PathMatcher(
         // segment too). We allow a trailing slash + anything for the latter.
         val trailing = if (body.endsWith("/**")) "(/.*)?" else ""
         sb.append(trailing).append('$')
-        val anchored_ = anchored
         val regex = Regex(sb.toString())
         return { p ->
-            val candidate = if (anchored_) p.trimStart('/') else p
+            val candidate = if (anchored) p.trimStart('/') else p
             regex.matches(candidate)
         }
     }
+
+    private fun appendGlobClass(
+        sb: StringBuilder,
+        glob: String,
+        i: Int,
+    ): Int {
+        val c = glob[i]
+        return when {
+            c == '*' && i + 1 < glob.length && glob[i + 1] == '*' -> {
+                sb.append(".*")
+                i + 2
+            }
+
+            c == '*' -> {
+                sb.append("[^/]*")
+                i + 1
+            }
+
+            c == '?' -> {
+                sb.append("[^/]")
+                i + 1
+            }
+
+            isRegexMeta(c) -> {
+                sb.append('\\').append(c)
+                i + 1
+            }
+
+            else -> {
+                sb.append(c)
+                i + 1
+            }
+        }
+    }
+
+    private fun isRegexMeta(c: Char): Boolean =
+        c == '.' || c == '(' || c == ')' || c == '+' || c == '|' ||
+            c == '^' || c == '$' || c == '{' || c == '}' || c == '\\'
 }
