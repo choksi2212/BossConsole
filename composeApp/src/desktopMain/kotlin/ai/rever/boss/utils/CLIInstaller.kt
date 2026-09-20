@@ -346,34 +346,87 @@ actual object CLIInstaller {
     }
 
     /**
-     * Update Windows PATH environment variable
+     * Update Windows PATH environment variable for the current user.
+     *
+     * Reads the **user-scope** PATH via `reg query HKCU\Environment /v Path` (so it is
+     * never the combined system+user PATH), appends [binPath] if it is not already
+     * present, and writes back with `reg add` instead of `setx`. `setx` silently
+     * truncates values longer than 1024 characters, which corrupts a user's PATH on
+     * a long-PATH machine and drops the BOSS entry; `reg add` has no such limit and
+     * preserves `REG_EXPAND_SZ` semantics so `%USERPROFILE%`-style references continue
+     * to expand.
      */
+    @Suppress("ReturnCount") // Read PATH, already-present, write-success, failure.
     private fun updateWindowsPath(binPath: String): Boolean {
         return try {
-            // Use setx command to update user PATH
-            val currentPath = System.getenv("PATH") ?: ""
+            val currentPath = readUserPath() ?: return false
 
-            // Check if already in PATH
-            if (currentPath.contains(binPath)) {
+            // Check if already in user PATH
+            val existingEntries = currentPath.split(';').filter { it.isNotBlank() }
+            if (existingEntries.any { it.equals(binPath, ignoreCase = true) }) {
                 return true
             }
 
-            // Use setx to add to PATH
-            val process =
-                ProcessBuilder(
-                    "cmd",
-                    "/c",
-                    "setx",
-                    "PATH",
-                    "$binPath;%PATH%",
-                ).start()
-
-            process.waitFor()
-            process.exitValue() == 0
+            val merged = mergeUserPath(currentPath, binPath)
+            writeUserPath(merged)
         } catch (e: Exception) {
             logger.warn(LogCategory.SYSTEM, "Failed to update Windows PATH", error = e)
             false
         }
+    }
+
+    /**
+     * Read the user-scope PATH value from HKCU\Environment.
+     *
+     * Reads the user scope only - never the merged process PATH, which would
+     * duplicate system entries into user scope. Returns null if the registry key
+     * is absent (a fresh user profile) so the caller can decide rather than
+     * silently writing an empty value back.
+     */
+    private fun readUserPath(): String? {
+        val process =
+            ProcessBuilder(
+                "reg",
+                "query",
+                "HKCU\\Environment",
+                "/v",
+                "Path",
+            ).start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        val exit = process.waitFor()
+        if (exit != 0) return null
+        // Match either REG_SZ or REG_EXPAND_SZ - the trailing capture group is the value.
+        val match =
+            Regex(
+                """\s+Path\s+(?:REG_SZ|REG_EXPAND_SZ)\s+(.*)""",
+            ).find(output.trimEnd())
+        return match?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * Write a new user-scope PATH value to HKCU\Environment via `reg add`.
+     *
+     * Uses `REG_EXPAND_SZ` so values like `%USERPROFILE%\bin` continue to resolve
+     * for new processes - matching what Windows sets when a user edits the value
+     * from the System Properties dialog. `/f` overwrites without prompting. No
+     * 1024-character truncation, unlike `setx`.
+     */
+    private fun writeUserPath(newPath: String): Boolean {
+        val process =
+            ProcessBuilder(
+                "reg",
+                "add",
+                "HKCU\\Environment",
+                "/v",
+                "Path",
+                "/t",
+                "REG_EXPAND_SZ",
+                "/d",
+                newPath,
+                "/f",
+            ).start()
+        process.waitFor()
+        return process.exitValue() == 0
     }
 
     private data class ShellConfigResult(
@@ -381,4 +434,37 @@ actual object CLIInstaller {
         val configPath: String?,
         val alreadyConfigured: Boolean,
     )
+}
+
+/**
+ * Pure merge of a user-scope PATH string with a new bin directory entry.
+ *
+ * Behaviour, in order:
+ * 1. A blank [binDir] returns [currentUserScopePath] unchanged.
+ * 2. If [binDir] is already present (case-insensitive match against any trimmed
+ *    `;`-separated entry), the input is returned unchanged so a re-run is a no-op
+ *    rather than a duplication.
+ * 3. Otherwise the entry is appended. A trailing semicolon is preserved when the
+ *    input already ends with one; otherwise `;binDir;` is appended so the merged
+ *    string is well-formed `REG_EXPAND_SZ`.
+ *
+ * Pure on purpose so this is the only function the unit tests need to cover - the
+ * real `reg.exe` calls are exercised by hand or by an integration test, not here.
+ */
+@Suppress("ReturnCount") // Three guards: blank binDir, already present, then build.
+internal fun mergeUserPath(
+    currentUserScopePath: String,
+    binDir: String,
+): String {
+    if (binDir.isBlank()) return currentUserScopePath
+    val trimmed = binDir.trim()
+    val existingEntries = currentUserScopePath.split(';').map { it.trim() }.filter { it.isNotEmpty() }
+    if (existingEntries.any { it.equals(trimmed, ignoreCase = true) }) {
+        return currentUserScopePath
+    }
+    // Preserve any trailing semicolon in the input - if the user already terminated
+    // their PATH with one, adding binDir directly is correct. If they did not,
+    // insert a separator so the merged value stays well-formed.
+    val separator = if (currentUserScopePath.isEmpty() || currentUserScopePath.endsWith(';')) "" else ";"
+    return currentUserScopePath + separator + trimmed + ";"
 }
