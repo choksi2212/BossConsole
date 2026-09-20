@@ -5,6 +5,7 @@ import ai.rever.boss.plugin.pathutils.BossDirectories
 import ai.rever.boss.plugin.ui.BossThemeController
 import ai.rever.boss.plugin.ui.BossThemes
 import ai.rever.boss.utils.SystemUtils
+import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import kotlinx.coroutines.CoroutineScope
@@ -98,7 +99,12 @@ object AppThemeSettingsManager {
     private suspend fun save() =
         withContext(Dispatchers.IO) {
             try {
-                settingsFile.writeText(
+                // Atomic: `writeText` truncates and then streams, so a crash mid-write leaves
+                // a half-written JSON file the next load refuses to decode - the user's chosen
+                // theme silently reverts to the platform default. `atomicWriteText` stages the
+                // bytes in a sibling temp file and moves it into place, exactly the shape every
+                // other settings manager in the host uses.
+                settingsFile.atomicWriteText(
                     AppThemeSettings.storageJson.encodeToString(
                         AppThemeSettings.serializer(),
                         _settings.value,
