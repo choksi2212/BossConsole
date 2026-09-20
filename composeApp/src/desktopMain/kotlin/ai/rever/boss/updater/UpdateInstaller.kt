@@ -821,6 +821,7 @@ object UpdateInstaller {
      * Get current application path for macOS .app bundle
      * Returns null if running in development mode or path cannot be determined
      */
+    @Suppress("NestedBlockDepth")
     fun getCurrentApplicationPath(): String? {
         return try {
             logger.debug(LogCategory.SYSTEM, "Detecting current application path")
@@ -856,9 +857,17 @@ object UpdateInstaller {
                 // Walk up the directory tree looking for .app bundle
                 var curr: File = currentFile
                 for (i in 0..5) {
-                    logger.trace(LogCategory.SYSTEM, "Checking parent", mapOf("index" to i, "path" to curr.absolutePath))
+                    logger.trace(
+                        LogCategory.SYSTEM,
+                        "Checking parent",
+                        mapOf("index" to i, "path" to curr.absolutePath),
+                    )
                     if (curr.name.endsWith(".app")) {
-                        logger.debug(LogCategory.SYSTEM, "Found app bundle via directory traversal", mapOf("path" to curr.absolutePath))
+                        logger.debug(
+                            LogCategory.SYSTEM,
+                            "Found app bundle via directory traversal",
+                            mapOf("path" to curr.absolutePath),
+                        )
                         return resolveRealAppPath(curr.absolutePath)
                     }
                     val parent = curr.parentFile ?: break
