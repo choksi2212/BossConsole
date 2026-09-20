@@ -1,6 +1,7 @@
 package ai.rever.boss.components.plugin.panels.left_top
 
 import ai.rever.boss.plugin.api.FileNodeData
+import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.extractFileName
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
@@ -8,7 +9,9 @@ import ai.rever.boss.window.Project
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 
 // Global project state with persistence - manages shared recent projects list
 // Note: Selected project is per-window via WindowProjectState. This object only manages recent projects.
@@ -21,7 +24,35 @@ object ProjectState {
     private val _recentProjects = MutableStateFlow<List<Project>>(emptyList())
     val recentProjects: StateFlow<List<Project>> = _recentProjects.asStateFlow()
 
-    private val ioScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
+    /**
+     * Serialises read-modify-write over [_recentProjects]. Per-window project states both reach
+     * this object from `WindowProjectStateRegistry.hostProjectCallback` and the same call lands
+     * for every editor that restores at startup - two windows opening projects together used to
+     * race on the read here, with the later write silently dropping the first project's entry.
+     *
+     * Mirrors the form `RecentFilesManager.mutationLock` already uses, so the two histories
+     * cannot drift; `MutableStateFlow.update` is not usable because the CAS lambda is retried
+     * and a mutation must read exactly once.
+     */
+    private val mutationLock = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * Holds the scheduled save jobs so a remove/update racing a still-pending save cannot drop
+     * it; the `saveJob?.cancel(); saveJob = scope.launch { ... }` form RecentFilesManager uses
+     * works because it is fed from a single coroutine, here every per-window callback writes
+     * one.
+     */
+    private val saveJobLock = Any()
+    private var saveJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Process-wide scope for async persistence; `SupervisorJob` so a single failed save does
+     * not cancel the load-on-init that races it. Owned for the lifetime of the JVM - this is
+     * an `object`, so there is no caller that could cancel it.
+     */
+    private val ioScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob(),
+    )
 
     init {
         // Load recent projects from disk on startup (async to avoid blocking main thread)
@@ -31,15 +62,30 @@ object ProjectState {
     }
 
     /**
+     * Reset manager state for hermetic unit testing and redirect [settingsFile] to [testFile].
+     * Cancels the init load and any pending debounced save, clears the recorded list, and
+     * re-runs the load so the state matches [testFile]. Tests must call this again with the
+     * real path before finishing, so the singleton is left where the app and other tests
+     * expect it. Mirrors [ai.rever.boss.dashboard.RecentFilesManager.resetForTesting].
+     */
+    internal suspend fun resetForTesting(testFile: java.io.File) {
+        synchronized(saveJobLock) {
+            saveJob?.cancel()
+            saveJob = null
+        }
+        settingsFile = testFile
+        mutationLock.withLock {
+            _recentProjects.value = emptyList()
+        }
+        loadRecentProjects()
+    }
+
+    /**
      * Remove a project from the recent projects list.
      */
     fun removeRecentProject(projectPath: String) {
-        val updated = _recentProjects.value.filter { it.path != projectPath }
-        _recentProjects.value = updated
-
-        // Save to disk (async)
         ioScope.launch {
-            saveRecentProjects()
+            mutate { current -> current.filter { it.path != projectPath } }
         }
     }
 
@@ -49,33 +95,84 @@ object ProjectState {
      */
     fun updateRecentProjects(project: Project) {
         val updatedProject = project.copy(lastOpened = System.currentTimeMillis())
-
-        // Update recent projects list with LRU behavior
-        val updated = _recentProjects.value.toMutableList()
-
-        // Remove if already exists
-        updated.removeAll { it.path == updatedProject.path }
-
-        // Add to front - being at position 0 means most recently used
-        updated.add(0, updatedProject)
-
-        // Keep only MAX_RECENT_PROJECTS
-        while (updated.size > MAX_RECENT_PROJECTS) {
-            updated.removeLast()
-        }
-
-        _recentProjects.value = updated
-
-        // Save to disk (async)
         ioScope.launch {
-            saveRecentProjects()
+            mutate { current ->
+                val list = current.toMutableList()
+                list.removeAll { it.path == updatedProject.path }
+                list.add(0, updatedProject)
+                while (list.size > MAX_RECENT_PROJECTS) list.removeLast()
+                list
+            }
         }
     }
 
+    /**
+     * Apply [transform] to the recorded list under [mutationLock] and schedule a save if the
+     * list changed. Every public mutator routes through here so the read-modify-write cannot
+     * race across per-window callers.
+     */
+    private suspend fun mutate(transform: (List<Project>) -> List<Project>) {
+        val changed =
+            mutationLock.withLock {
+                val before = _recentProjects.value
+                val after = transform(before)
+                if (after == before) false else { _recentProjects.value = after; true }
+            }
+        if (changed) scheduleSave()
+    }
+
+    /**
+     * Redirected by [resetForTesting] for hermetic unit tests; production code never reassigns
+     * it, the same way the sibling RecentFilesManager does.
+     */
+    internal var settingsFile: java.io.File =
+        java.io.File(ai.rever.boss.plugin.pathutils.BossDirectories.rootDir, RECENT_PROJECTS_FILE)
+
     private fun getRecentProjectsFile(): java.io.File {
-        val bossDir = ai.rever.boss.plugin.pathutils.BossDirectories.rootDir
-        if (!bossDir.exists()) bossDir.mkdirs()
-        return java.io.File(bossDir, RECENT_PROJECTS_FILE)
+        val bossDir = settingsFile.parentFile
+        if (bossDir != null && !bossDir.exists()) bossDir.mkdirs()
+        return settingsFile
+    }
+
+    /**
+     * Debounced save: cancel any pending save and schedule a fresh one. Coalesces a burst of
+     * updates from concurrent windows into one disk write. The cancel-then-launch pair is
+     * inside [saveJobLock] because callers arrive from concurrent coroutines, and an unsynchronised
+     * pair could overwrite the reference to a still-pending job and leave a timer nothing will
+     * cancel.
+     */
+    private fun scheduleSave() {
+        synchronized(saveJobLock) {
+            saveJob?.cancel()
+            saveJob =
+                ioScope.launch {
+                    kotlinx.coroutines.delay(SAVE_DEBOUNCE_MS)
+                    saveImmediately()
+                }
+        }
+    }
+
+    private suspend fun saveImmediately() =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            // The recorded list, never any local copy: a transform that ran under mutationLock
+            // has just published it to _recentProjects.
+            val snapshot = _recentProjects.value
+            try {
+                val json =
+                    kotlinx.serialization.json.Json
+                        .encodeToString(snapshot)
+                // Atomic: `writeText` truncates the target and then streams into it, so a crash
+                // or a second writer arriving mid-write leaves JSON that fails to parse and the
+                // load path drops every entry rather than one. atomicWriteText writes a unique
+                // sibling temp and moves it into place.
+                getRecentProjectsFile().atomicWriteText(json)
+            } catch (e: Exception) {
+                logger.warn(LogCategory.FILE, "Failed to save recent projects", error = e)
+            }
+        }
+
+    private companion object {
+        const val SAVE_DEBOUNCE_MS = 5000L
     }
 
     private suspend fun loadRecentProjects() =
@@ -137,18 +234,7 @@ object ProjectState {
             }
         }
 
-    private suspend fun saveRecentProjects() =
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val file = getRecentProjectsFile()
-                val json =
-                    kotlinx.serialization.json.Json
-                        .encodeToString(_recentProjects.value)
-                file.writeText(json)
-            } catch (e: Exception) {
-                logger.warn(LogCategory.FILE, "Failed to save recent projects", error = e)
-            }
-        }
+    private suspend fun saveRecentProjects() = saveImmediately()
 }
 
 // Note: CodeBaseComponent has been moved to plugin-panel-codebase module
