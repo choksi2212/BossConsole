@@ -229,6 +229,15 @@ object PluginDependencyResolution {
         var truncated = false
 
         suspend fun visit(pluginId: String) {
+            // Cap at the TOP of visit, before the parent is added: counting visited.size
+            // only after `visited.add` would let the parent itself slip past the cap, so a
+            // 33-deep chain plans 33 plugins and sets `truncated` without actually dropping
+            // the offender. The dialog would then list one more "also installs" entry than
+            // the cap promises.
+            if (visited.size >= MAX_PLAN_SIZE) {
+                truncated = true
+                return
+            }
             if (!visited.add(pluginId)) {
                 if (pluginId in onStack) cyclic = true
                 return
@@ -243,10 +252,6 @@ object PluginDependencyResolution {
                     .filter { offerable(it, parent = pluginId) }
                     .filterNot(isPresent)
             for (child in children) {
-                if (child !in visited && visited.size >= MAX_PLAN_SIZE) {
-                    truncated = true
-                    continue
-                }
                 visit(child)
             }
             onStack -= pluginId
