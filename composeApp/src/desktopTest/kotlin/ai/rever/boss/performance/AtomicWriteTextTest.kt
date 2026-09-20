@@ -35,7 +35,7 @@ class AtomicWriteTextTest {
     @Test
     fun `atomic write moves new bytes into place and removes the temp`() {
         val target = File(tempDir, "target.json")
-        atomicWriteText(target, "new content")
+        target.atomicWriteText("new content")
 
         assertEquals("new content", target.readText())
 
@@ -52,10 +52,11 @@ class AtomicWriteTextTest {
      */
     @Test
     fun `atomic write replaces existing bytes`() {
-        val target = File(tempDir, "target.json").apply {
-            writeText("stale content")
-        }
-        atomicWriteText(target, "fresh content")
+        val target =
+            File(tempDir, "target.json").apply {
+                writeText("stale content")
+            }
+        target.atomicWriteText("fresh content")
 
         assertEquals("fresh content", target.readText())
     }
