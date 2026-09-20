@@ -1,6 +1,6 @@
 package ai.rever.boss.git
 
-import ai.rever.boss.plugin.git.GitOperationResult
+import ai.rever.boss.plugin.api.GitOperationResultData
 import ai.rever.boss.window.WindowGitState
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Test
@@ -102,7 +102,7 @@ class DesktopGitServiceCheckoutRefTest {
         val result = p.checkout("origin/-f")
 
         assertTrue(
-            result !is GitOperationResult.Success,
+            result !is GitOperationResultData.Success,
             "checkout accepted origin/-f; the post-strip re-validation is missing",
         )
     }
@@ -119,7 +119,7 @@ class DesktopGitServiceCheckoutRefTest {
 
         val result = p.checkout("origin/-foo")
 
-        assertTrue(result !is GitOperationResult.Success, "checkout accepted origin/-foo: $result")
+        assertTrue(result !is GitOperationResultData.Success, "checkout accepted origin/-foo: $result")
     }
 
     @Test
@@ -141,7 +141,7 @@ class DesktopGitServiceCheckoutRefTest {
 
         val result = p.checkout("origin/side")
 
-        assertTrue(result is GitOperationResult.Success, "checkout of origin/side failed: $result")
+        assertTrue(result is GitOperationResultData.Success, "checkout of origin/side failed: $result")
         assertEquals(
             "side",
             git(cloneDir, "rev-parse", "--abbrev-ref", "HEAD").trim(),
@@ -166,7 +166,7 @@ class DesktopGitServiceCheckoutRefTest {
 
         val result = p.checkout("origin/feature/foo")
 
-        assertTrue(result is GitOperationResult.Success, "checkout of origin/feature/foo failed: $result")
+        assertTrue(result is GitOperationResultData.Success, "checkout of origin/feature/foo failed: $result")
         assertEquals(
             "feature/foo",
             git(cloneDir, "rev-parse", "--abbrev-ref", "HEAD").trim(),
@@ -193,7 +193,7 @@ class DesktopGitServiceCheckoutRefTest {
 
         val result = p.checkout("origin/-f")
 
-        assertTrue(result !is GitOperationResult.Success, "checkout accepted origin/-f: $result")
+        assertTrue(result !is GitOperationResultData.Success, "checkout accepted origin/-f: $result")
         assertEquals(
             "dirty-edits-the-user-cannot-afford-to-lose\n",
             tracked.readText(),
