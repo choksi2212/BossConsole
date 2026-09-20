@@ -55,11 +55,13 @@ data class DashboardStats(
  */
 object DashboardStatsManager {
     private const val SAVE_DEBOUNCE_MS = 5000L // Debounce saves to max once per 5 seconds
+
     /**
      * Redirected by [resetForTesting] for hermetic unit tests; production code never reassigns
      * it, the same way the sibling RecentFilesManager does.
      */
     internal var settingsFile: File = BossDirectories.resolve("dashboard-stats.json")
+
     private val json =
         Json {
             prettyPrint = false
