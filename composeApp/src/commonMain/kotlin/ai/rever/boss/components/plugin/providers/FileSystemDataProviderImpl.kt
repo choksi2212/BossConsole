@@ -14,6 +14,8 @@ import kotlinx.coroutines.launch
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import ai.rever.boss.components.plugin.panels.left_top.scanDirectoryWithDepth as platformScanDirectoryWithDepth
 
 /**
@@ -167,23 +169,42 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
         return kotlinx.coroutines.withContext(Dispatchers.IO) {
             try {
                 val file = java.io.File(path)
-
-                // Security: Validate path is within user's home directory (prevent path traversal)
-                val canonicalFile = file.canonicalFile
                 val homeDir = File(System.getProperty("user.home")).canonicalFile
-                if (!canonicalFile.absolutePath.startsWith(homeDir.absolutePath + File.separator) &&
-                    canonicalFile.absolutePath != homeDir.absolutePath
-                ) {
-                    return@withContext Result.failure(SecurityException("Access denied: file path outside user directory"))
+
+                // Security: refuse to delete the home directory itself. A plugin request for
+                // System.getProperty("user.home") used to be a permitted target, and the
+                // recursive walk below would then erase the profile the guard is meant to
+                // protect (fixes #1118).
+                if (file.canonicalFile == homeDir) {
+                    return@withContext Result.failure(
+                        SecurityException("Access denied: cannot delete the user home directory"),
+                    )
                 }
 
-                // Note: We don't check exists() first to avoid race conditions.
-                // delete() and deleteRecursively() handle non-existent files gracefully.
+                // Security: Validate path is within user's home directory (prevent path traversal
+                // and symlink escape). Canonicalize to resolve any intermediate symlinks before
+                // deciding whether the resolved target is still inside the home directory.
+                val canonicalFile = file.canonicalFile
+                if (!canonicalFile.absolutePath.startsWith(homeDir.absolutePath + File.separator)) {
+                    return@withContext Result.failure(
+                        SecurityException("Access denied: file path outside user directory"),
+                    )
+                }
+
+                // Recursive deletion must NEVER follow directory symlinks. A permitted directory
+                // under home can contain a nested symlink to an external directory, and
+                // File.deleteRecursively() can traverse that link and remove entries outside the
+                // validated boundary. Files.walk defaults to NOFOLLOW_LINKS, so a symlinked child
+                // is visited as a symlink entry and Files.delete removes the link itself rather
+                // than its target.
                 val deleted =
-                    if (file.isDirectory) {
-                        file.deleteRecursively()
+                    if (Files.isDirectory(file.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+                        Files.walk(file.toPath()).use { paths ->
+                            paths.sorted(Comparator.reverseOrder()).forEach { Files.delete(it) }
+                        }
+                        true
                     } else {
-                        file.delete()
+                        Files.deleteIfExists(file.toPath())
                     }
 
                 if (deleted) {
@@ -191,6 +212,16 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                 } else {
                     Result.failure(IllegalStateException("Failed to delete (file may not exist or is locked): $path"))
                 }
+            } catch (e: java.nio.file.NoSuchFileException) {
+                // Treat "not there" as success to match the pre-fix deleteRecursively contract.
+                // Logged at debug so a security review can confirm the call was a no-op rather than
+                // an unrelated failure being misclassified.
+                logger.debug(
+                    LogCategory.FILE,
+                    "Delete target already absent",
+                    mapOf("path" to path, "exception" to e::class.qualifiedName),
+                )
+                Result.success(Unit)
             } catch (e: Exception) {
                 Result.failure(e)
             }
