@@ -87,16 +87,45 @@ export function resetRateLimits(): void {
 /**
  * Best-effort client identity for rate-limit keys.
  *
- * X-Forwarded-For is caller-controlled in general, but behind the Supabase
- * gateway the LEFTMOST entry is the one the gateway observed. It is still
- * spoofable by anyone who can reach the origin directly, which is another
- * reason this is a brake and not a control.
+ * The LEFTMOST X-Forwarded-For entry is whatever the caller typed - rotating
+ * the header would fully evade the limiter and spray unique keys to bloat
+ * the bucket map. Trusted proxies append on the RIGHT, so the rightmost
+ * entry is the one the Supabase edge observed connecting to it
+ * (cf-connecting-ip wins outright when Cloudflare sits in front, since that
+ * header is set by Cloudflare and not a value the caller can write).
+ *
+ * `skipTrustedHops` lets a deployment with more than one trusted proxy in
+ * front of the function drop further right entries - e.g. Cloudflare
+ * appending a second hop after the Supabase edge. Defaults to 0, the common
+ * Supabase-only case where the rightmost entry is the real client. An empty
+ * / malformed header, or a chain shorter than the skip count, falls through
+ * to the rightmost entry: a deliberate fail-open, since the alternative
+ * (rejecting the request) is worse than rate-limiting one hop too few.
  */
-export function clientKey(headers: Headers): string {
+export function clientKey(
+  headers: Headers,
+  skipTrustedHops: number = 0,
+): string {
+  const cf = headers.get("cf-connecting-ip")?.trim()
+  if (cf) return cf
+
   const forwarded = headers.get("x-forwarded-for")
   if (forwarded) {
-    const first = forwarded.split(",")[0].trim()
-    if (first) return first
+    const parts = forwarded.split(",").map((p) => p.trim()).filter(Boolean)
+    if (parts.length > 0) {
+      // Rightmost first; trim trusted hops from the right only when the chain
+      // has enough entries to spare. Asking for more skips than the chain has
+      // falls back to the rightmost (the most-trusted observation we have) -
+      // a deliberate fail-open, since the alternative is rate-limiting on
+      // what is most likely an attacker-controlled leftmost entry.
+      const skip = skipTrustedHops >= parts.length ? 0 : skipTrustedHops
+      const client = parts[parts.length - 1 - skip]
+      if (client) return client
+    }
   }
-  return headers.get("cf-connecting-ip") ?? headers.get("x-real-ip") ?? "unknown"
+
+  const realIp = headers.get("x-real-ip")?.trim()
+  if (realIp) return realIp
+
+  return "unknown"
 }
