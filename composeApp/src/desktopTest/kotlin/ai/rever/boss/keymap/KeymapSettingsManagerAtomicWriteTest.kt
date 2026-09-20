@@ -60,26 +60,30 @@ class KeymapSettingsManagerAtomicWriteTest {
     @Test
     fun `save lands a fully decodable file`() =
         runBlocking {
-            val bindings = mapOf(
-                "panel.navigate_right" to KeyBinding(
-                    actionId = "panel.navigate_right",
-                    key = "Right",
-                    alternateKeystrokes = listOf(KeyStroke(key = "L", modifiers = listOf("Cmd"))),
-                    enabled = true,
-                    context = "global",
-                ),
-                "file.save" to KeyBinding(
-                    actionId = "file.save",
-                    key = "S",
-                    alternateKeystrokes = listOf(KeyStroke(key = "S", modifiers = listOf("Cmd", "Shift"))),
-                    enabled = true,
-                    context = "editor",
-                ),
-            )
-            val payload = KeymapSettings(
-                presetName = "BOSS Default",
-                shortcuts = bindings,
-            )
+            val bindings =
+                mapOf(
+                    "panel.navigate_right" to
+                        KeyBinding(
+                            actionId = "panel.navigate_right",
+                            key = "Right",
+                            alternateKeystrokes = listOf(KeyStroke(key = "L", modifiers = listOf("Cmd"))),
+                            enabled = true,
+                            context = "global",
+                        ),
+                    "file.save" to
+                        KeyBinding(
+                            actionId = "file.save",
+                            key = "S",
+                            alternateKeystrokes = listOf(KeyStroke(key = "S", modifiers = listOf("Cmd", "Shift"))),
+                            enabled = true,
+                            context = "editor",
+                        ),
+                )
+            val payload =
+                KeymapSettings(
+                    presetName = "BOSS Default",
+                    shortcuts = bindings,
+                )
             // Push the new state through the manager, then ask the file to decode itself.
             KeymapSettingsManager.updateSettings(payload)
             assertTrue(tempKeymap.exists(), "save must produce a file")
