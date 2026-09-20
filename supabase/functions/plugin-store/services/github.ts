@@ -952,6 +952,15 @@ async function extractFileFromZip(
 
     if (fileName !== targetPath) continue
 
+    // Cap the declared compressedSize before any data is read; mirrors the
+    // remote path. A crafted in-memory JAR could otherwise declare an
+    // arbitrary size and walk the slice past the buffer.
+    if (compressedSize > MAX_ENTRY_FETCH_BYTES) {
+      throw new Error(
+        `central directory entry declares compressedSize ${compressedSize}, over the ${MAX_ENTRY_FETCH_BYTES}-byte cap`
+      )
+    }
+
     // --- Read from the local file header to get the actual data ---
     const lhOffset = localHeaderOffset
     if (lhOffset + 30 > zipData.length) return null
