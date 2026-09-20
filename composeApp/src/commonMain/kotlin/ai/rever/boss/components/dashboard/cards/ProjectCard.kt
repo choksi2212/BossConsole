@@ -39,6 +39,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 import java.util.Date
 
 /**
@@ -158,18 +161,41 @@ fun ProjectCard(
 
 /**
  * Format timestamp as relative time (e.g., "2h ago", "Yesterday").
+ *
+ * The "Yesterday" and absolute-date buckets answer to **calendar days in the
+ * local zone**, not elapsed hours. A 47-hour gap can sit across two calendar
+ * days (and so should read as the absolute date, not "Yesterday"), while a
+ * 2-minute gap near midnight can still be "Yesterday". Elapsed-time buckets
+ * below a day stay as they are - they promise elapsed time and deliver it.
  */
-private fun formatRelativeTime(timestamp: Long): String {
+internal fun formatRelativeTime(
+    timestamp: Long,
+    now: Long = System.currentTimeMillis(),
+    zone: ZoneId = ZoneId.systemDefault(),
+): String {
     if (timestamp == 0L) return "Never"
 
-    val now = System.currentTimeMillis()
-    val diff = now - timestamp
+    val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+    val stampDate = Instant.ofEpochMilli(timestamp).atZone(zone).toLocalDate()
+    val daysAgo = ChronoUnit.DAYS.between(stampDate, today)
 
     return when {
-        diff < 60_000 -> "Just now"
-        diff < 3600_000 -> "${diff / 60_000}m ago"
-        diff < 86400_000 -> "${diff / 3600_000}h ago"
-        diff < 172800_000 -> "Yesterday"
-        else -> SimpleDateFormat("MMM d").format(Date(timestamp))
+        daysAgo == 1L -> {
+            "Yesterday"
+        }
+
+        daysAgo >= 2 -> {
+            SimpleDateFormat("MMM d").format(Date(timestamp))
+        }
+
+        else -> {
+            // Same calendar day (or future - #1042): elapsed-time buckets.
+            val diff = now - timestamp
+            when {
+                diff < 60_000 -> "Just now"
+                diff < 3600_000 -> "${diff / 60_000}m ago"
+                else -> "${diff / 3600_000}h ago"
+            }
+        }
     }
 }
