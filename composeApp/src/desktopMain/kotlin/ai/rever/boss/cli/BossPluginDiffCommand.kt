@@ -318,69 +318,91 @@ object PluginDiffer {
 private object PluginDiffJson {
     fun encode(diff: PluginDiff): String =
         buildJsonObject {
-            put("leftId", diff.leftId)
-            put("leftVersion", diff.leftVersion)
-            put("leftApiVersion", diff.leftApiVersion)
-            put("leftMainClass", diff.leftMainClass)
-            put("rightId", diff.rightId)
-            put("rightVersion", diff.rightVersion)
-            put("rightApiVersion", diff.rightApiVersion)
-            put("rightMainClass", diff.rightMainClass)
-            put("versionDelta", diff.versionDelta)
-            diff.apiVersionDelta?.let {
-                put(
-                    "apiVersionDelta",
-                    buildJsonObject {
-                        put("left", it.left)
-                        put("right", it.right)
-                    },
-                )
-            }
-            diff.mainClassDelta?.let { put("mainClassDelta", it) }
-            put("permissionsAdded", buildJsonArray { diff.permissionsAdded.forEach { add(it) } })
-            put("permissionsRemoved", buildJsonArray { diff.permissionsRemoved.forEach { add(it) } })
-            put("permissionsKept", buildJsonArray { diff.permissionsKept.forEach { add(it) } })
-            put(
-                "unrecognisedPermissionsAdded",
-                buildJsonArray { diff.unrecognisedPermissionsAdded.forEach { add(it) } },
-            )
-            put(
-                "unrecognisedPermissionsRemoved",
-                buildJsonArray { diff.unrecognisedPermissionsRemoved.forEach { add(it) } },
-            )
-            put(
-                "mcpToolsAdded",
-                buildJsonArray {
-                    diff.mcpToolsAdded.forEach { tool -> addJsonObject { toolJson(tool) } }
-                },
-            )
-            put(
-                "mcpToolsRemoved",
-                buildJsonArray {
-                    diff.mcpToolsRemoved.forEach { tool -> addJsonObject { toolJson(tool) } }
-                },
-            )
-            put(
-                "mcpToolsKept",
-                buildJsonArray {
-                    diff.mcpToolsKept.forEach { tool -> addJsonObject { toolJson(tool) } }
-                },
-            )
-            put(
-                "mcpToolAdminScopeFlipped",
-                buildJsonArray {
-                    diff.mcpToolAdminScopeFlipped.forEach { flip ->
-                        addJsonObject {
-                            put("plugin", flip.pluginId)
-                            put("tool", flip.toolName)
-                            put("leftAdminOnly", flip.leftAdminOnly)
-                            put("rightAdminOnly", flip.rightAdminOnly)
-                        }
-                    }
-                },
-            )
+            writeIdentity(diff)
+            writePermissionBuckets(diff)
+            writeToolBuckets(diff)
+            writeToolAdminScopeFlips(diff)
             put("hasChanges", diff.hasChanges())
         }.toString()
+
+    private fun kotlinx.serialization.json.JsonObjectBuilder.writeIdentity(diff: PluginDiff) {
+        put("leftId", diff.leftId)
+        put("leftVersion", diff.leftVersion)
+        put("leftApiVersion", diff.leftApiVersion)
+        put("leftMainClass", diff.leftMainClass)
+        put("rightId", diff.rightId)
+        put("rightVersion", diff.rightVersion)
+        put("rightApiVersion", diff.rightApiVersion)
+        put("rightMainClass", diff.rightMainClass)
+        put("versionDelta", diff.versionDelta)
+        diff.apiVersionDelta?.let {
+            put(
+                "apiVersionDelta",
+                buildJsonObject {
+                    put("left", it.left)
+                    put("right", it.right)
+                },
+            )
+        }
+        diff.mainClassDelta?.let { put("mainClassDelta", it) }
+    }
+
+    private fun kotlinx.serialization.json.JsonObjectBuilder.writePermissionBuckets(diff: PluginDiff) {
+        put("permissionsAdded", buildJsonArray { diff.permissionsAdded.forEach { add(it) } })
+        put("permissionsRemoved", buildJsonArray { diff.permissionsRemoved.forEach { add(it) } })
+        put("permissionsKept", buildJsonArray { diff.permissionsKept.forEach { add(it) } })
+        put(
+            "unrecognisedPermissionsAdded",
+            buildJsonArray { diff.unrecognisedPermissionsAdded.forEach { add(it) } },
+        )
+        put(
+            "unrecognisedPermissionsRemoved",
+            buildJsonArray { diff.unrecognisedPermissionsRemoved.forEach { add(it) } },
+        )
+    }
+
+    private fun kotlinx.serialization.json.JsonObjectBuilder.writeToolBuckets(diff: PluginDiff) {
+        put(
+            "mcpToolsAdded",
+            buildJsonArray {
+                diff.mcpToolsAdded.forEach { tool ->
+                    addJsonObject { toolJson(tool) }
+                }
+            },
+        )
+        put(
+            "mcpToolsRemoved",
+            buildJsonArray {
+                diff.mcpToolsRemoved.forEach { tool ->
+                    addJsonObject { toolJson(tool) }
+                }
+            },
+        )
+        put(
+            "mcpToolsKept",
+            buildJsonArray {
+                diff.mcpToolsKept.forEach { tool ->
+                    addJsonObject { toolJson(tool) }
+                }
+            },
+        )
+    }
+
+    private fun kotlinx.serialization.json.JsonObjectBuilder.writeToolAdminScopeFlips(diff: PluginDiff) {
+        put(
+            "mcpToolAdminScopeFlipped",
+            buildJsonArray {
+                diff.mcpToolAdminScopeFlipped.forEach { flip ->
+                    addJsonObject {
+                        put("plugin", flip.pluginId)
+                        put("tool", flip.toolName)
+                        put("leftAdminOnly", flip.leftAdminOnly)
+                        put("rightAdminOnly", flip.rightAdminOnly)
+                    }
+                }
+            },
+        )
+    }
 
     private fun kotlinx.serialization.json.JsonObjectBuilder.toolJson(tool: McpToolRow) {
         put("plugin", tool.pluginId)
