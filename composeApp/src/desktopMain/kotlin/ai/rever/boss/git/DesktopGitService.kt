@@ -2321,6 +2321,7 @@ actual object GitService {
                         "clone",
                         "--progress",
                         repositoryUrl,
+                        "--",
                         targetDirectory,
                     ).apply {
                         // Inherit parent process environment for SSH/git credentials
