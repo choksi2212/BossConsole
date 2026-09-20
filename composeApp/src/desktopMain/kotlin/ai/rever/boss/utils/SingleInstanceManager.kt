@@ -129,6 +129,15 @@ private const val OPEN_ACTION_TIMEOUT_MS = 5000L
 internal const val PLUGIN_DEV_RELOAD_TIMEOUT_MS = 45_000L
 
 /**
+ * Maximum number of in-flight client handler threads. Bounds a local-thread flood
+ * against the host: see #1326. With this at 32 and the per-connection budget at
+ * CONNECTION_TIMEOUT_MS (10s), the worst case a flood can park is 32 threads for
+ * 10s, and the next accepted connection is dropped immediately rather than
+ * spawning a 33rd.
+ */
+private const val MAX_CLIENT_HANDLERS = 32
+
+/**
  * Ceiling on a single request. Bounds what one caller can make the app buffer,
  * sized to accommodate Base64-encoded tool arguments and payloads.
  */
@@ -1035,6 +1044,15 @@ object SingleInstanceManager {
     private var serverChannel: ServerSocketChannel? = null
     private var listenerThread: Thread? = null
 
+    /**
+     * Bounds the in-flight client handler threads so a local flood cannot park
+     * N daemons per request (#1326). When the budget is exhausted, the listener
+     * thread closes the freshly-accepted connection without spawning a handler -
+     * the worst case for the rejected caller is a closed socket, and the worst
+     * case for the host is `MAX_CLIENT_HANDLERS` parked handler threads.
+     */
+    private val clientSlots = java.util.concurrent.Semaphore(MAX_CLIENT_HANDLERS)
+
     /** Test seam; production serves credentials from the running BOSS session. */
     internal var llmTokenProviderOverride: (() -> Result<String>)? = null
 
@@ -1157,6 +1175,18 @@ object SingleInstanceManager {
      * cannot present it gets a refusal and nothing else.
      */
     private fun handleClient(client: SocketChannel) {
+        // Acquire a handler slot before spawning a thread. A local flood that
+        // exceeds MAX_CLIENT_HANDLERS in-flight requests is dropped immediately,
+        // so a single attacker cannot park an unbounded number of daemons by
+        // holding the channel open. See #1326.
+        if (!clientSlots.tryAcquire()) {
+            logger.warn(
+                LogCategory.SYSTEM,
+                "Single-instance handler at capacity; dropping connection without reading",
+            )
+            runCatching { client.close() }
+            return
+        }
         thread(isDaemon = true, name = "BOSS-IPC-Client-Handler") {
             var budget = SingleInstanceWire.closeAfterBudget(client)
             try {
@@ -1187,6 +1217,7 @@ object SingleInstanceManager {
                 )
             } finally {
                 budget.cancel(false)
+                clientSlots.release()
             }
         }
     }
