@@ -1,5 +1,6 @@
 package ai.rever.boss.dashboard
 
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import kotlin.test.Test
@@ -62,8 +63,8 @@ class DashboardStatsScheduleTest {
             val after = read()
             recorded =
                 (after.totalFilesOpened - before.totalFilesOpened) +
-                    (after.totalBrowserPagesVisited - before.totalBrowserPagesVisited) +
-                    (after.totalTerminalSessions - before.totalTerminalSessions)
+                (after.totalBrowserPagesVisited - before.totalBrowserPagesVisited) +
+                (after.totalTerminalSessions - before.totalTerminalSessions)
             if (recorded == calls) {
                 break
             }
@@ -81,15 +82,17 @@ class DashboardStatsScheduleTest {
         assertTrue(tempFile.exists(), "the file must exist")
     }
 
-    @Suppress("SwallowedException")
+    @Suppress("SwallowedException", "TooGenericExceptionCaught")
     private fun read(): DashboardStats =
         if (tempFile.exists()) {
             try {
-                kotlinx.serialization.json.Json {
+                Json {
                     prettyPrint = false
                     ignoreUnknownKeys = true
                     encodeDefaults = false
-                }.decodeFromString<DashboardStats>(tempFile.readText())
+                }.decodeFromString<DashboardStats>(
+                    tempFile.readText(),
+                )
             } catch (e: Exception) {
                 DashboardStats()
             }
