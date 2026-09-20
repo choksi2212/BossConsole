@@ -3,6 +3,7 @@ package ai.rever.boss.keymap
 import ai.rever.boss.keymap.model.KeyBinding
 import ai.rever.boss.keymap.model.KeyStroke
 import ai.rever.boss.keymap.model.KeymapSettings
+import ai.rever.boss.keymap.model.ShortcutContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -68,7 +69,7 @@ class KeymapSettingsManagerAtomicWriteTest {
                             key = "Right",
                             alternateKeystrokes = listOf(KeyStroke(key = "L", modifiers = listOf("Cmd"))),
                             enabled = true,
-                            context = "global",
+                            context = ShortcutContext.GLOBAL,
                         ),
                     "file.save" to
                         KeyBinding(
@@ -76,7 +77,7 @@ class KeymapSettingsManagerAtomicWriteTest {
                             key = "S",
                             alternateKeystrokes = listOf(KeyStroke(key = "S", modifiers = listOf("Cmd", "Shift"))),
                             enabled = true,
-                            context = "editor",
+                            context = ShortcutContext.EDITOR,
                         ),
                 )
             val payload =
@@ -117,7 +118,7 @@ class KeymapSettingsManagerAtomicWriteTest {
                                     key = "Right",
                                     alternateKeystrokes = emptyList(),
                                     enabled = true,
-                                    context = "global",
+                                    context = ShortcutContext.GLOBAL,
                                 ),
                         ),
                 )
