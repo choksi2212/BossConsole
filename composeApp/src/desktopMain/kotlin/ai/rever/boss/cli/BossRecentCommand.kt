@@ -54,7 +54,8 @@ class BossRecentCommand : CliktCommand(name = "recent") {
                         .decodeFromString<List<RecentProject>>(file.readText(Charsets.UTF_8))
                         .filter { File(it.path).isDirectory }
                 }.getOrElse {
-                    echo("Error: failed to parse recent-projects.json: ${it.message ?: it.javaClass.simpleName}", err = true)
+                    val detail = it.message ?: it.javaClass.simpleName
+                    echo("Error: failed to parse recent-projects.json: $detail", err = true)
                     throw ProgramResult(2)
                 }
             }
