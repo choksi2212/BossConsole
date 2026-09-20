@@ -84,21 +84,22 @@ class ShortcutLifecycleManagerConcurrencyTest {
         }
 
     @Test
-    fun `unregister then evaluate leaves the state absent`() {
-        val actionId = "action-B"
-        ShortcutLifecycleManager.registerCondition(actionId, StubCondition(enabled = true))
-        ShortcutLifecycleManager.unregisterCondition(actionId)
-        ShortcutLifecycleManager.reevaluateSingle(actionId)
-        // The condition is no longer registered, so evaluateSingle must early-return and leave
-        // _states without the entry. The bare read-then-write could re-add the entry if an
-        // unregister and an evaluate raced in the wrong order.
-        assertNull(ShortcutLifecycleManager.getState(actionId))
-        assertEquals(
-            emptySet(),
-            ShortcutLifecycleManager.getRegisteredActions(),
-            "the unregister must clear the condition",
-        )
-    }
+    fun `unregister then evaluate leaves the state absent`() =
+        runBlocking {
+            val actionId = "action-B"
+            ShortcutLifecycleManager.registerCondition(actionId, StubCondition(enabled = true))
+            ShortcutLifecycleManager.unregisterCondition(actionId)
+            ShortcutLifecycleManager.reevaluateSingle(actionId)
+            // The condition is no longer registered, so evaluateSingle must early-return and leave
+            // _states without the entry. The bare read-then-write could re-add the entry if an
+            // unregister and an evaluate raced in the wrong order.
+            assertNull(ShortcutLifecycleManager.getState(actionId))
+            assertEquals(
+                emptySet(),
+                ShortcutLifecycleManager.getRegisteredActions(),
+                "the unregister must clear the condition",
+            )
+        }
 
     /** A condition whose `isEnabled` returns whatever value it was constructed with. */
     private class StubCondition(
@@ -106,6 +107,6 @@ class ShortcutLifecycleManagerConcurrencyTest {
     ) : ShortcutLifecycleCondition {
         override suspend fun isEnabled(): Boolean = enabled
 
-        override val disabledReason: String? = if (enabled) null else "stub-disabled"
+        override val disabledReason: String = if (enabled) "stub-enabled" else "stub-disabled"
     }
 }
