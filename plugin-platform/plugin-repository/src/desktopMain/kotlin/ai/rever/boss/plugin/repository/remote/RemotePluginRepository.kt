@@ -21,6 +21,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -193,6 +196,72 @@ class RemotePluginRepository(
                 ),
             )
         }
+    }
+
+    /**
+     * Sibling staging file for a download that hasn't yet been verified.
+     *
+     * The downloader streams bytes here, hashes and signs them, and only on
+     * PASS promotes the file over `targetPath` with [promoteStaged]. A failed
+     * download — interrupted response, bad hash, bad signature — therefore
+     * leaves the existing live JAR and its `.sig` sidecar untouched.
+     *
+     * The path lives in the same directory as `targetPath` so `Files.move`
+     * stays within one filesystem (the only case its `ATOMIC_MOVE` is
+     * guaranteed). The filename is unique per call so two concurrent
+     * downloads of the same plugin do not stomp each other. The `.part`
+     * suffix deliberately does NOT end in `.jar`, so a `*.part` left over
+     * from a kill is ignored by the directory scan at startup.
+     */
+    private fun stagedSibling(targetPath: String): File {
+        val target = File(targetPath)
+        val parent = target.absoluteFile.parentFile
+        // createTempFile produces `<name><random>.<suffix>`. The random tail
+        // is enough to keep two concurrent callers on the same targetPath
+        // from sharing bytes; the parent directory is taken off the
+        // targetPath so a symlink at targetPath does not push staging bytes
+        // outside the intended plugin directory.
+        return Files.createTempFile(parent.toPath(), target.name, ".part").toFile()
+    }
+
+    /**
+     * Atomically replace `targetPath` with [staged], falling back to a
+     * non-atomic move on filesystems that do not support atomic rename
+     * (some Windows configurations).
+     *
+     * `Files.move` with `REPLACE_EXISTING` replaces the entry at the target
+     * path; a symlink at that path is unlinked and a regular file takes its
+     * place, so unverified bytes cannot be written outside the plugin
+     * directory by following a symlink.
+     */
+    private fun promoteStaged(
+        staged: File,
+        targetPath: String,
+    ) {
+        val target = File(targetPath)
+        try {
+            Files.move(
+                staged.toPath(),
+                target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE,
+            )
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(staged.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
+    /**
+     * Best-effort cleanup of [staged]. Used on every failure path so a
+     * rejected download does not leave half-written bytes at a name that
+     * would silently be ignored by the directory scan - the same
+     * `deleteOrWarn` shape that the rest of this class uses.
+     */
+    private fun discardStaged(
+        staged: File,
+        context: String,
+    ) {
+        deleteOrWarn(staged, context)
     }
 
     private val downloadHttpClient =
@@ -389,12 +458,38 @@ class RemotePluginRepository(
                             cacheOrNull("purge") { downloadCache.removeCachedJar(pluginId, downloadInfo.version) }
                         },
                     )
-                    val copied =
-                        cacheOrNull("copy") {
-                            copyCachedJar(cachedFile, File(targetPath))
-                            true
-                        } == true
-                    if (copied) {
+                    // Copy into a sibling `.part` rather than truncating
+                    // targetPath in place: a copy or promotion failure must
+                    // leave the previously installed JAR and its `.sig`
+                    // sidecar untouched. The signature has already been
+                    // verified above, so the promote is the only step that
+                    // can fail here. A cache copy that returns false falls
+                    // through to the fresh-download path, matching the
+                    // pre-fix behaviour where a cache write failure
+                    // transparently retried over the network.
+                    val staged = stagedSibling(targetPath)
+                    val cacheCopySucceeded =
+                        try {
+                            val copied =
+                                cacheOrNull("copy") {
+                                    copyCachedJar(cachedFile, staged)
+                                    true
+                                } == true
+                            if (copied) {
+                                try {
+                                    promoteStaged(staged, targetPath)
+                                    true
+                                } catch (t: Throwable) {
+                                    discardStaged(staged, "failed cache promote")
+                                    throw t
+                                }
+                            } else {
+                                false
+                            }
+                        } finally {
+                            if (staged.exists()) discardStaged(staged, "leftover cache stage")
+                        }
+                    if (cacheCopySucceeded) {
                         PluginSignatureSidecar.persist(targetPath, downloadInfo.signature)
                         // Nothing was fetched, but the caller still needs completed progress.
                         onProgress?.invoke(1f)
@@ -405,6 +500,12 @@ class RemotePluginRepository(
                 // Initialize progress tracking
                 val progressFlow = MutableStateFlow(0f)
                 downloadProgress[pluginId] = progressFlow
+
+                // Stream into a sibling `.part` so an interrupted or hostile
+                // response never overwrites the live JAR. Promotion to
+                // targetPath happens only after the bytes have been hashed
+                // and the signature has been verified against the store key.
+                val staged = stagedSibling(targetPath)
 
                 try {
                     logger.info(
@@ -417,7 +518,7 @@ class RemotePluginRepository(
                         ),
                     )
 
-                    // Download with progress tracking
+                    // Download with progress tracking into the staged file.
                     downloadHttpClient.prepareGet(downloadInfo.downloadUrl).execute { response ->
                         val channel = response.bodyAsChannel()
                         val totalBytes = response.headers[io.ktor.http.HttpHeaders.ContentLength]?.toLongOrNull() ?: downloadInfo.size
@@ -428,7 +529,7 @@ class RemotePluginRepository(
                         // per-chunk resolution, which nothing re-renders.
                         var lastPercent = -1
 
-                        File(targetPath).outputStream().use { output ->
+                        staged.outputStream().use { output ->
                             val buffer = ByteArray(8192)
                             while (!channel.isClosedForRead) {
                                 val bytes = channel.readAvailable(buffer)
@@ -451,10 +552,11 @@ class RemotePluginRepository(
 
                     // Verify SHA-256 — every published version must have a real
                     // hash. A blank or placeholder value is treated as a mismatch
-                    // so tampered or unhashed JARs never load.
-                    val actualSha256 = FileHashing.sha256(File(targetPath))
+                    // so tampered or unhashed JARs never load. The hash runs on
+                    // the staged file; the live JAR is still untouched.
+                    val actualSha256 = FileHashing.sha256(staged)
                     if (!actualSha256.equals(downloadInfo.sha256, ignoreCase = true)) {
-                        deleteOrWarn(File(targetPath), "hash-mismatched download")
+                        discardStaged(staged, "hash-mismatched download")
                         throw DownloadException(
                             "SHA-256 mismatch. Expected: ${downloadInfo.sha256}, Got: $actualSha256",
                             pluginId,
@@ -472,12 +574,24 @@ class RemotePluginRepository(
                         pluginId = pluginId,
                         versionLabel = downloadInfo.version,
                         requestedVersion = version,
-                        onVerificationFailure = { deleteOrWarn(File(targetPath), "rejected download") },
+                        onVerificationFailure = { discardStaged(staged, "rejected download") },
                     )
+
+                    // Atomically replace the live JAR. Files.move does NOT
+                    // follow a symlink at targetPath, so an attacker who
+                    // placed one there cannot use the download to overwrite
+                    // an arbitrary file outside the plugin directory.
+                    try {
+                        promoteStaged(staged, targetPath)
+                    } catch (t: Throwable) {
+                        discardStaged(staged, "failed promote")
+                        throw t
+                    }
 
                     // Persist the signature beside the JAR so load-time
                     // verification (which every install path funnels through) can
-                    // re-check it independently of this download path.
+                    // re-check it independently of this download path. Only
+                    // happens after the bytes are in their final position.
                     PluginSignatureSidecar.persist(targetPath, downloadInfo.signature)
 
                     // Cache the downloaded JAR
@@ -502,6 +616,10 @@ class RemotePluginRepository(
                     // of the same plugin replaced our entry (progress is keyed by
                     // pluginId alone — pre-existing), don't yank its flow out.
                     downloadProgress.remove(pluginId, progressFlow)
+                    // After promoteStaged the file no longer exists; on every
+                    // other exit path the staged file is what would otherwise
+                    // linger in the plugin directory.
+                    if (staged.exists()) discardStaged(staged, "stale download stage")
                 }
             }.onStoreFailure { e ->
                 logger.error(LogCategory.NETWORK, "Failed to download plugin", mapOf("pluginId" to pluginId), e)
