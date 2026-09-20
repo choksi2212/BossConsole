@@ -112,12 +112,13 @@ object ResolvedHostsStore {
      * that path takes, so a test driving this method is testing the exact same write path a
      * coroutine-driven save would.
      */
-    internal fun saveNowBlocking(): String = kotlinx.coroutines.runBlocking {
-        saveLock.withLock {
-            val snapshot = hosts.toList().sorted()
-            val payload = json.encodeToString(snapshot)
-            storeFile.atomicWriteText(payload)
-            payload
+    internal fun saveNowBlocking(): String =
+        kotlinx.coroutines.runBlocking {
+            saveLock.withLock {
+                val snapshot = hosts.toList().sorted()
+                val payload = json.encodeToString(snapshot)
+                storeFile.atomicWriteText(payload)
+                payload
+            }
         }
-    }
 }

@@ -1,12 +1,12 @@
 package ai.rever.boss.plugin.browser
 
 import ai.rever.boss.plugin.pathutils.BossDirectories
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.Dispatchers
 import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -32,7 +32,11 @@ class ResolvedHostsStoreTest {
 
     @BeforeTest
     fun setUp() {
-        workDir = File.createTempFile("resolved-hosts-test-", ".dir").apply { delete(); mkdirs() }
+        workDir =
+            File.createTempFile("resolved-hosts-test-", ".dir").apply {
+                delete()
+                mkdirs()
+            }
         tempFile = File.createTempFile("resolved-hosts-test-", ".json").apply { delete() }
         ResolvedHostsStore.storeFile = tempFile
         ResolvedHostsStore.clear()
@@ -80,36 +84,38 @@ class ResolvedHostsStoreTest {
      * snapshot to be taken inside the lock, so any snapshot-outside code regresses this test.
      */
     @Test
-    fun `many concurrent recordLoaded calls all land on disk`() = runBlocking {
-        val count = 200
-        val deferreds = (0 until count).map { i ->
-            withContext(Dispatchers.IO) {
-                async {
-                    // Spread the calls over a small window so the launched saves genuinely race.
-                    ResolvedHostsStore.recordLoaded("concurrent-$i.example")
-                    delay(2L)
+    fun `many concurrent recordLoaded calls all land on disk`() =
+        runBlocking {
+            val count = 200
+            val deferreds =
+                (0 until count).map { i ->
+                    withContext(Dispatchers.IO) {
+                        async {
+                            // Spread the calls over a small window so the launched saves genuinely race.
+                            ResolvedHostsStore.recordLoaded("concurrent-$i.example")
+                            delay(2L)
+                        }
+                    }
                 }
+            deferreds.awaitAll()
+
+            // Drain: kick a final synchronous save, then read what landed.
+            ResolvedHostsStore.saveNowBlocking()
+            val persisted = decode(tempFile.readText())
+
+            assertEquals(
+                count,
+                persisted.size,
+                "expected every concurrent recordLoaded call to land on disk, " +
+                    "got ${persisted.size} of $count - the snapshot was taken outside saveLock",
+            )
+            for (i in 0 until count) {
+                assertTrue(
+                    "concurrent-$i.example" in persisted,
+                    "concurrent-$i.example was recorded but is missing from disk",
+                )
             }
         }
-        deferreds.awaitAll()
-
-        // Drain: kick a final synchronous save, then read what landed.
-        ResolvedHostsStore.saveNowBlocking()
-        val persisted = decode(tempFile.readText())
-
-        assertEquals(
-            count,
-            persisted.size,
-            "expected every concurrent recordLoaded call to land on disk, " +
-                "got ${persisted.size} of $count - the snapshot was taken outside saveLock",
-        )
-        for (i in 0 until count) {
-            assertTrue(
-                "concurrent-$i.example" in persisted,
-                "concurrent-$i.example was recorded but is missing from disk",
-            )
-        }
-    }
 
     /**
      * Empty inputs do not write. A common side-effect of moving the snapshot is accidentally
