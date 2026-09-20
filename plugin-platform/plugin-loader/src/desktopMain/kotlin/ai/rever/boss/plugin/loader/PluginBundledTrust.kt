@@ -113,9 +113,9 @@ object PluginBundledTrust {
      * after the marker was written (same filename, different content) reads as untrusted.
      */
     fun isTrusted(jarPath: String): Boolean {
-        val recorded = readMarker(jarPath) ?: return false
-        val actual = runCatching { FileHashing.sha256(File(jarPath)) }.getOrNull() ?: return false
-        return recorded == actual
+        val recorded = readMarker(jarPath)
+        val actual = recorded?.let { runCatching { FileHashing.sha256(File(jarPath)) }.getOrNull() }
+        return actual != null && recorded == actual
     }
 
     /** Remove the marker (e.g. alongside a deleted/replaced JAR). Best-effort. */
@@ -186,21 +186,18 @@ object PluginBundledTrust {
             try {
                 Files.readString(File(pathFor(jarPath)).toPath()).trim()
             } catch (_: NoSuchFileException) {
-                return null
+                null
             } catch (_: java.io.IOException) {
                 // A directory at the marker path, a permission denial, or any other read
                 // failure is treated identically to absence. Fail closed: the bundled-plugin
                 // exemption is a hint, and an unreadable hint is the same as no hint.
-                return null
+                null
             }
-        return raw.takeIf { isPlausibleDigest(it) }
+        return raw?.takeIf { isPlausibleDigest(it) }
     }
 
     private fun isPlausibleDigest(value: String): Boolean {
         if (value.length != SHA256_HEX_LENGTH) return false
-        for (ch in value) {
-            if (ch !in '0'..'9' && ch !in 'a'..'f') return false
-        }
-        return true
+        return value.all { it in '0'..'9' || it in 'a'..'f' }
     }
 }

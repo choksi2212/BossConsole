@@ -193,11 +193,7 @@ class PluginBundledTrustTest {
                         // Every observation must be either the complete original digest or a
                         // string this object would have refused to publish. In particular,
                         // never a strict prefix.
-                        if (raw != originalDigest &&
-                            raw.isNotEmpty() &&
-                            raw.startsWith(originalDigest.substring(0, originalDigest.length / 2)) &&
-                            raw.length < originalDigest.length
-                        ) {
+                        if (looksLikePartialPrefix(raw, originalDigest)) {
                             partialObserved.compareAndSet(null, raw)
                         }
                     }
@@ -219,4 +215,13 @@ class PluginBundledTrustTest {
             "fixed-name tmp leaked across concurrent writes",
         )
     }
+
+    private fun looksLikePartialPrefix(
+        raw: String,
+        originalDigest: String,
+    ): Boolean =
+        raw != originalDigest &&
+            raw.isNotEmpty() &&
+            raw.length < originalDigest.length &&
+            raw.startsWith(originalDigest.substring(0, originalDigest.length / 2))
 }
