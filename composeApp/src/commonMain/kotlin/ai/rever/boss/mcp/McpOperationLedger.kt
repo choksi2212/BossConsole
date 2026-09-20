@@ -164,6 +164,7 @@ class McpOperationLedger(
      * succeeded - rotation cannot proceed, so the caller bails out and the next
      * attempt gets another chance rather than half-rotating.
      */
+    @Suppress("ReturnCount")
     private fun rotateFile(src: File, dst: File, label: String): Boolean {
         if (src.renameTo(dst)) return true
         val copied = runCatching { src.copyTo(dst, overwrite = true) }.getOrNull()
