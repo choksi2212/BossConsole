@@ -39,7 +39,7 @@ import java.io.File
  * what to do with it). 2 if either jar cannot be read.
  */
 class BossPluginDiffCommand : CliktCommand(name = "diff") {
-    override fun help(context: Context) = "Diffs two plugin jars and reports added/removed permissions, MCP tools, and API version"
+    override fun help(context: Context) = "Diffs two plugin jars and reports added/removed permissions and MCP tools"
 
     private val left by argument(help = "Path to the first plugin jar (typically the older one)")
     private val right by argument(help = "Path to the second plugin jar (typically the newer one)")
@@ -73,7 +73,16 @@ class BossPluginDiffCommand : CliktCommand(name = "diff") {
             // PluginManifestReader returns the api-core type; convert it to the
             // launchpad shape that [PluginDiffer] and [PluginPermission] operate on.
             launchpadJson.decodeFromString(PluginManifest.serializer(), launchpadJson.encodeToString(raw))
-        } catch (e: Exception) {
+        } catch (e: java.io.IOException) {
+            echo("Error: failed to read $label manifest: ${e.message ?: e.javaClass.simpleName}", err = true)
+            throw ProgramResult(2)
+        } catch (e: java.io.FileNotFoundException) {
+            echo("Error: failed to read $label manifest: ${e.message ?: e.javaClass.simpleName}", err = true)
+            throw ProgramResult(2)
+        } catch (e: kotlinx.serialization.SerializationException) {
+            echo("Error: failed to read $label manifest: ${e.message ?: e.javaClass.simpleName}", err = true)
+            throw ProgramResult(2)
+        } catch (e: IllegalArgumentException) {
             echo("Error: failed to read $label manifest: ${e.message ?: e.javaClass.simpleName}", err = true)
             throw ProgramResult(2)
         }
@@ -85,62 +94,97 @@ class BossPluginDiffCommand : CliktCommand(name = "diff") {
         if (json) {
             echo(PluginDiffJson.encode(diff))
         } else {
-            echo("Plugin diff: ${diff.leftId}@${diff.leftVersion}  →  ${diff.rightId}@${diff.rightVersion}")
-            if (diff.leftId != diff.rightId) {
-                echo("  [warn] plugin ids differ: ${diff.leftId} vs ${diff.rightId}")
+            renderHuman(diff)
+        }
+    }
+
+    private fun renderHuman(diff: PluginDiff) {
+        echo(
+            "Plugin diff: ${diff.leftId}@${diff.leftVersion}  →  " +
+                "${diff.rightId}@${diff.rightVersion}",
+        )
+        if (diff.leftId != diff.rightId) {
+            echo("  [warn] plugin ids differ: ${diff.leftId} vs ${diff.rightId}")
+        }
+        if (diff.versionDelta.isNotEmpty()) {
+            echo(
+                "  version: ${diff.leftVersion} → ${diff.rightVersion}  " +
+                    "(${diff.versionDelta})",
+            )
+        }
+        if (diff.apiVersionDelta != null) {
+            echo("  api version: ${diff.leftApiVersion} → ${diff.rightApiVersion}")
+        }
+        if (diff.mainClassDelta != null) {
+            echo("  main class: ${diff.leftMainClass} → ${diff.rightMainClass}")
+        }
+        renderPermissionBuckets(diff)
+        renderUnrecognisedBuckets(diff)
+        renderToolBuckets(diff)
+        renderToolAdminScopeFlips(diff)
+        if (!diff.hasChanges()) echo("  no manifest changes detected")
+    }
+
+    private fun renderPermissionBuckets(diff: PluginDiff) {
+        if (diff.permissionsAdded.isNotEmpty()) {
+            echo("  permissions added (${diff.permissionsAdded.size}):")
+            for (p in diff.permissionsAdded) echo("    + $p")
+        }
+        if (diff.permissionsRemoved.isNotEmpty()) {
+            echo("  permissions removed (${diff.permissionsRemoved.size}):")
+            for (p in diff.permissionsRemoved) echo("    - $p")
+        }
+        if (diff.permissionsKept.isNotEmpty()) {
+            echo(
+                "  permissions kept (${diff.permissionsKept.size}): " +
+                    diff.permissionsKept.joinToString(", "),
+            )
+        }
+    }
+
+    private fun renderUnrecognisedBuckets(diff: PluginDiff) {
+        if (diff.unrecognisedPermissionsAdded.isNotEmpty()) {
+            echo("  UNRECOGNISED permissions added (host has no handler for these):")
+            for (p in diff.unrecognisedPermissionsAdded) echo("    +! $p")
+        }
+        if (diff.unrecognisedPermissionsRemoved.isNotEmpty()) {
+            echo("  UNRECOGNISED permissions removed:")
+            for (p in diff.unrecognisedPermissionsRemoved) echo("    -! $p")
+        }
+    }
+
+    private fun renderToolBuckets(diff: PluginDiff) {
+        if (diff.mcpToolsAdded.isNotEmpty()) {
+            echo("  MCP tools added (${diff.mcpToolsAdded.size}):")
+            for (t in diff.mcpToolsAdded) {
+                val adminSuffix = if (t.adminOnly) " [admin]" else ""
+                echo("    + ${t.pluginId}.${t.toolName}$adminSuffix")
             }
-            if (diff.versionDelta.isNotEmpty()) {
-                echo("  version: ${diff.leftVersion} → ${diff.rightVersion}  (${diff.versionDelta})")
+        }
+        if (diff.mcpToolsRemoved.isNotEmpty()) {
+            echo("  MCP tools removed (${diff.mcpToolsRemoved.size}):")
+            for (t in diff.mcpToolsRemoved) {
+                val adminSuffix = if (t.adminOnly) " [admin]" else ""
+                echo("    - ${t.pluginId}.${t.toolName}$adminSuffix")
             }
-            if (diff.apiVersionDelta != null) {
-                echo("  api version: ${diff.leftApiVersion} → ${diff.rightApiVersion}")
-            }
-            if (diff.mainClassDelta != null) {
-                echo("  main class: ${diff.leftMainClass} → ${diff.rightMainClass}")
-            }
-            if (diff.permissionsAdded.isNotEmpty()) {
-                echo("  permissions added (${diff.permissionsAdded.size}):")
-                for (p in diff.permissionsAdded) echo("    + $p")
-            }
-            if (diff.permissionsRemoved.isNotEmpty()) {
-                echo("  permissions removed (${diff.permissionsRemoved.size}):")
-                for (p in diff.permissionsRemoved) echo("    - $p")
-            }
-            if (diff.permissionsKept.isNotEmpty()) {
-                echo("  permissions kept (${diff.permissionsKept.size}): ${diff.permissionsKept.joinToString(", ")}")
-            }
-            if (diff.unrecognisedPermissionsAdded.isNotEmpty()) {
-                echo("  UNRECOGNISED permissions added (host has no handler for these):")
-                for (p in diff.unrecognisedPermissionsAdded) echo("    +! $p")
-            }
-            if (diff.unrecognisedPermissionsRemoved.isNotEmpty()) {
-                echo("  UNRECOGNISED permissions removed:")
-                for (p in diff.unrecognisedPermissionsRemoved) echo("    -! $p")
-            }
-            if (diff.mcpToolsAdded.isNotEmpty()) {
-                echo("  MCP tools added (${diff.mcpToolsAdded.size}):")
-                for (t in diff.mcpToolsAdded) echo("    + ${t.pluginId}.${t.toolName}${if (t.adminOnly) " [admin]" else ""}")
-            }
-            if (diff.mcpToolsRemoved.isNotEmpty()) {
-                echo("  MCP tools removed (${diff.mcpToolsRemoved.size}):")
-                for (t in diff.mcpToolsRemoved) echo("    - ${t.pluginId}.${t.toolName}${if (t.adminOnly) " [admin]" else ""}")
-            }
-            if (diff.mcpToolsKept.isNotEmpty()) {
+        }
+        if (diff.mcpToolsKept.isNotEmpty()) {
+            echo(
+                "  MCP tools kept (${diff.mcpToolsKept.size}): " +
+                    diff.mcpToolsKept.joinToString(", ") { "${it.pluginId}.${it.toolName}" },
+            )
+        }
+    }
+
+    private fun renderToolAdminScopeFlips(diff: PluginDiff) {
+        if (diff.mcpToolAdminScopeFlipped.isNotEmpty()) {
+            echo("  MCP tool admin-scope flipped (tool kept but its adminOnly flag changed):")
+            for (flip in diff.mcpToolAdminScopeFlipped) {
                 echo(
-                    "  MCP tools kept (${diff.mcpToolsKept.size}): " +
-                        diff.mcpToolsKept.joinToString(", ") { "${it.pluginId}.${it.toolName}" },
+                    "    ~ ${flip.pluginId}.${flip.toolName}: " +
+                        "adminOnly ${flip.leftAdminOnly} → ${flip.rightAdminOnly}",
                 )
             }
-            if (diff.mcpToolAdminScopeFlipped.isNotEmpty()) {
-                echo("  MCP tool admin-scope flipped (tool kept but its adminOnly flag changed):")
-                for (flip in diff.mcpToolAdminScopeFlipped) {
-                    echo(
-                        "    ~ ${flip.pluginId}.${flip.toolName}: " +
-                            "adminOnly ${flip.leftAdminOnly} → ${flip.rightAdminOnly}",
-                    )
-                }
-            }
-            if (!diff.hasChanges()) echo("  no manifest changes detected")
         }
     }
 }
@@ -304,9 +348,15 @@ private object PluginDiffJson {
                 "unrecognisedPermissionsRemoved",
                 buildJsonArray { diff.unrecognisedPermissionsRemoved.forEach { add(it) } },
             )
-            put("mcpToolsAdded", buildJsonArray { diff.mcpToolsAdded.forEach { tool -> addJsonObject { toolJson(tool) } } })
-            put("mcpToolsRemoved", buildJsonArray { diff.mcpToolsRemoved.forEach { tool -> addJsonObject { toolJson(tool) } } })
-            put("mcpToolsKept", buildJsonArray { diff.mcpToolsKept.forEach { tool -> addJsonObject { toolJson(tool) } } })
+            put("mcpToolsAdded", buildJsonArray {
+                diff.mcpToolsAdded.forEach { tool -> addJsonObject { toolJson(tool) } }
+            })
+            put("mcpToolsRemoved", buildJsonArray {
+                diff.mcpToolsRemoved.forEach { tool -> addJsonObject { toolJson(tool) } }
+            })
+            put("mcpToolsKept", buildJsonArray {
+                diff.mcpToolsKept.forEach { tool -> addJsonObject { toolJson(tool) } }
+            })
             put(
                 "mcpToolAdminScopeFlipped",
                 buildJsonArray {
