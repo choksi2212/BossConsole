@@ -36,7 +36,7 @@ import java.io.File
  * not exist or cannot be read.
  */
 class BossLogParseCommand : CliktCommand(name = "log-parse") {
-    override fun help(context: Context) = "Parses BOSS log lines into structured records (timestamp, level, category, component, message)"
+    override fun help(context: Context) = "Parses BOSS log lines into structured records"
 
     private val parser = LogLineParser()
 
@@ -77,9 +77,10 @@ class BossLogParseCommand : CliktCommand(name = "log-parse") {
         } else {
             echo("Parsed ${report.records.size} records (${report.unparsed.size} unparsed)")
             for (rec in report.records) {
-                echo(
-                    "  ${rec.timestamp ?: "?"}  [${rec.level}]  ${rec.category ?: "?"}/${rec.component ?: "?"} - ${rec.message}",
-                )
+                val cat = rec.category ?: "?"
+                val comp = rec.component ?: "?"
+                val ts = rec.timestamp ?: "?"
+                echo("  $ts  [${rec.level}]  $cat/$comp - ${rec.message}")
             }
             if (report.unparsed.isNotEmpty()) {
                 echo("Unparsed lines:")
@@ -168,7 +169,12 @@ class LogLineParser {
             unparsed += trimmed
             return null
         }
-        val (timestamp, levelName, _, category, component, message) = match.destructured
+        val parts = match.destructured
+        val timestamp = parts.component1()
+        val levelName = parts.component2()
+        val category = parts.component4()
+        val component = parts.component5()
+        val message = parts.component6()
         val level = parseLevel(levelName)
         if (level.priority < threshold.priority) return null
         return LogRecord(timestamp, level, category, component, message)
@@ -187,7 +193,11 @@ class LogLineParser {
      */
     private fun tryLowercaseLevelMatch(line: String): MatchResult? {
         val match = lowercaseLevel.matchEntire(line) ?: return null
-        val (timestamp, _, threadName, category, component, message) = match.destructured
+        val parts = match.destructured
+        val timestamp = parts.component1()
+        val category = parts.component4()
+        val component = parts.component5()
+        val message = parts.component6()
         // Synthesise with `INFO` so the primary pattern is satisfied; the
         // original level token is lost in this re-match because the
         // primary regex's level capture group would have been "INFO"
