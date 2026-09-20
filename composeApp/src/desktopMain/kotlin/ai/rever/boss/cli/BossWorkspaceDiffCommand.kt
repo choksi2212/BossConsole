@@ -39,7 +39,7 @@ import java.io.File
  * cannot be read or parsed.
  */
 class BossWorkspaceDiffCommand : CliktCommand(name = "workspace-diff") {
-    override fun help(context: Context) = "Diffs two saved Space files and reports added/removed tabs, panels, and config changes"
+    override fun help(context: Context) = "Diffs two saved Space files"
 
     private val left by argument(help = "Path to the first Space file (typically the older one)")
     private val right by argument(help = "Path to the second Space file (typically the newer one)")
@@ -68,7 +68,13 @@ class BossWorkspaceDiffCommand : CliktCommand(name = "workspace-diff") {
     ): LayoutWorkspace =
         try {
             WorkspaceSerializer.deserialize(file.readText(Charsets.UTF_8))
-        } catch (e: Exception) {
+        } catch (e: java.io.IOException) {
+            echo("Error: failed to parse $label space file: ${e.message ?: e.javaClass.simpleName}", err = true)
+            throw ProgramResult(2)
+        } catch (e: kotlinx.serialization.SerializationException) {
+            echo("Error: failed to parse $label space file: ${e.message ?: e.javaClass.simpleName}", err = true)
+            throw ProgramResult(2)
+        } catch (e: IllegalArgumentException) {
             echo("Error: failed to parse $label space file: ${e.message ?: e.javaClass.simpleName}", err = true)
             throw ProgramResult(2)
         }
@@ -80,41 +86,59 @@ class BossWorkspaceDiffCommand : CliktCommand(name = "workspace-diff") {
         if (json) {
             echo(WorkspaceDiffJson.encode(diff))
         } else {
-            echo("Space diff: ${diff.leftId.ifEmpty { "<no-id>" }} → ${diff.rightId.ifEmpty { "<no-id>" }}")
-            if (diff.nameDelta != null) echo("  name: ${diff.nameDelta}")
-            if (diff.descriptionDelta != null) echo("  description: ${diff.descriptionDelta}")
-            if (diff.projectPathDelta != null) echo("  project path: ${diff.projectPathDelta}")
-            if (diff.breadcrumbDelta != null) echo("  breadcrumb config changed: ${diff.breadcrumbDelta}")
-            if (diff.layoutShapeDelta != null) echo("  layout shape: ${diff.layoutShapeDelta}")
-            if (diff.panelsAdded.isNotEmpty()) {
-                echo("  panels added (${diff.panelsAdded.size}):")
-                for (p in diff.panelsAdded) echo("    + $p")
-            }
-            if (diff.panelsRemoved.isNotEmpty()) {
-                echo("  panels removed (${diff.panelsRemoved.size}):")
-                for (p in diff.panelsRemoved) echo("    - $p")
-            }
-            if (diff.panelsKept.isNotEmpty()) {
-                echo("  panels kept (${diff.panelsKept.size}):")
-                for (p in diff.panelsKept) echo("    = $p")
-            }
-            if (diff.tabsAdded.isNotEmpty()) {
-                echo("  tabs added (${diff.tabsAdded.size}):")
-                for (t in diff.tabsAdded) echo("    + $t")
-            }
-            if (diff.tabsRemoved.isNotEmpty()) {
-                echo("  tabs removed (${diff.tabsRemoved.size}):")
-                for (t in diff.tabsRemoved) echo("    - $t")
-            }
-            if (diff.tabsModified.isNotEmpty()) {
-                echo("  tabs modified (${diff.tabsModified.size}):")
-                for (t in diff.tabsModified) echo("    ~ $t")
-            }
-            if (diff.pinningChanges.isNotEmpty()) {
-                echo("  pinning changes:")
-                for (p in diff.pinningChanges) echo("    $p")
-            }
-            if (!diff.hasChanges()) echo("  no changes detected")
+            renderHuman(diff)
+        }
+    }
+
+    private fun renderHuman(diff: WorkspaceDiff) {
+        val left = diff.leftId.ifEmpty { "<no-id>" }
+        val right = diff.rightId.ifEmpty { "<no-id>" }
+        echo("Space diff: $left → $right")
+        diff.nameDelta?.let { echo("  name: $it") }
+        diff.descriptionDelta?.let { echo("  description: $it") }
+        diff.projectPathDelta?.let { echo("  project path: $it") }
+        diff.breadcrumbDelta?.let { echo("  breadcrumb config changed: $it") }
+        diff.layoutShapeDelta?.let { echo("  layout shape: $it") }
+        renderPanelBuckets(diff)
+        renderTabBuckets(diff)
+        renderPinningChanges(diff)
+        if (!diff.hasChanges()) echo("  no changes detected")
+    }
+
+    private fun renderPanelBuckets(diff: WorkspaceDiff) {
+        if (diff.panelsAdded.isNotEmpty()) {
+            echo("  panels added (${diff.panelsAdded.size}):")
+            for (p in diff.panelsAdded) echo("    + $p")
+        }
+        if (diff.panelsRemoved.isNotEmpty()) {
+            echo("  panels removed (${diff.panelsRemoved.size}):")
+            for (p in diff.panelsRemoved) echo("    - $p")
+        }
+        if (diff.panelsKept.isNotEmpty()) {
+            echo("  panels kept (${diff.panelsKept.size}):")
+            for (p in diff.panelsKept) echo("    = $p")
+        }
+    }
+
+    private fun renderTabBuckets(diff: WorkspaceDiff) {
+        if (diff.tabsAdded.isNotEmpty()) {
+            echo("  tabs added (${diff.tabsAdded.size}):")
+            for (t in diff.tabsAdded) echo("    + $t")
+        }
+        if (diff.tabsRemoved.isNotEmpty()) {
+            echo("  tabs removed (${diff.tabsRemoved.size}):")
+            for (t in diff.tabsRemoved) echo("    - $t")
+        }
+        if (diff.tabsModified.isNotEmpty()) {
+            echo("  tabs modified (${diff.tabsModified.size}):")
+            for (t in diff.tabsModified) echo("    ~ $t")
+        }
+    }
+
+    private fun renderPinningChanges(diff: WorkspaceDiff) {
+        if (diff.pinningChanges.isNotEmpty()) {
+            echo("  pinning changes:")
+            for (p in diff.pinningChanges) echo("    $p")
         }
     }
 }
@@ -159,10 +183,8 @@ object WorkspaceDiffer {
         left: LayoutWorkspace,
         right: LayoutWorkspace,
     ): WorkspaceDiff {
-        val leftPanels = extractPanels(left.layout)
-        val rightPanels = extractPanels(right.layout)
-        val leftById = leftPanels.associateBy { it.id }
-        val rightById = rightPanels.associateBy { it.id }
+        val leftById = extractPanels(left.layout).associateBy { it.id }
+        val rightById = extractPanels(right.layout).associateBy { it.id }
 
         val added = (rightById.keys - leftById.keys).sorted()
         val removed = (leftById.keys - rightById.keys).sorted()
@@ -177,31 +199,15 @@ object WorkspaceDiffer {
         val tabsModified = mutableListOf<String>()
         val pinningChanges = mutableListOf<String>()
         for (panelId in kept) {
-            val leftPanel = leftById.getValue(panelId)
-            val rightPanel = rightById.getValue(panelId)
-            val leftByKey = leftPanel.tabs.associateBy { tabKey(it) }
-            val rightByKey = rightPanel.tabs.associateBy { tabKey(it) }
-            for ((k, lt) in leftByKey) {
-                if (k !in rightByKey) {
-                    tabsRemoved += "$panelId: ${describeTab(lt)}"
-                }
-            }
-            for ((k, rt) in rightByKey) {
-                if (k !in leftByKey) {
-                    tabsAdded += "$panelId: ${describeTab(rt)}"
-                }
-            }
-            for ((k, rt) in rightByKey) {
-                val lt = leftByKey[k] ?: continue
-                if (rt.title != lt.title) {
-                    tabsModified +=
-                        "$panelId: ${describeTab(lt)} → ${describeTab(rt)} (title)"
-                }
-            }
-            if (rightPanel.pinnedCount != leftPanel.pinnedCount) {
-                pinningChanges +=
-                    "$panelId: pinnedCount ${leftPanel.pinnedCount} → ${rightPanel.pinnedCount}"
-            }
+            collectPanelTabChanges(
+                panelId = panelId,
+                leftPanel = leftById.getValue(panelId),
+                rightPanel = rightById.getValue(panelId),
+                tabsAdded = tabsAdded,
+                tabsRemoved = tabsRemoved,
+                tabsModified = tabsModified,
+                pinningChanges = pinningChanges,
+            )
         }
 
         // The set of (panel id) is the flat structure; the SHAPE is the tree
@@ -209,21 +215,19 @@ object WorkspaceDiffer {
         // are different shapes.
         val leftShape = shapeOf(left.layout)
         val rightShape = shapeOf(right.layout)
-        val shapeDelta = if (leftShape != rightShape) "tree differs (${describeShape(leftShape)} → ${describeShape(rightShape)})" else null
+        val shapeDelta =
+            if (leftShape != rightShape) {
+                "tree differs (${describeShape(leftShape)} → ${describeShape(rightShape)})"
+            } else {
+                null
+            }
 
         return WorkspaceDiff(
             leftId = left.id,
             rightId = right.id,
             nameDelta = if (left.name != right.name) "${left.name} → ${right.name}" else null,
             descriptionDelta = if (left.description != right.description) "changed" else null,
-            projectPathDelta =
-                if (left.projectPath !=
-                    right.projectPath
-                ) {
-                    "${left.projectPath ?: "<null>"} → ${right.projectPath ?: "<null>"}"
-                } else {
-                    null
-                },
+            projectPathDelta = projectPathDelta(left, right),
             breadcrumbDelta = breadcrumbDelta(left.breadcrumbConfig, right.breadcrumbConfig),
             layoutShapeDelta = shapeDelta,
             panelsAdded = added,
@@ -235,6 +239,48 @@ object WorkspaceDiffer {
             pinningChanges = pinningChanges.sorted(),
         )
     }
+
+    private fun collectPanelTabChanges(
+        panelId: String,
+        leftPanel: PanelConfig,
+        rightPanel: PanelConfig,
+        tabsAdded: MutableList<String>,
+        tabsRemoved: MutableList<String>,
+        tabsModified: MutableList<String>,
+        pinningChanges: MutableList<String>,
+    ) {
+        val leftByKey = leftPanel.tabs.associateBy { tabKey(it) }
+        val rightByKey = rightPanel.tabs.associateBy { tabKey(it) }
+        for ((k, lt) in leftByKey) {
+            if (k !in rightByKey) {
+                tabsRemoved += "$panelId: ${describeTab(lt)}"
+            }
+        }
+        for ((k, rt) in rightByKey) {
+            if (k !in leftByKey) {
+                tabsAdded += "$panelId: ${describeTab(rt)}"
+            }
+        }
+        for ((k, rt) in rightByKey) {
+            val lt = leftByKey[k] ?: continue
+            if (rt.title != lt.title) {
+                tabsModified += "$panelId: ${describeTab(lt)} → ${describeTab(rt)} (title)"
+            }
+        }
+        if (rightPanel.pinnedCount != leftPanel.pinnedCount) {
+            pinningChanges += "$panelId: pinnedCount ${leftPanel.pinnedCount} → ${rightPanel.pinnedCount}"
+        }
+    }
+
+    private fun projectPathDelta(
+        left: LayoutWorkspace,
+        right: LayoutWorkspace,
+    ): String? =
+        if (left.projectPath != right.projectPath) {
+            "${left.projectPath ?: "<null>"} → ${right.projectPath ?: "<null>"}"
+        } else {
+            null
+        }
 
     private fun tabKey(tab: TabConfig): String {
         val content =
