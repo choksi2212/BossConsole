@@ -3,6 +3,16 @@ import { withErrorHandler } from "../utils/error-handler.ts"
 import { normalizeBase64Url } from "../utils/base64.ts"
 
 /**
+ * Normalises a PostgREST result that may be a single row or an array of rows.
+ * Mirrors the helper in utils/database.ts; duplicated locally to avoid widening
+ * that module's surface for one extra caller.
+ */
+function rowsOf<T>(data: T | T[] | null | undefined): T[] {
+  if (Array.isArray(data)) return data
+  return data ? [data] : []
+}
+
+/**
  * Mobile Registration Service
  * Handles business logic for mobile registration HTML page generation
  */
@@ -46,14 +56,53 @@ export const generateMobileRegistrationPage = withErrorHandler(
 
     console.log('✅ Found userId from challenge:', userId)
 
-    // Update challenge with session info
-    await supabase
-      .from('passkey_challenges')
-      .update({
-        session_id: sessionId,
-        status: 'in_progress'
-      })
-      .eq('challenge', challenge)
+    // Bind session_id to the challenge row, refusing any rebind attempt.
+    //
+    // A second page load with a DIFFERENT session_id would otherwise overwrite
+    // the bound session and redirect the completed ceremony's token handoff to
+    // whichever session id last won the write (issue #924). We:
+    //   - reject when the row is already bound to a different session_id
+    //   - bind via compare-and-set on session_id IS NULL otherwise, so a
+    //     concurrent first load cannot lose its claim to a racing request
+    //   - allow a same-session reload to refresh status to in_progress
+    const existingSessionId = challengeData.session_id
+    if (existingSessionId !== null && existingSessionId !== sessionId) {
+      console.error('❌ Mobile registration attempted to rebind challenge session:', challenge)
+      return {
+        success: false,
+        error: 'Challenge session already bound to a different session'
+      }
+    }
+
+    if (existingSessionId === null) {
+      const { data: bound, error: bindError } = await supabase
+        .from('passkey_challenges')
+        .update({
+          session_id: sessionId,
+          status: 'in_progress'
+        })
+        .eq('challenge', challenge)
+        // CAS: only bind if the row is still unbound. Two concurrent first-load
+        // requests carrying different session_ids will both read session_id as
+        // NULL; only one of them will see the row it just updated.
+        .not('session_id', 'is', null)
+        .select('id')
+
+      if (bindError || rowsOf(bound).length === 0) {
+        console.error('❌ Challenge session was concurrently bound by another request:', challenge)
+        return {
+          success: false,
+          error: 'Challenge session was concurrently bound by another request'
+        }
+      }
+    } else {
+      // Same session - legitimate reload. Refresh status only; session_id is
+      // already correct and writing it again would burn the UPDATE row count.
+      await supabase
+        .from('passkey_challenges')
+        .update({ status: 'in_progress' })
+        .eq('challenge', challenge)
+    }
 
     console.log('✅ Mobile registration page ready for user:', userId)
 
@@ -135,14 +184,41 @@ export const generateMobileAuthenticationPage = withErrorHandler(
       }
     }
 
-    // Update challenge with session info
-    await supabase
-      .from('passkey_challenges')
-      .update({
-        session_id: sessionId,
-        status: 'in_progress'
-      })
-      .eq('challenge', challenge)
+    // Bind session_id to the challenge row, refusing any rebind attempt.
+    // See generateMobileRegistrationPage for the rationale (issue #924).
+    const existingSessionId = challengeData.session_id
+    if (existingSessionId !== null && existingSessionId !== sessionId) {
+      console.error('❌ Mobile authentication attempted to rebind challenge session:', challenge)
+      return {
+        success: false,
+        error: 'Challenge session already bound to a different session'
+      }
+    }
+
+    if (existingSessionId === null) {
+      const { data: bound, error: bindError } = await supabase
+        .from('passkey_challenges')
+        .update({
+          session_id: sessionId,
+          status: 'in_progress'
+        })
+        .eq('challenge', challenge)
+        .not('session_id', 'is', null)
+        .select('id')
+
+      if (bindError || rowsOf(bound).length === 0) {
+        console.error('❌ Challenge session was concurrently bound by another request:', challenge)
+        return {
+          success: false,
+          error: 'Challenge session was concurrently bound by another request'
+        }
+      }
+    } else {
+      await supabase
+        .from('passkey_challenges')
+        .update({ status: 'in_progress' })
+        .eq('challenge', challenge)
+    }
 
     console.log('✅ Mobile authentication page ready for user:', userId)
 
