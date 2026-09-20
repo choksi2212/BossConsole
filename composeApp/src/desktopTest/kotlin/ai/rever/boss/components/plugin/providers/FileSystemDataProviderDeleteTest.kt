@@ -119,7 +119,7 @@ class FileSystemDataProviderDeleteTest {
                 }
             assumeNoException("Symbolic links unavailable on this platform", link.exceptionOrNull())
 
-            val result = runBlocking { provider.delete(link.get().toString()) }
+            val result = runBlocking { provider.delete(link.getOrThrow().toString()) }
 
             assertTrue(result.isFailure, "top-level symlink to outside should be refused")
             assertTrue(
@@ -239,10 +239,10 @@ class FileSystemDataProviderDeleteTest {
             }
         assumeNoException("Symbolic links unavailable on this platform", linkResult.exceptionOrNull())
 
-        val result = runBlocking { provider.delete(linkResult.get().toString()) }
+        val result = runBlocking { provider.delete(linkResult.getOrThrow().toString()) }
 
         assertTrue(result.isSuccess, "in-scope symlink delete should succeed; got $result")
-        assertFalse(Files.exists(linkResult.get()), "the symlink entry should be gone")
+        assertFalse(Files.exists(linkResult.getOrThrow()), "the symlink entry should be gone")
         assertTrue(
             Files.exists(target),
             "the file the symlink pointed at must remain; #1118 must not erase link targets",
