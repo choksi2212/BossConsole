@@ -268,37 +268,43 @@ private suspend fun applyWorkspaceNode(
                 }
             }
 
-            // Then create vertical split for right side
-            // Resolve the first tab up front; if it doesn't map to a supported tab type
-            // (e.g. a legacy panel-host entry in a recovered workspace), skip the split
-            // instead of creating an empty "ghost" panel via splitPanel(tabToMove = null).
-            val firstRightTabInfo = getFirstTab(node.right)?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
-            if (firstRightTabInfo != null) {
-                val rightPanelId =
-                    splitViewState.splitPanel(
-                        panelId = currentPanelId,
-                        orientation = SplitOrientation.VERTICAL,
-                        tabToMove = firstRightTabInfo,
-                    )
-
-                // Add remaining tabs or process splits for right side
-                when (val rightNode = node.right) {
-                    is SinglePanel -> {
-                        // Add remaining tabs
+            // Then split current panel for the right side.
+            //
+            // Skip the split (and the whole right subtree) when the right's first tab can't
+            // be built — an unsupported type, a legacy panel-host entry, or no tabs at all.
+            // An empty splitPanel(tabToMove = null) call would otherwise create a "ghost"
+            // panel that nothing fills.
+            //
+            // Nested (non-SinglePanel) right side: do NOT pre-split on the first tab and then
+            // recurse. The recursion's own SinglePanel branch would add the same first tab a
+            // second time — once from the splitPanel copy and once from its own tabs.forEach —
+            // so a nested VerticalSplit inside the right would materialise its first tab twice.
+            // Recurse directly on the same currentPanelId; the recursion creates its own split
+            // panels for every nested level it walks through. See #1210.
+            val rightNode = node.right
+            val firstRightTabInfo =
+                getFirstTab(rightNode)?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
+            when {
+                rightNode is SinglePanel -> {
+                    if (firstRightTabInfo != null) {
+                        val rightPanelId =
+                            splitViewState.splitPanel(
+                                panelId = currentPanelId,
+                                orientation = SplitOrientation.VERTICAL,
+                                tabToMove = firstRightTabInfo,
+                            )
                         val tabsComponent = splitViewState.getPanelTabsComponent(rightPanelId)
                         rightNode.panel.tabs.drop(1).forEach { tabConfig ->
-                            createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)?.let { tabsComponent?.addTab(it) }
+                            createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)
+                                ?.let { tabsComponent?.addTab(it) }
                         }
-                        // One call per panel restores the whole pinning state, and it is clamped inside setPinnedCount:
-                        // a tab whose type no longer resolves comes back as null above, so fewer tabs can land
-                        // than were saved with this count.
                         tabsComponent?.setPinnedCount(rightNode.panel.pinnedCount)
                     }
+                }
 
-                    else -> {
-                        // Recursively apply right workspace config
-                        applyWorkspaceNode(rightNode, splitViewState, rightPanelId, projectPath)
-                    }
+                else -> {
+                    // Nested: let the recursion own every panel it walks through. No pre-split.
+                    applyWorkspaceNode(rightNode, splitViewState, currentPanelId, projectPath)
                 }
             }
         }
@@ -324,36 +330,34 @@ private suspend fun applyWorkspaceNode(
                 }
             }
 
-            // Then create horizontal split for bottom side
-            // Resolve the first tab up front (see the VerticalSplit note) — never create an
-            // empty split panel for an unsupported first tab.
-            val firstBottomTabInfo = getFirstTab(node.bottom)?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
-            if (firstBottomTabInfo != null) {
-                val bottomPanelId =
-                    splitViewState.splitPanel(
-                        panelId = currentPanelId,
-                        orientation = SplitOrientation.HORIZONTAL,
-                        tabToMove = firstBottomTabInfo,
-                    )
-
-                // Add remaining tabs or process splits for bottom side
-                when (val bottomNode = node.bottom) {
-                    is SinglePanel -> {
-                        // Add remaining tabs
+            // Then split current panel for the bottom side.
+            //
+            // Same shape as VerticalSplit above: nested bottom must NOT pre-split on the first
+            // tab, or the recursion duplicates it. See #1210.
+            val bottomNode = node.bottom
+            val firstBottomTabInfo =
+                getFirstTab(bottomNode)?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
+            when {
+                bottomNode is SinglePanel -> {
+                    if (firstBottomTabInfo != null) {
+                        val bottomPanelId =
+                            splitViewState.splitPanel(
+                                panelId = currentPanelId,
+                                orientation = SplitOrientation.HORIZONTAL,
+                                tabToMove = firstBottomTabInfo,
+                            )
                         val tabsComponent = splitViewState.getPanelTabsComponent(bottomPanelId)
                         bottomNode.panel.tabs.drop(1).forEach { tabConfig ->
-                            createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)?.let { tabsComponent?.addTab(it) }
+                            createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)
+                                ?.let { tabsComponent?.addTab(it) }
                         }
-                        // One call per panel restores the whole pinning state, and it is clamped inside setPinnedCount:
-                        // a tab whose type no longer resolves comes back as null above, so fewer tabs can land
-                        // than were saved with this count.
                         tabsComponent?.setPinnedCount(bottomNode.panel.pinnedCount)
                     }
+                }
 
-                    else -> {
-                        // Recursively apply bottom workspace config
-                        applyWorkspaceNode(bottomNode, splitViewState, bottomPanelId, projectPath)
-                    }
+                else -> {
+                    // Nested: let the recursion own every panel it walks through. No pre-split.
+                    applyWorkspaceNode(bottomNode, splitViewState, currentPanelId, projectPath)
                 }
             }
         }
