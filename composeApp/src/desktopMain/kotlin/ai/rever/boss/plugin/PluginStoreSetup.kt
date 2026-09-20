@@ -2242,13 +2242,30 @@ object PluginStoreSetup {
     /**
      * Read plugin manifest from a JAR file.
      */
+
+    /**
+     * Read plugin manifest from a JAR file.
+     */
+    @Suppress("ReturnCount")
     private fun readPluginManifest(jarFile: File): ai.rever.boss.plugin.api.PluginManifest? {
         return try {
             java.util.jar.JarFile(jarFile).use { jar ->
                 val entry =
                     jar.getJarEntry("META-INF/boss-plugin/plugin.json")
                         ?: return null
-                val content = jar.getInputStream(entry).bufferedReader().readText()
+                // Bounded read - the previous form inflated the whole entry as a String and let
+                // a publisher-controlled system-plugin fallback OOM the host. Route through the
+                // shared 512 KiB cap the rest of the launchpad uses.
+                val content =
+                    DevPluginArtifacts.readBoundedUtf8String(jar.getInputStream(entry))
+                        ?: run {
+                            logger.error(
+                                LogCategory.SYSTEM,
+                                "Plugin manifest entry too large or unreadable",
+                                mapOf("file" to jarFile.name),
+                            )
+                            return null
+                        }
                 manifestJson.decodeFromString<ai.rever.boss.plugin.api.PluginManifest>(content)
             }
         } catch (e: Exception) {

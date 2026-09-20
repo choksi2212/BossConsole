@@ -7,6 +7,7 @@ import ai.rever.boss.plugin.PluginPersistence
 import ai.rever.boss.plugin.PluginStoreSetup
 import ai.rever.boss.plugin.api.PluginManifest
 import ai.rever.boss.plugin.api.PluginState
+import ai.rever.boss.plugin.launchpad.DevPluginArtifacts
 import ai.rever.boss.plugin.repository.PluginWithSource
 import ai.rever.boss.utils.atomicMoveFrom
 import ai.rever.boss.utils.logging.BossLogger
@@ -587,6 +588,7 @@ class PluginInstallService(
     /**
      * Extract plugin manifest from a JAR file.
      */
+    @Suppress("ReturnCount")
     private fun extractManifestFromJar(jarPath: String): PluginManifest? {
         return try {
             val jarFile = JarFile(File(jarPath))
@@ -603,7 +605,19 @@ class PluginInstallService(
                     return null
                 }
 
-                val manifestJson = jar.getInputStream(manifestEntry).bufferedReader().readText()
+                // Bounded read - a DEFLATE entry can be tiny on disk and expand to hundreds of MB.
+                // Unbounded inflation would let a publisher-controlled GitHub release asset OOM
+                // onboarding; cap at the shared 512 KiB manifest size the rest of the launchpad uses.
+                val manifestJson =
+                    DevPluginArtifacts.readBoundedUtf8String(jar.getInputStream(manifestEntry))
+                        ?: run {
+                            logger.warn(
+                                LogCategory.SYSTEM,
+                                "Plugin manifest entry too large or unreadable",
+                                mapOf("jarPath" to jarPath),
+                            )
+                            return null
+                        }
                 val json = Json { ignoreUnknownKeys = true }
                 json.decodeFromString<PluginManifest>(manifestJson)
             }
