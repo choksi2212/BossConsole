@@ -38,11 +38,26 @@ internal object OsOpenArguments {
      */
     internal val CLI_SUBCOMMANDS =
         setOf(
-            "url", "workspace", "file", "folder", "terminal", "status", "doctor",
-            "mcp", "completion", "plugin",
+            "url",
+            "workspace",
+            "file",
+            "folder",
+            "terminal",
+            "status",
+            "doctor",
+            "mcp",
+            "completion",
+            "plugin",
             // New subcommands added in the boss-* CLI suite:
-            "config", "secrets", "diff", "workspace-diff", "project-detect",
-            "port-doctor", "log-parse", "recent", "report",
+            "config",
+            "secrets",
+            "diff",
+            "workspace-diff",
+            "project-detect",
+            "port-doctor",
+            "log-parse",
+            "recent",
+            "report",
         )
 
     /** What a path on disk is, for deciding which deep link to build. */
