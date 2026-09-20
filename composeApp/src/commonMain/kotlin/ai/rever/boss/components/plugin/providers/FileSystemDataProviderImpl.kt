@@ -210,12 +210,14 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                             // Missing - nothing to delete, but treat as success.
                             true
                         }
+
                         Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS) -> {
                             Files.walk(target).use { paths ->
                                 paths.sorted(Comparator.reverseOrder()).forEach { Files.delete(it) }
                             }
                             true
                         }
+
                         else -> {
                             Files.deleteIfExists(target)
                         }
