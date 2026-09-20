@@ -1,6 +1,7 @@
 package ai.rever.boss.dashboard
 
 import ai.rever.boss.plugin.pathutils.BossDirectories
+import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import kotlinx.coroutines.CoroutineScope
@@ -64,6 +65,7 @@ object DashboardStatsManager {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var saveJob: Job? = null
+    private val saveJobLock = Any()
 
     private val _stats = MutableStateFlow(DashboardStats())
     val stats: StateFlow<DashboardStats> = _stats.asStateFlow()
@@ -101,14 +103,23 @@ object DashboardStatsManager {
     /**
      * Save stats to disk with debouncing.
      * Cancels any pending save and schedules a new one after SAVE_DEBOUNCE_MS.
+     *
+     * The cancel-then-assign dance is wrapped in [saveJobLock] - without it, two recorders
+     * arriving concurrently (a navigation event firing recordPageVisit while recordFileOpen
+     * is in flight) can race the lock-less `var` and leak a reference to the prior debounced
+     * job, which then fires and writes stale stats on top of newer ones. The shape is exactly
+     * what the sibling `RecentFilesManager.scheduleSave` (lines 249-256) and
+     * `RecentBrowserPagesManager.scheduleSave` (lines 318-331) use, both pinned by tests.
      */
     private fun scheduleSave() {
-        saveJob?.cancel()
-        saveJob =
-            scope.launch {
-                delay(SAVE_DEBOUNCE_MS)
-                saveImmediately()
-            }
+        synchronized(saveJobLock) {
+            saveJob?.cancel()
+            saveJob =
+                scope.launch {
+                    delay(SAVE_DEBOUNCE_MS)
+                    saveImmediately()
+                }
+        }
     }
 
     /**
@@ -119,7 +130,12 @@ object DashboardStatsManager {
             try {
                 settingsFile.parentFile?.mkdirs()
                 val content = json.encodeToString(DashboardStats.serializer(), _stats.value)
-                settingsFile.writeText(content)
+                // Atomic: `writeText` truncates and then streams, so a crash mid-write leaves a
+                // half-written JSON file that the next load refuses to decode - and the dashboard
+                // numbers a user has been watching all session reset to zero. `atomicWriteText`
+                // stages the bytes in a sibling temp file and moves it into place, matching the
+                // shape every other small JSON file in the host uses.
+                settingsFile.atomicWriteText(content)
             } catch (e: Exception) {
                 dashboardStatsLogger.warn(LogCategory.SYSTEM, "Error saving stats", error = e)
             }
