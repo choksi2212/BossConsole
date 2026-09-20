@@ -2,6 +2,7 @@ package ai.rever.boss.components.workspaces
 
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -80,7 +81,16 @@ class WorkspaceFileNamesConcurrencyTest {
         writer.start()
         reader.start()
         start.countDown()
-        done.await()
+        // Bound the wait so a thread that fails to start on a busy runner cannot pin
+        // the whole desktopTest suite - Windows CI runs tests sequentially
+        // (`parallel=false`) and an unbounded await blocks every later test until the
+        // GitHub runner loses communication. The actual work is 100 map ops per
+        // thread, well under a second even on the slowest host.
+        assertTrue(
+            done.await(30, TimeUnit.SECONDS),
+            "the writer and reader threads did not complete in time - one of them " +
+                "may have failed to start on this runner",
+        )
 
         // Every entry the writer put is in the map at the end - a plain HashMap would
         // lose entries under this exact workload. This is the actual thread-safety contract;
