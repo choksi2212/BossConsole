@@ -61,8 +61,7 @@ class ProjectStatePersistenceTest {
         tempFile.delete()
     }
 
-    private fun project(path: String) =
-        Project(name = path.substringAfterLast('/'), path = path, lastOpened = 0L)
+    private fun project(path: String) = Project(name = path.substringAfterLast('/'), path = path, lastOpened = 0L)
 
     private fun awaitSave() =
         runBlocking {
