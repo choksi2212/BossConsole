@@ -43,7 +43,9 @@ class MenuActionsHandlerConcurrencyTest {
 
             // The map must contain the entry the last writer left. It is not safe to assume
             // which value that was, only that it is one of the values any caller wrote.
-            val actualKey = MenuActionsHandler.splitEnabledState.value.keys.first()
+            val actualKey =
+                MenuActionsHandler.splitEnabledState.value.keys
+                    .first()
             assertEquals(
                 windowId,
                 actualKey,
