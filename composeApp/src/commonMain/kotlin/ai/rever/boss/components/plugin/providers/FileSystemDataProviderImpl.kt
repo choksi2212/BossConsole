@@ -181,22 +181,12 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                     )
                 }
 
-                // Security: Validate path is within user's home directory (prevent path traversal
-                // and symlink escape). Canonicalize to resolve any intermediate symlinks before
-                // deciding whether the resolved target is still inside the home directory.
-                val canonicalFile = file.canonicalFile
-                if (!canonicalFile.absolutePath.startsWith(homeDir.absolutePath + File.separator)) {
-                    return@withContext Result.failure(
-                        SecurityException("Access denied: file path outside user directory"),
-                    )
-                }
-
                 // Recursive deletion must NEVER follow directory symlinks. A permitted directory
-                // under home can contain a nested symlink to an external directory, and
-                // File.deleteRecursively() can traverse that link and remove entries outside the
-                // validated boundary. Files.walk defaults to NOFOLLOW_LINKS, so a symlinked child
-                // is visited as a symlink entry and Files.delete removes the link itself rather
-                // than its target.
+                // can contain a symlink to an external directory, and Files.walk without
+                // NOFOLLOW_LINKS would traverse that link and remove entries outside the
+                // intended target. Files.walk defaults to NOFOLLOW_LINKS, so a symlinked
+                // child is visited as a symlink entry and Files.delete removes the link itself
+                // rather than its target.
                 //
                 // A non-existent target must report success: the pre-fix delete used
                 // File.deleteRecursively(), which returned true for a missing path, and that

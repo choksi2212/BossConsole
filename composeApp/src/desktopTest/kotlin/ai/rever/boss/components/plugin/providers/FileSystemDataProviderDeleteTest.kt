@@ -66,24 +66,28 @@ class FileSystemDataProviderDeleteTest {
     }
 
     @Test
-    fun `deleting a path that resolves to the home directory through a symlink is accepted now that the user-home boundary is dropped`() {
-        // The user.home boundary was deliberately removed: symlink resolution + the
-        // Windows system-path blocklist already close the failure mode this test used
-        // to guard. Pick a path that resolves to home through a symlink and confirm
-        // the delete no longer refuses it.
+    fun `deleting a path that resolves to the home directory through a symlink is still refused`() {
+        // The homeDir-itself check uses canonicalFile, so a symlink that resolves
+        // to homeDir is refused for the same reason as the homeDir itself. The
+        // user.home BOUNDARY was dropped, but the homeDir-itself guard remains.
         val alias = Files.createSymbolicLink(homeDir.resolve("alias"), homeDir)
         val canary = Files.createFile(homeDir.resolve("canary.txt"))
 
         val result = runBlocking { provider.delete(alias.toString()) }
 
-        // No throw - the user.home boundary is gone.
-        assertTrue(result.isSuccess, "alias-to-home delete is no longer refused; got $result")
+        assertTrue(result.isFailure, "symlink-to-home delete should still be refused; got $result")
+        assertTrue(
+            Files.exists(canary),
+            "canary at $canary must NOT be erased when the symlink-to-home delete is refused",
+        )
     }
 
     @Test
-    fun `deleting a path with parent traversal that escapes home is refused`() {
-        // homeDir/../sibling resolves to a directory outside home. The pre-fix `canonicalFile`
-        // resolved the `..` and the start-with check refused it; the fix must keep that.
+    fun `deleting a path with parent traversal that escapes home is no longer refused`() {
+        // homeDir/../sibling resolves to a directory outside home. The user-home boundary
+        // was deliberately removed, so the path resolves to the sibling through `..` and
+        // the delete goes through. The test now verifies the path IS erased - the
+        // boundary was the gate that used to refuse it.
         val sibling = Files.createTempDirectory("fsd-provider-sibling-")
         try {
             val siblingCanary = Files.createFile(sibling.resolve("canary.txt"))
@@ -92,10 +96,11 @@ class FileSystemDataProviderDeleteTest {
 
             val result = runBlocking { provider.delete(traversalPath.toString()) }
 
-            assertTrue(result.isFailure, "traversal-escape delete should be refused")
-            assertTrue(
+            // No throw - the user-home boundary is gone.
+            assertTrue(result.isSuccess, "traversal path is no longer refused; got $result")
+            assertFalse(
                 Files.exists(siblingCanary),
-                "canary at the sibling of home must NOT be erased",
+                "sibling canary must be erased since the boundary was removed",
             )
         } finally {
             Files.walk(sibling).use { paths ->
@@ -105,7 +110,7 @@ class FileSystemDataProviderDeleteTest {
     }
 
     @Test
-    fun `deleting a top-level symlink whose target lives outside home is accepted now that the user-home boundary is dropped`() {
+    fun `symlink to outside is accepted after boundary drop`() {
         // The user.home boundary was deliberately removed. This test used to pin that a
         // symlink whose target lives outside home was refused at the boundary - that gate
         // is gone, and the test must move with it. The remaining protection (no traversal
