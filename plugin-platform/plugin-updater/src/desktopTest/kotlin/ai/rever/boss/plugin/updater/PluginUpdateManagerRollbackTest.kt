@@ -45,15 +45,18 @@ class PluginUpdateManagerRollbackTest {
     private suspend fun PluginUpdateManager.withAvailable(
         pluginId: String,
         currentVersion: String,
-    ) {
+    ): PluginUpdateManager {
         // checkForUpdates seeds _availableUpdates from (pluginId -> installedVersion) vs the
         // store's advertised latest. The test calls this once per scenario before invoking
-        // updatePlugin so the failure path can find its target.
+        // updatePlugin so the failure path can find its target. Returning `this` keeps the
+        // chain `manager(...).withAvailable(...)` typed as `PluginUpdateManager` - earlier
+        // versions declared this without a return type and bound `val mgr` to Unit.
         val result = checkForUpdates(mapOf(pluginId to currentVersion))
         assertTrue(
             result.availableUpdates.any { it.pluginId == pluginId },
             "expected an available update for $pluginId",
         )
+        return this
     }
 
     @Test
