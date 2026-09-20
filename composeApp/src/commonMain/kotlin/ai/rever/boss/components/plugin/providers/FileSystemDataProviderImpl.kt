@@ -197,20 +197,34 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                 // validated boundary. Files.walk defaults to NOFOLLOW_LINKS, so a symlinked child
                 // is visited as a symlink entry and Files.delete removes the link itself rather
                 // than its target.
+                //
+                // A non-existent target must report success: the pre-fix delete used
+                // File.deleteRecursively(), which returned true for a missing path, and that
+                // contract is what plugins and the #1118 boundary test depend on. The existence
+                // check is on the canonical path so a deleted-and-recreated entry cannot be
+                // treated as the original target.
+                val target = file.toPath()
                 val deleted =
-                    if (Files.isDirectory(file.toPath(), LinkOption.NOFOLLOW_LINKS)) {
-                        Files.walk(file.toPath()).use { paths ->
-                            paths.sorted(Comparator.reverseOrder()).forEach { Files.delete(it) }
+                    when {
+                        !Files.exists(target, LinkOption.NOFOLLOW_LINKS) -> {
+                            // Missing - nothing to delete, but treat as success.
+                            true
                         }
-                        true
-                    } else {
-                        Files.deleteIfExists(file.toPath())
+                        Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS) -> {
+                            Files.walk(target).use { paths ->
+                                paths.sorted(Comparator.reverseOrder()).forEach { Files.delete(it) }
+                            }
+                            true
+                        }
+                        else -> {
+                            Files.deleteIfExists(target)
+                        }
                     }
 
                 if (deleted) {
                     Result.success(Unit)
                 } else {
-                    Result.failure(IllegalStateException("Failed to delete (file may not exist or is locked): $path"))
+                    Result.failure(IllegalStateException("Failed to delete (file may be locked): $path"))
                 }
             } catch (e: java.nio.file.NoSuchFileException) {
                 // Treat "not there" as success to match the pre-fix deleteRecursively contract.
