@@ -3,6 +3,7 @@ package ai.rever.boss.window
 import ai.rever.boss.layout.ChromeDensity
 import ai.rever.boss.plugin.pathutils.BossDirectories
 import ai.rever.boss.utils.SystemUtils
+import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import kotlinx.coroutines.Dispatchers
@@ -25,7 +26,12 @@ import java.io.File
  */
 actual object WindowAppearanceSettingsManager {
     private val logger = BossLogger.forComponent("WindowAppearanceSettingsManager")
-    private val settingsFile = BossDirectories.resolve("window-appearance-settings.json")
+
+    /**
+     * Redirected by [resetForTesting] for hermetic unit tests; production code never reassigns
+     * it, the same way the sibling RecentFilesManager does.
+     */
+    internal var settingsFile: File = BossDirectories.resolve("window-appearance-settings.json")
 
     /**
      * Internal, not private, so a test can encode with the REAL instance.
@@ -72,7 +78,7 @@ actual object WindowAppearanceSettingsManager {
                     // Written back immediately, so the step is not re-applied on every launch -
                     // and so a value the user changes afterwards is never overwritten by it.
                     runCatching {
-                        settingsFile.writeText(json.encodeToString(WindowAppearanceSettings.serializer(), migrated))
+                        settingsFile.atomicWriteText(json.encodeToString(WindowAppearanceSettings.serializer(), migrated))
                     }.onFailure { e ->
                         logger.warn(LogCategory.SYSTEM, "Could not write migrated settings", error = e)
                     }
@@ -86,7 +92,7 @@ actual object WindowAppearanceSettingsManager {
                 // Save default settings to file
                 try {
                     val content = json.encodeToString(WindowAppearanceSettings.serializer(), defaults)
-                    settingsFile.writeText(content)
+                    settingsFile.atomicWriteText(content)
                     logger.debug(LogCategory.SYSTEM, "Created default settings", mapOf("path" to settingsFile.absolutePath))
                 } catch (e: Exception) {
                     logger.warn(LogCategory.SYSTEM, "Could not write default settings file", error = e)
@@ -106,12 +112,26 @@ actual object WindowAppearanceSettingsManager {
         withContext(Dispatchers.IO) {
             try {
                 val content = json.encodeToString(WindowAppearanceSettings.serializer(), _currentSettings.value)
-                settingsFile.writeText(content)
+                // Atomic: writeText truncates the target and then streams into it, so a crash
+                // or a concurrent writer arriving mid-write leaves JSON that fails to parse and
+                // the load path drops every chrome preference rather than one. atomicWriteText
+                // writes a unique sibling temp and moves it into place.
+                settingsFile.atomicWriteText(content)
                 logger.debug(LogCategory.SYSTEM, "Settings saved", mapOf("path" to settingsFile.absolutePath))
             } catch (e: Exception) {
                 logger.warn(LogCategory.SYSTEM, "Failed to save settings", error = e)
             }
         }
+
+    /**
+     * Reset manager state for hermetic unit testing and redirect [settingsFile] to [testFile].
+     * Tests must call this again with the real path before finishing, so the singleton is left
+     * where the app and other tests expect it. Mirrors
+     * [ai.rever.boss.dashboard.RecentFilesManager.resetForTesting].
+     */
+    internal fun resetForTesting(testFile: File) {
+        settingsFile = testFile
+    }
 
     /**
      * Update the current settings and save to disk asynchronously.
