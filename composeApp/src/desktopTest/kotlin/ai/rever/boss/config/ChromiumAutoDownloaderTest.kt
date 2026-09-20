@@ -20,6 +20,7 @@ class ChromiumAutoDownloaderTest {
     private val pending get() = File(root, "boss-chromium.pending")
     private val target get() = File(root, "boss-chromium")
     private val backup get() = File(root, "boss-chromium.old")
+    private val swap get() = File(root, "boss-chromium.swap")
 
     /** A staging dir as downloadChromium(staged=true) leaves it on success. */
     private fun makeCompleteStaging(version: String = "9.2.0") {
@@ -169,6 +170,8 @@ class ChromiumAutoDownloaderTest {
                     targetDir = target.toPath(),
                     staged = false,
                     onProgress = {},
+                    swapDir = swap.toPath(),
+                    backupDir = backup.toPath(),
                     fetch = { url, dest ->
                         attempted += url
                         if (url.startsWith("https://supabase")) throw IllegalStateException("supabase down")
@@ -180,6 +183,7 @@ class ChromiumAutoDownloaderTest {
             assertTrue(result.isSuccess)
             assertEquals(listOf("https://supabase/a.zip", "https://github/a.zip"), attempted)
             assertEquals("9.2.0", File(target, "version.txt").readText())
+            assertFalse(swap.exists(), "swap directory should be cleaned up after a successful swap")
         }
 
     @Test
@@ -199,6 +203,8 @@ class ChromiumAutoDownloaderTest {
                     targetDir = target.toPath(),
                     staged = false,
                     onProgress = {},
+                    swapDir = swap.toPath(),
+                    backupDir = backup.toPath(),
                     fetch = { url, dest ->
                         attempted += url
                         // Supabase serves corrupted bytes that won't match goodSha
@@ -228,6 +234,8 @@ class ChromiumAutoDownloaderTest {
                     targetDir = target.toPath(),
                     staged = false,
                     onProgress = {},
+                    swapDir = swap.toPath(),
+                    backupDir = backup.toPath(),
                     fetch = { url, dest ->
                         attempted += url
                         dest.toFile().writeText("good-bytes")
@@ -269,6 +277,8 @@ class ChromiumAutoDownloaderTest {
                     targetDir = target.toPath(),
                     staged = false,
                     onProgress = { p -> if (p.error != null) reportedError = p.error },
+                    swapDir = swap.toPath(),
+                    backupDir = backup.toPath(),
                     fetch = { _, _ -> throw IllegalStateException("network down") },
                     extract = fakeExtract,
                 )
@@ -277,4 +287,131 @@ class ChromiumAutoDownloaderTest {
             assertEquals("network down", reportedError)
             assertFalse(File(target, "version.txt").exists())
         }
+
+    // ---- BossConsole#910: atomic swap + ditto fallback ----
+
+    /**
+     * Regression test for the first half of #910: a failed extraction must NOT
+     * destroy the previously working engine. Before the fix the installer
+     * deleted the existing engine directory before extracting, so a partial
+     * download / corrupted archive left the user with nothing.
+     */
+    @Test
+    fun `extraction failure preserves the existing engine`() =
+        runBlocking {
+            // Pre-existing working engine that must survive a failed reinstall.
+            makeExistingTarget("9.1.2")
+
+            val result =
+                ChromiumAutoDownloader.installFromCandidates(
+                    candidates = listOf(candidate("github", "https://github/a.zip")),
+                    version = "9.2.0",
+                    targetDir = target.toPath(),
+                    staged = false,
+                    onProgress = {},
+                    swapDir = swap.toPath(),
+                    backupDir = backup.toPath(),
+                    fetch = { _, dest -> dest.toFile().writeText("zip-bytes") },
+                    // Extraction "completes" but produces no executable.name marker
+                    // - the verifier rejects the result, simulating a corrupted
+                    // archive or partial download.
+                    extract = { _, _ -> },
+                )
+
+            assertTrue(result.isFailure, "corrupted extraction must fail the install")
+            assertEquals("9.1.2", File(target, "version.txt").readText(), "existing engine must be preserved")
+            assertEquals("old-engine", File(target, "payload.bin").readText(), "existing engine contents must be preserved")
+            assertFalse(swap.exists(), "failed swap directory must be cleaned up")
+            assertFalse(backup.exists(), "no backup directory should exist for a failed extraction that never reached the swap step")
+        }
+
+    /**
+     * Regression test for the second half of #910: when ditto fails on macOS
+     * the installer must NOT silently fall back to [extractWithJava], which
+     * materialises symlinks as text files and leaves the engine unbootable.
+     */
+    @Test
+    fun `ditto extraction failure is surfaced, not silently recovered`() =
+        runBlocking {
+            val result =
+                ChromiumAutoDownloader.installFromCandidates(
+                    candidates = listOf(candidate("github", "https://github/a.zip")),
+                    version = "9.2.0",
+                    targetDir = target.toPath(),
+                    staged = false,
+                    onProgress = {},
+                    swapDir = swap.toPath(),
+                    backupDir = backup.toPath(),
+                    fetch = { _, dest -> dest.toFile().writeText("zip-bytes") },
+                    // Mimic the real extractZip behaviour: on macOS ditto is
+                    // spawned and an exit code != 0 raises. Before the fix the
+                    // failure was caught and extractWithJava was called instead,
+                    // producing a non-booting engine.
+                    extract = { _, _ -> throw IllegalStateException("ditto extraction failed (exit=1)") },
+                )
+
+            assertTrue(result.isFailure, "ditto failure must propagate as install failure")
+            assertFalse(swap.exists(), "failed swap directory must be cleaned up")
+            assertFalse(File(target, "version.txt").exists(), "no engine should be installed after a failed extraction")
+        }
+
+    /**
+     * Regression test for the second half of #910, second case: a successful
+     * extract to the swap dir must be promoted into the live target via
+     * [ChromiumAutoDownloader.atomicInstallSwap] so a transient rename failure
+     * leaves the existing engine intact.
+     */
+    @Test
+    fun `non-staged install swaps from a sibling directory and removes the swap`() =
+        runBlocking {
+            makeExistingTarget("9.1.2")
+
+            val result =
+                ChromiumAutoDownloader.installFromCandidates(
+                    candidates = listOf(candidate("github", "https://github/a.zip")),
+                    version = "9.2.0",
+                    targetDir = target.toPath(),
+                    staged = false,
+                    onProgress = {},
+                    swapDir = swap.toPath(),
+                    backupDir = backup.toPath(),
+                    fetch = { _, dest -> dest.toFile().writeText("zip-bytes") },
+                    extract = fakeExtract,
+                )
+
+            assertTrue(result.isSuccess)
+            assertEquals("9.2.0", File(target, "version.txt").readText(), "new version must be live")
+            assertFalse(swap.exists(), "swap directory must be gone after a successful promote")
+            assertFalse(backup.exists(), "backup directory must be gone after a successful swap")
+        }
+
+    /**
+     * atomicInstallSwap: a swap that finds an unexpected stale directory in
+     * the swap slot cleans it up before renaming the freshly extracted engine.
+     */
+    @Test
+    fun `atomicInstallSwap discards stale swap directory`() {
+        // Stale dir from a previous failed install
+        swap.mkdirs()
+        File(swap, "stale.bin").writeText("stale")
+        makeExistingTarget("9.1.2")
+
+        // Fresh swap content - the installer overwrites the stale one.
+        val freshSwap = File(root, "fresh-swap")
+        freshSwap.mkdirs()
+        File(freshSwap, "executable.name").writeText("BOSS")
+        File(freshSwap, "version.txt").writeText("9.2.0")
+
+        val ok =
+            ChromiumAutoDownloader.atomicInstallSwap(
+                swap = freshSwap,
+                target = target,
+                backup = backup,
+            )
+
+        assertTrue(ok)
+        assertEquals("9.2.0", File(target, "version.txt").readText())
+        assertFalse(freshSwap.exists(), "swap must be consumed by the rename")
+        assertFalse(backup.exists(), "backup must be removed on a successful swap")
+    }
 }
