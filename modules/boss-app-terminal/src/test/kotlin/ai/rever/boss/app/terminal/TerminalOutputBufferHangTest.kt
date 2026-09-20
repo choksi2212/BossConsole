@@ -3,7 +3,6 @@ package ai.rever.boss.app.terminal
 import ai.rever.boss.ipc.proto.services.TerminalOutputChunk
 import com.google.protobuf.ByteString
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -103,13 +102,13 @@ class TerminalOutputBufferHangTest {
             .build()
 
     @Test
-    fun `first() throws TimeoutCancellationException after stream waits past deadline`() =
+    fun `stream collection throws TimeoutCancellationException after stream waits past deadline`() =
         runBlocking {
             val buffer = TerminalOutputBuffer()
             buffer.append(makeChunk("waiting\n", isExit = false))
             val timedOut =
                 try {
-                    withTimeout(STREAM_TIMEOUT_MS) { buffer.stream().first() }
+                    withTimeout(STREAM_TIMEOUT_MS) { buffer.stream().toList() }
                     false
                 } catch (_: TimeoutCancellationException) {
                     true
