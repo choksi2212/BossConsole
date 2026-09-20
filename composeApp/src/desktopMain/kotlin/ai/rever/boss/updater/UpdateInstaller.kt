@@ -821,7 +821,7 @@ object UpdateInstaller {
      * Get current application path for macOS .app bundle
      * Returns null if running in development mode or path cannot be determined
      */
-    @Suppress("NestedBlockDepth")
+    @Suppress("NestedBlockDepth", "ReturnCount")
     fun getCurrentApplicationPath(): String? {
         return try {
             logger.debug(LogCategory.SYSTEM, "Detecting current application path")
@@ -845,7 +845,10 @@ object UpdateInstaller {
             // file on disk. `currentCodeSourceFile` (the sibling method) goes through
             // `toURI()` to dodge this; doing the same here is what lets
             // `installMacOSUpdate` find the bundle in a path with spaces.
-            val codeSourceLocation = UpdateInstaller::class.java.protectionDomain?.codeSource?.location
+            val codeSourceLocation =
+                UpdateInstaller::class.java.protectionDomain
+                    ?.codeSource
+                    ?.location
             val currentFile: File? = codeSourceLocation?.toURI()?.let(::File)
             logger.trace(
                 LogCategory.SYSTEM,
