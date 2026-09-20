@@ -219,8 +219,11 @@ class WorkspaceApplierRestoreTest {
         )
 
     private fun rightPaneTabs(state: SplitViewState): List<String> =
+        // applyWorkspace mints the right pane's id, so find it by position rather than the
+        // configured id (the test's right pane happens to be the one that is NOT "main").
         state
-            .getPanel("right")
+            .getAllPanels()
+            .firstOrNull { it.id != "main" }
             ?.tabsComponent
             ?.tabsState
             ?.value
