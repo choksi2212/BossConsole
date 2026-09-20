@@ -42,7 +42,7 @@ class PluginUpdateManagerRollbackTest {
         return PluginUpdateManager(repositoryManager = repos)
     }
 
-    private fun PluginUpdateManager.withAvailable(
+    private suspend fun PluginUpdateManager.withAvailable(
         pluginId: String,
         currentVersion: String,
     ) {
