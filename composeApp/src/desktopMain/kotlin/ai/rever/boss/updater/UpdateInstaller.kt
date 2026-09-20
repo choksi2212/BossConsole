@@ -836,19 +836,33 @@ object UpdateInstaller {
                 return resolveRealAppPath(bundlePath)
             }
 
-            // Method 2: Try to find app bundle from current JAR/class location
-            val jarPath = UpdateInstaller::class.java.protectionDomain.codeSource.location.path
-            logger.trace(LogCategory.SYSTEM, "Current code source", mapOf("path" to jarPath))
+            // Method 2: Try to find app bundle from current JAR/class location.
+            //
+            // `protectionDomain.codeSource.location` is a `URL`, and `URL.path` is
+            // URL-encoded - so a macOS install under "/Users/Bob Smith/.../BOSS.app"
+            // arrives as "/Users/Bob%20Smith/.../BOSS.app", which never matches any
+            // file on disk. `currentCodeSourceFile` (the sibling method) goes through
+            // `toURI()` to dodge this; doing the same here is what lets
+            // `installMacOSUpdate` find the bundle in a path with spaces.
+            val codeSourceLocation = UpdateInstaller::class.java.protectionDomain?.codeSource?.location
+            val currentFile: File? = codeSourceLocation?.toURI()?.let(::File)
+            logger.trace(
+                LogCategory.SYSTEM,
+                "Current code source",
+                mapOf("path" to (currentFile?.absolutePath ?: "<unavailable>")),
+            )
 
-            var currentFile = File(jarPath)
-            // Walk up the directory tree looking for .app bundle
-            for (i in 0..5) {
-                logger.trace(LogCategory.SYSTEM, "Checking parent", mapOf("index" to i, "path" to currentFile.absolutePath))
-                if (currentFile.name.endsWith(".app")) {
-                    logger.debug(LogCategory.SYSTEM, "Found app bundle via directory traversal", mapOf("path" to currentFile.absolutePath))
-                    return resolveRealAppPath(currentFile.absolutePath)
+            if (currentFile != null) {
+                // Walk up the directory tree looking for .app bundle
+                var currentFileVar = currentFile
+                for (i in 0..5) {
+                    logger.trace(LogCategory.SYSTEM, "Checking parent", mapOf("index" to i, "path" to currentFileVar.absolutePath))
+                    if (currentFileVar.name.endsWith(".app")) {
+                        logger.debug(LogCategory.SYSTEM, "Found app bundle via directory traversal", mapOf("path" to currentFileVar.absolutePath))
+                        return resolveRealAppPath(currentFileVar.absolutePath)
+                    }
+                    currentFileVar = currentFileVar.parentFile ?: break
                 }
-                currentFile = currentFile.parentFile ?: break
             }
 
             // Method 3: Check if running from Applications folder
