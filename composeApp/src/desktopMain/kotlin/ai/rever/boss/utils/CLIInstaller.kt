@@ -286,6 +286,7 @@ actual object CLIInstaller {
     /**
      * Update shell configuration to add PATH
      */
+    @Suppress("LongMethod", "ReturnCount")
     internal fun updateShellConfig(homeDir: String = this.homeDir): ShellConfigResult {
         // Detect shell configuration files
         val shellConfigs =
@@ -328,7 +329,7 @@ actual object CLIInstaller {
                 val content = configFile.readText()
 
                 // Check if PATH is already configured
-                val exportLine = if (shell == "fish") fishPathExport : pathExport
+                val exportLine = if (shell == "fish") fishPathExport else pathExport
                 if (content.contains(".local/bin") && content.contains("PATH")) {
                     return ShellConfigResult(
                         success = true,
@@ -354,7 +355,12 @@ actual object CLIInstaller {
                     skippedReason = null,
                 )
             } catch (e: Exception) {
-                logger.warn(LogCategory.SYSTEM, "Failed to update shell config", mapOf("configPath" to configPath), error = e)
+                logger.warn(
+                    LogCategory.SYSTEM,
+                    "Failed to update shell config",
+                    mapOf("configPath" to configPath),
+                    error = e,
+                )
                 continue
             }
         }
