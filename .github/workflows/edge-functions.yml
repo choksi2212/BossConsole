@@ -152,3 +152,55 @@ jobs:
 
       - name: 🧹 Lint
         run: deno lint
+
+  live-sessions:
+    name: 🖥️ Live Sessions function — check & test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: supabase/functions/live-sessions
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: 🦕 Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: 🔎 Type check
+        run: find . -name '*.ts' -print0 | sort -z | xargs -0 -r deno check
+
+      - name: 🧪 Tests
+        # --allow-all: the suite sets SUPABASE_URL / SUPABASE_ANON_KEY env vars.
+        run: deno test --allow-all
+
+      - name: 🧹 Lint
+        run: deno lint
+
+  redirect:
+    name: ↪️ Redirect function — check & test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: supabase/functions/redirect
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: 🦕 Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: 🔎 Type check
+        run: find . -name '*.ts' -print0 | sort -z | xargs -0 -r deno check
+
+      - name: 🧪 Tests
+        run: deno test --allow-all
+
+      - name: 🧹 Lint (advisory)
+        # Pre-existing findings in app.ts and tests/redirect.test.ts (inline jsr: specifier,
+        # legacy comment); not gating until those are cleaned up. live-sessions lint IS gating.
+        continue-on-error: true
+        run: deno lint
