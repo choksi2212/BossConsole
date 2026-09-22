@@ -196,14 +196,18 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                 // component-aware check above admits it. Without this guard, the recursive
                 // walk below would erase the entire profile.
                 //
-                // Compare canonical paths as strings so the guard holds across the path
-                // representations Windows can produce (short names, trailing separators,
-                // drive-letter casing). File.equals() on Windows already does case-folded
-                // compareTo, but the in-process File objects can disagree on trailing
-                // separators after a symlink resolution in ways a string compare does not.
-                val canonicalTrimmed = canonicalFile.absolutePath.trimEnd('\\', '/')
-                val homeTrimmed = homeDir.absolutePath.trimEnd('\\', '/')
-                if (canonicalTrimmed.equals(homeTrimmed, ignoreCase = true)) {
+                // Compare real paths (symlink-resolved) as case-folded, trailing-slash-trimmed
+                // absolute strings. File.canonicalFile alone is not reliable enough on Windows:
+                // a symlink in a different drive or with reparse-point semantics can land on
+                // a path that File.equals() compares unequal to homeDir even though they name
+                // the same directory.
+                val realCanonicalPath = runCatching { canonicalFile.toPath().toRealPath().toString() }
+                    .getOrDefault(canonicalFile.absolutePath)
+                val realHomePath = runCatching { homeDir.toPath().toRealPath().toString() }
+                    .getOrDefault(homeDir.absolutePath)
+                val realCanonicalTrimmed = realCanonicalPath.trimEnd('\\', '/')
+                val realHomeTrimmed = realHomePath.trimEnd('\\', '/')
+                if (realCanonicalTrimmed.equals(realHomeTrimmed, ignoreCase = true)) {
                     return@withContext Result.failure(
                         SecurityException("Access denied: cannot delete the user home directory"),
                     )
