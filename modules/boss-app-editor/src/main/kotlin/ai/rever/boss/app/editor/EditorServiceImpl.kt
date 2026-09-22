@@ -55,17 +55,20 @@ class EditorServiceImpl : EditorServiceGrpcKt.EditorServiceCoroutineImplBase() {
         }
 
     /**
-     * Canonicalizes [file] so symlinks and `..` are resolved, then rejects anything
-     * that does not land inside the user's home directory. Used by [validatePath].
+     * Canonicalizes [file] so symlinks and `..` are resolved, returning the path the
+     * bytes would actually land at. Used by [validatePath], which then enforces the
+     * confinement and system-root policy on this resolved path rather than on the
+     * raw input string.
+     *
+     * For a path that exists, `Path.toRealPath()` follows every symlink in the chain
+     * (including one sitting where the file itself is) - which is the whole point: a
+     * save through a symlink is judged by where the bytes actually land. For a path
+     * that does not yet exist, the deepest existing ancestor is real-pathed and the
+     * absent tail appended back on, so saving a new file under a freshly-created
+     * directory tree still passes the gate.
      */
     internal fun canonicalPath(file: File): Path {
         val absolute = file.toPath().toAbsolutePath().normalize()
-        // For a path that exists, `Path.toRealPath()` already follows every symlink in the
-        // chain (including one sitting where the file itself is), which is the whole point:
-        // a save through a symlink is judged by where the bytes actually land. For a path
-        // that does not yet exist, the deepest existing ancestor is real-pathed and the
-        // absent tail appended back on, so saving a new file under a freshly-created
-        // directory tree still passes the gate.
         return try {
             absolute.toRealPath()
         } catch (_: IOException) {
@@ -85,20 +88,35 @@ class EditorServiceImpl : EditorServiceGrpcKt.EditorServiceCoroutineImplBase() {
         }
     }
 
-    internal fun validatePath(path: String) {
+    /**
+     * Resolves [path] (canonical, symlink-following) and enforces every gate on the
+     * RESOLVED path, not the raw string. Returns the resolved [Path] so callers like
+     * [saveFile] can write through the validated target - which is what closes the
+     * `$HOME/workspace-link/secret.txt` regression in #885, where `workspace-link` is
+     * a symlink to an outside directory and the raw path was inside home but the
+     * resolved parent was not.
+     *
+     * Three layers, in this order: (1) the raw string for `..` traversal and blanks;
+     * (2) the resolved path against the Windows/POSIX system-path blocklist; (3) the
+     * resolved path against the user's home directory. The blocklist runs on the
+     * resolved path so a workspace symlink to `C:\Windows` lands at `C:\Windows` and
+     * is rejected there, not at the symlink's own name.
+     */
+    internal fun validatePath(path: String): Path {
         require(path.isNotBlank()) { "Path must not be blank" }
         require(!path.contains("..")) { "Path traversal sequences ('..') are not allowed: $path" }
-        val normalized = path.replace('\\', '/').lowercase(Locale.ROOT)
+        val resolved = canonicalPath(File(path))
+        val normalized = resolved.toString().replace('\\', '/').lowercase(Locale.ROOT)
         blockedPrefixes.forEach { prefix ->
             require(!normalized.startsWith(prefix)) {
                 "Access to system path '$prefix' is not allowed: $path"
             }
         }
-        // canonicalPath above resolved every symlink in the chain. The Windows system-path
-        // blocklist above rejected any C:\Windows / C:\Program Files / etc. prefix on the
-        // raw input. Together those two constraints close the failure mode the issue names -
-        // a workspace symlink to C:\Windows no longer slips past because the canonical
-        // path lands at C:\Windows and the blocklist fires there.
+        val userHome = canonicalPath(File(System.getProperty("user.home")))
+        require(resolved.startsWith(userHome)) {
+            "Path '$path' resolves outside the user's home directory: $resolved"
+        }
+        return resolved
     }
 
     // Language-specific main/entry-point patterns
@@ -115,31 +133,39 @@ class EditorServiceImpl : EditorServiceGrpcKt.EditorServiceCoroutineImplBase() {
     override suspend fun openFile(request: OpenFileRequest): OpenFileResponse =
         withContext(Dispatchers.IO) {
             logger.info("openFile: path={}", request.path)
-            validatePath(request.path)
-            val file = File(request.path)
-            if (!file.exists() || !file.isFile) {
-                return@withContext OpenFileResponse
-                    .newBuilder()
-                    .setSuccess(false)
-                    .setErrorMessage("File not found: ${request.path}")
-                    .build()
-            }
             try {
-                val content = file.readText(Charsets.UTF_8)
-                val canonical = canonicalPath(file).toString()
-                openFiles[canonical] = false
-                OpenFileResponse
-                    .newBuilder()
-                    .setSuccess(true)
-                    .setContent(content)
-                    .setLanguage(languageForFile(file))
-                    .build()
-            } catch (e: Exception) {
-                logger.warn("openFile read failed: {}", e.message)
+                val resolved = validatePath(request.path)
+                val file = resolved.toFile()
+                if (!file.exists() || !file.isFile) {
+                    return@withContext OpenFileResponse
+                        .newBuilder()
+                        .setSuccess(false)
+                        .setErrorMessage("File not found: ${request.path}")
+                        .build()
+                }
+                try {
+                    val content = file.readText(Charsets.UTF_8)
+                    openFiles[resolved.toString()] = false
+                    OpenFileResponse
+                        .newBuilder()
+                        .setSuccess(true)
+                        .setContent(content)
+                        .setLanguage(languageForFile(file))
+                        .build()
+                } catch (e: Exception) {
+                    logger.warn("openFile read failed: {}", e.message)
+                    OpenFileResponse
+                        .newBuilder()
+                        .setSuccess(false)
+                        .setErrorMessage(e.message ?: "Read failed")
+                        .build()
+                }
+            } catch (e: IllegalArgumentException) {
+                logger.error("openFile refused for {}: {}", request.path, e.message)
                 OpenFileResponse
                     .newBuilder()
                     .setSuccess(false)
-                    .setErrorMessage(e.message ?: "Read failed")
+                    .setErrorMessage(e.message ?: "Path refused")
                     .build()
             }
         }
@@ -147,11 +173,12 @@ class EditorServiceImpl : EditorServiceGrpcKt.EditorServiceCoroutineImplBase() {
     override suspend fun saveFile(request: SaveFileRequest): Empty =
         withContext(Dispatchers.IO) {
             logger.info("saveFile: path={}", request.path)
-            validatePath(request.path)
             try {
-                atomicWriteText(request.path, request.content, Charsets.UTF_8)
-                val canonical = canonicalPath(File(request.path)).toString()
-                openFiles[canonical] = false
+                val resolved = validatePath(request.path)
+                atomicWriteText(resolved.toString(), request.content, Charsets.UTF_8)
+                openFiles[resolved.toString()] = false
+            } catch (e: IllegalArgumentException) {
+                logger.error("saveFile refused for {}: {}", request.path, e.message)
             } catch (e: Exception) {
                 logger.error("saveFile failed for {}: {}", request.path, e.message)
             }
@@ -217,8 +244,14 @@ class EditorServiceImpl : EditorServiceGrpcKt.EditorServiceCoroutineImplBase() {
     override suspend fun detectMainFunctions(request: DetectMainRequest): DetectMainResponse =
         withContext(Dispatchers.IO) {
             logger.info("detectMainFunctions: path={}", request.path)
-            validatePath(request.path)
-            val file = File(request.path)
+            val resolved =
+                try {
+                    validatePath(request.path)
+                } catch (e: IllegalArgumentException) {
+                    logger.error("detectMainFunctions refused for {}: {}", request.path, e.message)
+                    return@withContext DetectMainResponse.newBuilder().build()
+                }
+            val file = resolved.toFile()
             if (!file.exists() || !file.isFile) return@withContext DetectMainResponse.newBuilder().build()
 
             val functions = mutableListOf<MainFunctionInfo>()

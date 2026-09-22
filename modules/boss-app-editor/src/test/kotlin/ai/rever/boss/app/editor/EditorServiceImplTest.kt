@@ -268,16 +268,40 @@ class EditorServiceSecurityTest {
     }
 
     @Test
-    fun `a symlink inside user home pointing outside is accepted now that the user-home boundary is dropped`() {
+    fun `a symlink inside user home pointing outside is refused once the resolved path is checked`() {
         val inside = tempDir("boss-editor-inside-")
         val target = outsideHomeFile() ?: return
         val link = symlink(File(inside, "alias.txt"), target) ?: return
 
-        // No throw - the user-home boundary was dropped. The remaining
-        // protection (Windows system-path blocklist, no traversal) does not
-        // apply to a path that happens to be a symlink whose target lies
-        // outside the test runner's home.
-        service.validatePath(link.absolutePath)
+        // The raw path lives under the test runner's home, but canonicalPath() resolves
+        // the symlink first - so the gate sees the outside target and refuses. This is
+        // the regression #885 calls out: a workspace symlink to anywhere outside the
+        // user's home must not slip past validation just because the link name is local.
+        assertFailsWith<IllegalArgumentException> {
+            service.validatePath(link.absolutePath)
+        }
+    }
+
+    /**
+     * The exact regression case from kshivang's review of #1404: a path that *names*
+     * a directory under user.home, but whose DIRECTORY is itself a symlink to
+     * somewhere outside home. The previous gate checked only the raw string and let
+     * this through; canonicalPath must follow the parent symlink so the gate sees the
+     * real resolved parent and refuses.
+     */
+    @Test
+    fun `a symlinked parent directory pointing outside is refused by the resolved path`() {
+        val inside = tempDir("boss-editor-inside-")
+        val target = outsideHomeFile() ?: return
+        // Make a directory inside user.home that itself is a symlink to the
+        // outside directory. The user's file at "$inside/link/secret.txt"
+        // resolves to "$outside/secret.txt".
+        val link = symlink(File(inside, "link"), target.parentFile) ?: return
+        val pathInsideLink = File(link, "secret.txt")
+
+        assertFailsWith<IllegalArgumentException> {
+            service.validatePath(pathInsideLink.absolutePath)
+        }
     }
 
     @Test
@@ -291,7 +315,7 @@ class EditorServiceSecurityTest {
     }
 
     @Test
-    fun `a path outside user home is accepted now that the boundary is dropped`() {
+    fun `a path outside user home is refused by the resolved path`() {
         // user.home for the test JVM is the test runner's home. Pick a path that is
         // almost certainly outside it (filesystem root on POSIX, drive root on Windows).
         val outside =
@@ -300,8 +324,9 @@ class EditorServiceSecurityTest {
             } else {
                 File("/__boss_editor_test_outside__/file.txt")
             }
-        // No throw - the user.home boundary was dropped.
-        service.validatePath(outside.absolutePath)
+        assertFailsWith<IllegalArgumentException> {
+            service.validatePath(outside.absolutePath)
+        }
     }
 
     @Test
@@ -311,4 +336,28 @@ class EditorServiceSecurityTest {
         // No throw; canonical path lands inside user.home.
         service.validatePath(target.absolutePath)
     }
+
+    /**
+     * `saveFile` must refuse the resolved target: a save through a symlink that
+     * points outside home is the writing half of #885, and the previous
+     * implementation accepted the request because it called `validatePath` for
+     * the gate but then wrote through the *raw* path string.
+     */
+    @Test
+    fun `saveFile refuses to write through a symlink that resolves outside home`() =
+        runBlocking {
+            val inside = tempDir("boss-editor-inside-")
+            val target = outsideHomeFile() ?: return@runBlocking
+            val link = symlink(File(inside, "alias.txt"), target) ?: return@runBlocking
+
+            service.saveFile(
+                ai.rever.boss.ipc.proto.services.SaveFileRequest
+                    .newBuilder()
+                    .setPath(link.absolutePath)
+                    .setContent("tampered")
+                    .build(),
+            )
+
+            assertEquals("target content", target.readText())
+        }
 }
