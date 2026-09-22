@@ -1,11 +1,11 @@
 package ai.rever.boss.components.plugin.providers
 
-import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogLevel
 import java.io.File
 import java.io.IOException
-import java.util.concurrent.atomic.AtomicReference
+import java.nio.file.FileSystems
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -128,56 +128,52 @@ class GuardedWriteTest {
     }
 
     @Test
-    fun `default write preserves the destination until the rename`() {
-        // Regression for #1106: editor_write_file truncated the existing source before the
-        // replacement was durable, so a crash mid-write left the user with an empty or partial
-        // file. The default writer is atomicWriteText (sibling tmp + rename), so the destination
-        // is intact at the moment the write runs and only swaps on success. We pin that by
-        // reading the file from inside an injected write that mimics the default.
-        val path = tempPath("preserve")
+    fun `default writer preserves the destination when atomic staging fails`() {
+        // Regression for #1106: the DEFAULT lambda is now atomicWriteText, which stages to a
+        // sibling tmp before promoting. If the sibling cannot be created, atomicWriteText throws
+        // BEFORE the target is touched, so guardedWrite returns false with the original bytes
+        // intact. The previous direct writeText() default would have truncated and rewritten the
+        // existing file despite the unwritable directory - so this test passes against
+        // atomicWriteText and FAILS against writeText. The distinction relies on POSIX
+        // file-attribute semantics; on platforms without that view the test is skipped rather
+        // than run vacuously.
+        if (!FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            return
+        }
+
+        val parent = Files.createTempDirectory("boss-guarded-write-").toFile()
+        val target = File(parent, "existing.txt")
         val original = "ORIGINAL ${System.nanoTime()}"
-        File(path).writeText(original)
+        target.writeText(original)
+        // Strip the parent's write bit: existing entries keep their own perms, but no new
+        // siblings (the atomic staging tmp) can be created. writeText would still succeed
+        // against the existing file; atomicWriteText throws before touching the target.
+        parent.setWritable(false)
         try {
-            val observedDuringWrite = AtomicReference<String?>(null)
-            assertTrue(
-                guardedWrite(path, "REPLACEMENT") { file, text ->
-                    observedDuringWrite.set(file.readText())
-                    file.atomicWriteText(text)
-                },
-            )
-            assertEquals(original, observedDuringWrite.get(), "destination must still hold the original")
-            assertEquals("REPLACEMENT", File(path).readText(), "the rename must have replaced the destination")
+            assertFalse(guardedWrite(target.absolutePath, "REPLACEMENT"))
+            assertEquals(original, target.readText(), "the default writer must not have touched the destination")
         } finally {
-            File(path).delete()
+            parent.setWritable(true)
+            target.delete()
+            parent.delete()
         }
     }
 
     @Test
-    fun `failed write leaves the destination intact`() {
-        // The default writer routes through a sibling tmp, so a failure leaves the original
-        // untouched. We pin that here against a writer that throws BEFORE it touches the
-        // destination - if a future change swapped back to writeText, a thrown IOException would
-        // have left the file truncated and this test would catch it.
-        val path = tempPath("fail-intact")
-        val original = "ORIGINAL ${System.nanoTime()}"
-        File(path).writeText(original)
+    fun `default writer replaces via rename and leaves no temp files behind`() {
+        // atomicWriteText stages to a unique sibling tmp, then moves it over the target via the
+        // OS rename primitive. On POSIX the move replaces the inode; writeText modifies the file
+        // in place and preserves the inode. Pin the replacement here so this test cannot pass
+        // vacuously against a hypothetical writeText default - it must actually use rename.
+        // The leftover check is independent of the inode check and stays enforced everywhere.
+        val path = tempPath("rename")
+        File(path).writeText("seed")
         try {
-            assertFalse(
-                guardedWrite(path, "new") { _, _ -> throw IOException("disk full") },
-            )
-            assertEquals(original, File(path).readText(), "the original bytes must survive a failed write")
-        } finally {
-            File(path).delete()
-        }
-    }
-
-    @Test
-    fun `default write leaves no temp files behind`() {
-        // The tmp file is a sibling of the destination. A leak would accumulate in the user's
-        // project directory, so this is worth pinning even though atomicWriteText already cleans
-        // up after itself.
-        val path = tempPath("clean")
-        try {
+            val inodeBefore = if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+                Files.getAttribute(File(path).toPath(), "unix:ino")
+            } else {
+                null
+            }
             repeat(3) { guardedWrite(path, "write $it") }
             val dir = File(path).parentFile
             val name = File(path).name
@@ -187,6 +183,13 @@ class GuardedWriteTest {
                     ?.filter { it.name != name && it.name.startsWith("$name.") && it.name.endsWith(".tmp") }
                     .orEmpty()
             assertTrue(strays.isEmpty(), "unexpected leftovers: ${strays.map { it.name }}")
+            if (inodeBefore != null) {
+                val inodeAfter = Files.getAttribute(File(path).toPath(), "unix:ino")
+                assertTrue(
+                    inodeBefore != inodeAfter,
+                    "atomicWriteText should replace the inode; writeText preserves it",
+                )
+            }
         } finally {
             File(path).delete()
         }
