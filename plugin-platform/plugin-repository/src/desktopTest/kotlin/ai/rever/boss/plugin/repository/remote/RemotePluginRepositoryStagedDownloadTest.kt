@@ -321,4 +321,24 @@ class RemotePluginRepositoryStagedDownloadTest {
             assertEquals(sig, PluginSignatureSidecar.read(path))
             assertTrue(partSiblings(path).isEmpty())
         }
+
+    @Test
+    fun `failed staging allocation clears the download progress entry`() =
+        runBlocking {
+            // No server needed - the failure is at staging allocation, before
+            // any network call. A target under a parent that does not exist
+            // makes Files.createTempFile throw NoSuchFileException. The bug
+            // it pins: downloadProgress[pluginId] is set BEFORE the staging
+            // allocation, so a failing allocation used to leave a stale flow
+            // registered under that id - silently suppressing every later
+            // progress report for the plugin.
+            val impossiblePath = File(tempDir, "missing-parent/never.jar").absolutePath
+
+            val sig = signAnchor("1.0.0")
+            val repo = repositoryReturning(downloadInfo("1.0.0", sig))
+            val result = repo.downloadPlugin(pluginId, "1.0.0", impossiblePath)
+
+            assertTrue(result.isFailure)
+            assertEquals(null, repo.getDownloadProgress(pluginId))
+        }
 }
