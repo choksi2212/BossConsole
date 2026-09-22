@@ -463,14 +463,14 @@ class PluginUpdateManager(
         onProgress: ((Float) -> Unit)? = null,
         onInstalling: (() -> Unit)? = null,
         /**
-         * Invoked with the old jar's path when a freshly downloaded version fails to load.
-         * Without it, `swapPlugin` cannot recover the previous install: the unload has already
+         * Invoked with the plugin id when a freshly downloaded version fails to load. Without
+         * it, `swapPlugin` cannot recover the previous install: the unload has already
          * succeeded by the time loadPlugin returns failure, so the only path back to a working
          * plugin is re-loading the previous jar. The default is a no-op so the public signature
          * does not break callers who never override the host's update path; the host's own
-         * update bridge supplies one backed by `PluginRollbackStore.snapshot`.
+         * update bridge supplies one backed by `PluginRollbackStore.restore`.
          */
-        rollback: suspend (oldJarPath: String) -> Result<Unit> = { Result.success(Unit) },
+        rollback: suspend (pluginId: String) -> Result<Unit> = { Result.success(Unit) },
     ): Result<Unit> {
         val update =
             _availableUpdates.value.find { it.pluginId == pluginId }
