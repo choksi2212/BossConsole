@@ -5,13 +5,16 @@ import ai.rever.boss.utils.BOSS_MACOS_APP_BUNDLE_NAME
 import ai.rever.boss.utils.BOSS_MACOS_BUNDLE_ID
 import ai.rever.boss.utils.Version
 import ai.rever.boss.utils.WindowsProtocolCleanup
+import ai.rever.boss.utils.atomicMoveFrom
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 import java.util.Locale
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -661,14 +664,92 @@ object UpdateInstaller {
                     logger.error(LogCategory.SYSTEM, "Could not determine current JAR path")
                     return@withContext InstallResult.Error("Could not locate current JAR")
                 }
+                val parent = currentJar.parentFile
+                if (parent == null) {
+                    logger.error(LogCategory.SYSTEM, "Current JAR has no parent directory")
+                    return@withContext InstallResult.Error("Current JAR has no parent directory")
+                }
 
-                // Backup current JAR
-                val backupJar = File(currentJar.parentFile, "${currentJar.name}.backup")
-                currentJar.copyTo(backupJar, overwrite = true)
-                logger.debug(LogCategory.SYSTEM, "Backed up current JAR", mapOf("backup" to backupJar.absolutePath))
+                val backupJar = File(parent, "${currentJar.name}.backup")
+                // The download is staged as a sibling `.part` BEFORE the live JAR is
+                // touched. The suffix deliberately does not end in `.jar` so a part file
+                // left by a kill is ignored by the directory scan and cannot look like a
+                // usable JAR. Staging first means a stage failure leaves the live jar
+                // byte-identical and the install fails clean.
+                val stagedDownload = File(parent, "${currentJar.name}.part")
 
-                // Replace current JAR
-                downloadFile.copyTo(currentJar, overwrite = true)
+                // Step 1: stage the download as a sibling. The live jar is still in
+                // place - a stage failure leaves the install untouched.
+                try {
+                    Files.copy(
+                        downloadFile.toPath(),
+                        stagedDownload.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING,
+                    )
+                } catch (e: Exception) {
+                    logger.error(LogCategory.SYSTEM, "Failed to stage the downloaded JAR", error = e)
+                    return@withContext InstallResult.Error(
+                        "Failed to stage the downloaded JAR: ${e.message ?: "Unknown error"}",
+                    )
+                }
+
+                // Step 2: back up the live JAR by atomic move. The previous
+                // `copyTo(overwrite = true)` truncated the live jar before the new
+                // bytes were in place, so a crash between the two copies left both
+                // files half-written. The atomic move is the regression fix; the
+                // part file we just staged is the recovery story for the next step.
+                if (backupJar.exists()) backupJar.delete()
+                try {
+                    backupJar.atomicMoveFrom(currentJar)
+                } catch (e: Exception) {
+                    // Live jar still in place, part still staged. Clean up the
+                    // part and fail clean.
+                    logger.error(LogCategory.SYSTEM, "Failed to back up the live JAR", error = e)
+                    stagedDownload.delete()
+                    return@withContext InstallResult.Error(
+                        "Failed to back up the live JAR: ${e.message ?: "Unknown error"}",
+                    )
+                }
+
+                // Step 3: promote the staged download to the live JAR slot. If this
+                // fails, restore the live jar from the backup so the install leaves
+                // a runnable JAR rather than an empty slot. Without this restore
+                // (and that was the bug the previous fix missed), a failure here
+                // returned Error with no live jar and no usable recovery path.
+                try {
+                    currentJar.atomicMoveFrom(stagedDownload)
+                } catch (e: Exception) {
+                    logger.error(
+                        LogCategory.SYSTEM,
+                        "Failed to promote staged JAR - restoring live JAR from backup",
+                        error = e,
+                    )
+                    var restored = false
+                    try {
+                        currentJar.atomicMoveFrom(backupJar)
+                        restored = true
+                    } catch (restoreError: Exception) {
+                        logger.error(
+                            LogCategory.SYSTEM,
+                            "Failed to restore live JAR from backup",
+                            error = restoreError,
+                        )
+                    }
+                    // Drop the staging file either way - it failed to promote, the
+                    // next launch should re-download rather than reuse partial bytes.
+                    stagedDownload.delete()
+                    // Drop the backup only if we just moved its bytes back into
+                    // place; otherwise it is the user's only path to a runnable
+                    // JAR and stays on disk.
+                    if (restored) backupJar.delete()
+                    return@withContext InstallResult.Error(
+                        "Failed to install the JAR update: ${e.message ?: "Unknown error"}",
+                    )
+                }
+
+                // Step 4: success. The backup holds the old bytes we just replaced -
+                // drop it so the next install sees a clean state.
+                backupJar.delete()
 
                 logger.info(LogCategory.SYSTEM, "JAR updated successfully")
                 InstallResult.Success("Update installed. Restart the app to use the new version.")
