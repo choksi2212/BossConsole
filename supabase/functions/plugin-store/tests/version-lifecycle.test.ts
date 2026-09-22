@@ -298,18 +298,81 @@ Deno.test("getLatestVersion uses maybeSingle(), not single()", async () => {
 // getPluginVersions
 // ---------------------------------------------------------------------------
 
-Deno.test("getPluginVersions filters status='published' so the storefront never lists a pending version", async () => {
+Deno.test("getPluginVersions goes through the viewer-scoped + status-scoped RPC, not a direct table read", async () => {
+  // Review feedback for #912: the previous implementation bypassed the
+  // `get_plugin_versions` RPC with a direct `from('plugin_versions')` read.
+  // That lost three properties the RPC provides:
+  //
+  //   1. the `status = 'published'` filter, so a pending row would surface
+  //      in the storefront version list;
+  //   2. the `user_can_view_plugin_row(viewer, ...)` visibility gate, which
+  //      meant an organisation-private plugin's jar_path / sha256 would be
+  //      served to any caller who knew the plugin id;
+  //   3. the server-side `download_count` join, leaving every version list
+  //      with `downloadCount = 0`.
+  //
+  // Asserting that the call goes through `rpc('get_plugin_versions', ...)` is
+  // the only way to pin all three: a test on the chain cannot tell whether
+  // the RPC is what the function calls.
   const { client, calls } = makeStub({ data: [], error: null })
 
   await getPluginVersions(client, "plugin-uuid")
 
-  assert(
-    hasEq(calls, "status", "published"),
-    "getPluginVersions must hide pending rows; otherwise the version list in the storefront links to a 404 download",
+  const rpcs = calls.filter((c) => c.method === "rpc")
+  assertEquals(
+    rpcs.length,
+    1,
+    "getPluginVersions must call exactly one RPC; a direct from('plugin_versions') read would lose the viewer-scope and download_count joins",
   )
-  assert(
-    hasEq(calls, "plugin_id", "plugin-uuid"),
-    "getPluginVersions must scope by plugin_id",
+  assertEquals(
+    rpcs[0].args[0],
+    "get_plugin_versions",
+    "getPluginVersions must invoke the get_plugin_versions RPC; that is the single source of truth that filters status='published' and joins the viewer-scoped visibility check plus download_count",
+  )
+  assertEquals(
+    rpcs[0].args[1]?.p_plugin_id,
+    "plugin-uuid",
+    "getPluginVersions must pass the plugin id as p_plugin_id so the RPC scopes by it",
+  )
+  // No direct table read should be issued alongside the RPC.
+  assertEquals(
+    calls.filter((c) => c.method === "from").length,
+    0,
+    "getPluginVersions must not also call from('plugin_versions'); the direct read would bypass the RPC's status and visibility filters",
+  )
+})
+
+Deno.test("getPluginVersions still returns the downloadCount the RPC joins in", async () => {
+  // Review feedback for #912: the direct-table read returned no
+  // download_count, leaving every version list at 0. The RPC joins
+  // plugin_downloads server-side, and the caller surfaces that as
+  // downloadCount on each row.
+  const { client } = makeStub({
+    data: [
+      {
+        id: "ver-1",
+        version: "1.2.3",
+        changelog: "changelog",
+        min_boss_version: "1.0.0",
+        min_ipc_version: "1.0.0",
+        min_api_version: "",
+        jar_path: "plugins/foo/1.2.3/foo.jar",
+        jar_size: 12345,
+        sha256: "a".repeat(64),
+        dependencies: [],
+        published_at: "2026-09-20T12:00:00Z",
+        download_count: 42,
+      },
+    ],
+    error: null,
+  })
+
+  const versions = await getPluginVersions(client, "plugin-uuid")
+  assertEquals(versions.length, 1)
+  assertEquals(
+    versions[0].downloadCount,
+    42,
+    "getPluginVersions must surface the server-side download_count from the RPC; the direct table read dropped it",
   )
 })
 

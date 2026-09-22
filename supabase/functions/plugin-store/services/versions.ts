@@ -5,24 +5,33 @@ import { signVersionAnchor } from "../utils/signing.ts"
 /**
  * Get all published versions of a plugin.
  *
- * Pending rows (inserted by `createVersion` but not yet finalized) are NOT
- * returned: they have `sha256='pending'`, `jar_size=0` and a `jar_path`
- * pointing at a storage key that may not exist yet. Returning them to the
- * storefront would let users click on a version that 404s on download. See
- * #912 for the broken-state history.
+ * Goes through the `get_plugin_versions(p_plugin_id)` RPC, which is the
+ * authoritative viewer-scoped + status-scoped source of truth:
+ *
+ *   1. it filters `status = 'published'`, so a row inserted by `createVersion`
+ *      (status='pending', published_at=NULL) is invisible to the storefront
+ *      until `finalizeVersion` runs. Without this filter the row whose
+ *      `sha256` is the literal string `pending` and whose `jar_path` points
+ *      at a storage key that may not exist would 404 every download click.
+ *      See #912.
+ *
+ *   2. it consults `user_can_view_plugin_row(viewer, ...)` so an
+ *      organisation-private plugin's jar_path / sha256 are never exposed to
+ *      a reader outside that organisation. The earlier direct-table read in
+ *      this function bypassed the viewer-scoped RPC and would have leaked
+ *      that information for any org-private plugin the table happened to
+ *      hold. Review feedback for #912.
+ *
+ *   3. it joins `plugin_downloads` server-side so `download_count` is
+ *      populated. The direct-table read dropped that column, leaving every
+ *      version list with `downloadCount = 0`.
  */
 export async function getPluginVersions(
   supabase: SupabaseClient,
   pluginId: string
 ): Promise<PluginVersion[]> {
   const { data, error } = await supabase
-    .from('plugin_versions')
-    .select('*')
-    .eq('plugin_id', pluginId)
-    // Filtered in code rather than via an RPC so the new column is consulted
-    // immediately, without a migration on `get_plugin_versions`.
-    .eq('status', 'published')
-    .order('published_at', { ascending: false })
+    .rpc('get_plugin_versions', { p_plugin_id: pluginId })
 
   if (error) {
     console.error('Error getting plugin versions:', error)
