@@ -77,7 +77,12 @@ class EditorServiceImplTest {
     @Test
     fun `opening a shell file returns the shared language through the RPC response`() =
         runBlocking {
-            val file = Files.createTempFile("boss-language-", ".sh").toFile()
+            // Place the file under user.home so the path gate accepts it. The system
+            // temp directory is OUTSIDE user.home on POSIX (under /var/folders/... on
+            // macOS, /tmp on Linux), and the test JVM's redirected user.home is the
+            // test runner's build dir, not the system temp.
+            val parent = File(System.getProperty("user.home")).toPath()
+            val file = Files.createTempFile(parent, "boss-language-", ".sh").toFile()
             try {
                 file.writeText("echo hello\n")
                 val response = service.openFile(OpenFileRequest.newBuilder().setPath(file.absolutePath).build())
@@ -92,7 +97,8 @@ class EditorServiceImplTest {
     @Test
     fun `opening named files uses shared filename precedence and keeps service defaults`() =
         runBlocking {
-            val directory = Files.createTempDirectory("boss-language-names-").toFile()
+            val parent = File(System.getProperty("user.home")).toPath()
+            val directory = Files.createTempDirectory(parent, "boss-language-names-").toFile()
             val cases =
                 mapOf(
                     "Dockerfile" to "dockerfile",
@@ -140,11 +146,18 @@ class EditorServiceSecurityTest {
     private val service = EditorServiceImpl()
     private val tempDirs = mutableListOf<File>()
 
-    private fun tempDir(prefix: String = "boss-editor-sec-"): File =
-        Files
-            .createTempDirectory(prefix)
+    private fun tempDir(prefix: String = "boss-editor-sec-"): File {
+        // Use the test JVM's redirected user.home as the parent so the path is
+        // unambiguously inside the home boundary on every platform. The system temp
+        // directory lives under user.home on Windows but at /tmp or /var/folders/... on
+        // POSIX, which would let an outside-path test look inside on Windows and an
+        // inside-path test look outside on Linux/macOS.
+        val parent = File(System.getProperty("user.home"))
+        return Files
+            .createTempDirectory(parent.toPath(), prefix)
             .toFile()
             .also { tempDirs.add(it) }
+    }
 
     /** Creates a symlink if the platform allows it; null otherwise. */
     private fun symlink(
