@@ -277,4 +277,237 @@ class ChromiumAutoDownloaderTest {
             assertEquals("network down", reportedError)
             assertFalse(File(target, "version.txt").exists())
         }
+
+    // ---- atomicInstallSwap: non-staged path rollback contract ----
+
+    private val swap get() = File(root, "boss-chromium.swap")
+    private fun makeSwap(version: String = "9.2.0") {
+        swap.mkdirs()
+        File(swap, "executable.name").writeText("BOSS")
+        File(swap, "version.txt").writeText(version)
+        File(swap, "payload.bin").writeText("new-engine")
+    }
+
+    private fun swapNow(rename: (File, File) -> Boolean = { a, b -> a.renameTo(b) }) =
+        ChromiumAutoDownloader.atomicInstallSwap(swap, target, backup, rename)
+
+    @Test
+    fun `atomic swap succeeds when rename of swap into target works`() {
+        makeExistingTarget("9.1.2")
+        makeSwap("9.2.0")
+
+        assertTrue(swapNow())
+        assertEquals("9.2.0", File(target, "version.txt").readText())
+        assertEquals("new-engine", File(target, "payload.bin").readText())
+        assertFalse(swap.exists(), "swap dir must be consumed on success")
+        assertFalse(backup.exists(), "backup must be deleted on success")
+    }
+
+    @Test
+    fun `atomic swap onto a missing target succeeds (fresh install)`() {
+        makeSwap("9.2.0")
+
+        assertTrue(swapNow())
+        assertTrue(target.exists())
+        assertEquals("9.2.0", File(target, "version.txt").readText())
+        assertFalse(swap.exists())
+        assertFalse(backup.exists())
+    }
+
+    @Test
+    fun `promotion failure restores the previous engine from backup`() {
+        // First rename (target -> backup) succeeds; second rename (swap ->
+        // target) fails. The previous engine must end up back in target.
+        makeExistingTarget("9.1.2")
+        makeSwap("9.2.0")
+
+        var moves = 0
+        val renaming: (File, File) -> Boolean = { src, dest ->
+            moves++
+            if (src == swap && dest == target) false else src.renameTo(dest)
+        }
+
+        assertFalse(swapNow(renaming), "swap must report failure when promotion cannot complete")
+        assertEquals("9.1.2", File(target, "version.txt").readText(), "previous engine must be restored into target")
+        assertEquals("old-engine", File(target, "payload.bin").readText())
+        assertFalse(swap.exists(), "swap dir must be cleaned up after a failed promotion")
+        assertFalse(backup.exists(), "backup must be cleaned up after restoration")
+    }
+
+    @Test
+    fun `rollback cannot restore from backup returns failure and preserves the engine in backup`() {
+        // First rename (target -> backup) succeeds; second rename (swap ->
+        // target) fails; backup rename (backup -> target) ALSO fails.
+        // The call must report failure and the only copy of the engine (now
+        // sitting in backup) must survive so manual recovery can put it back.
+        makeExistingTarget("9.1.2")
+        makeSwap("9.2.0")
+
+        val renaming: (File, File) -> Boolean = { src, dest ->
+            // swap -> target and backup -> target both fail
+            if (dest == target) false else src.renameTo(dest)
+        }
+
+        assertFalse(swapNow(renaming), "must report failure when promotion and restore both fail")
+        assertFalse(target.exists(), "without restoration target is gone - caller must re-download")
+        assertTrue(
+            backup.exists(),
+            "backup holds the only copy of the engine when restoration fails - it must survive for manual recovery",
+        )
+        assertEquals("9.1.2", File(backup, "version.txt").readText(), "backup must hold the live engine's data")
+        assertFalse(swap.exists(), "swap dir must be cleaned up")
+    }
+
+    @Test
+    fun `move-aside failure returns failure and preserves the live engine`() {
+        // target exists but target -> backup rename fails. Live engine must
+        // remain in target; swap must be cleaned up so the next attempt starts
+        // clean.
+        makeExistingTarget("9.1.2")
+        makeSwap("9.2.0")
+
+        val renaming: (File, File) -> Boolean = { src, dest ->
+            // only the move-aside fails
+            if (src == target && dest == backup) false else src.renameTo(dest)
+        }
+
+        assertFalse(swapNow(renaming))
+        assertEquals("9.1.2", File(target, "version.txt").readText(), "live engine must be untouched when move-aside fails")
+        assertEquals("old-engine", File(target, "payload.bin").readText())
+        assertFalse(swap.exists(), "swap dir must be cleaned up so retry isn't blocked by stale files")
+        assertFalse(backup.exists())
+    }
+
+    @Test
+    fun `atomic swap exception during rename is logged and returns failure`() {
+        makeExistingTarget("9.1.2")
+        makeSwap("9.2.0")
+
+        val renaming: (File, File) -> Boolean = { _, _ ->
+            throw RuntimeException("simulated AV scanner killed rename")
+        }
+
+        assertFalse(swapNow(renaming))
+        // Exception path leaves target/backup/swap as it found them (no half-state).
+        // The catch block attempts a best-effort restore but it also throws here.
+        assertFalse(swap.exists(), "swap cleanup is best-effort but must not throw past the function")
+    }
+
+    // ---- Hard-kill mid-swap recovery at startup ----
+
+    /**
+     * Recovers the same way [promotePendingInstall] does at app startup: a leftover
+     * `boss-chromium.old` with no live `boss-chromium` is promoted back into place
+     * before any new swap runs. The function under test is private, so the test
+     * drives the public entry point after seeding the hard-kill state.
+     */
+    private fun recoverAfterHardKill(): Boolean {
+        // Use the no-arg overload which runs recoverInterruptedSwap first.
+        ChromiumAutoDownloader.promotePendingInstall(
+            pending = File(root, "boss-chromium.pending"),
+            target = target,
+            backup = backup,
+        )
+        return target.exists()
+    }
+
+    @Test
+    fun `hard-kill recovery promotes backup back into target on next startup`() {
+        // Simulate: previous swap moved target -> backup, then process died.
+        // No new pending install exists.
+        makeExistingTarget("9.1.2")
+        File(target, "payload.bin").delete()
+        target.deleteRecursively()
+        // Now "backup" holds the engine the user actually had:
+        File(backup, "version.txt").writeText("9.1.2")
+        File(backup, "executable.name").writeText("BOSS")
+        File(backup, "payload.bin").writeText("old-engine")
+
+        assertTrue(recoverAfterHardKill())
+        assertEquals("9.1.2", File(target, "version.txt").readText())
+        assertEquals("old-engine", File(target, "payload.bin").readText())
+        assertFalse(backup.exists(), "backup must be consumed by recovery")
+    }
+
+    @Test
+    fun `hard-kill recovery is a no-op when target still exists`() {
+        // If both target and backup exist (a swap somehow landed twice), do not
+        // clobber the live engine.
+        makeExistingTarget("9.1.2")
+        File(backup, "version.txt").writeText("9.0.0")
+        File(backup, "payload.bin").writeText("older")
+
+        assertTrue(recoverAfterHardKill())
+        assertEquals("9.1.2", File(target, "version.txt").readText(), "live engine must win over a stale backup")
+        assertEquals("old-engine", File(target, "payload.bin").readText())
+    }
+
+    @Test
+    fun `hard-kill recovery is a no-op when neither target nor backup exists`() {
+        // Fresh install scenario - nothing to recover.
+        assertTrue(recoverAfterHardKill())
+        assertFalse(target.exists())
+        assertFalse(backup.exists())
+    }
+
+    @Test
+    fun `failed extraction of non-staged install preserves the live engine`() =
+        runBlocking {
+            // Simulate a non-staged download whose extraction fails partway: the
+            // extract lambda throws after the swap dir was created. The swap
+            // dir is cleaned up before rethrow and the live engine is untouched.
+            makeExistingTarget("9.1.2")
+            val beforeVersion = File(target, "version.txt").readText()
+
+            val result =
+                ChromiumAutoDownloader.installFromCandidates(
+                    candidates = listOf(candidate("github", "https://github/a.zip")),
+                    version = "9.2.0",
+                    targetDir = target.toPath(),
+                    staged = false,
+                    onProgress = {},
+                    swapDir = File(root, "boss-chromium.swap").toPath(),
+                    backupDir = File(root, "boss-chromium.old").toPath(),
+                    fetch = { _, dest -> dest.toFile().writeText("zip-bytes") },
+                    extract = { _, _ -> throw IllegalStateException("extraction blew up") },
+                )
+
+            assertTrue(result.isFailure)
+            assertEquals(beforeVersion, File(target, "version.txt").readText(), "live engine must be untouched")
+            assertFalse(
+                File(root, "boss-chromium.swap").exists(),
+                "stale swap dir must be cleaned up so the next install starts fresh",
+            )
+            assertFalse(File(root, "boss-chromium.old").exists())
+        }
+
+    @Test
+    fun `failed extraction of staged install leaves the pending dir alone`() =
+        runBlocking {
+            // Staged installs do not touch the live engine, so a failed
+            // extraction must leave both the live engine and the existing
+            // pending dir alone for the next try.
+            makeExistingTarget("9.1.2")
+            val pendingDir = File(root, "boss-chromium.pending")
+            pendingDir.mkdirs()
+            File(pendingDir, "old-pending.bin").writeText("leftover")
+
+            val result =
+                ChromiumAutoDownloader.installFromCandidates(
+                    candidates = listOf(candidate("github", "https://github/a.zip")),
+                    version = "9.2.0",
+                    targetDir = pendingDir.toPath(),
+                    staged = true,
+                    onProgress = {},
+                    fetch = { _, dest -> dest.toFile().writeText("zip-bytes") },
+                    extract = { _, _ -> throw IllegalStateException("extraction blew up") },
+                )
+
+            assertTrue(result.isFailure)
+            assertEquals("9.1.2", File(target, "version.txt").readText(), "live engine must be untouched")
+            assertTrue(
+                File(pendingDir, "old-pending.bin").exists(),
+                "staged extraction cleans up its own partial files but does not sweep a prior pending dir",
+            )
+        }
 }

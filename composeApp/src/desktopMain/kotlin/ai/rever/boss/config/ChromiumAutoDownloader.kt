@@ -78,6 +78,16 @@ object ChromiumAutoDownloader {
     /** Staging directory for engine installs done while the current engine is running. */
     fun getPendingChromiumDir(): Path = BossDirectories.resolve("boss-chromium.pending").toPath()
 
+    /** Sibling staging directory used for atomic non-staged installs. */
+    internal fun getSwapChromiumDir(): Path = BossDirectories.resolve("boss-chromium.swap").toPath()
+
+    /**
+     * Backup directory used during the install swap so the live engine can be
+     * restored if the rename fails on Windows (where lingering file handles
+     * or antivirus scans make [File.renameTo] unreliable).
+     */
+    internal fun getBackupChromiumDir(): Path = BossDirectories.resolve("boss-chromium.old").toPath()
+
     /** The version of the currently installed engine, or null if none/unknown. */
     fun installedVersion(): String? = installedVersionAt(getChromiumDir())
 
@@ -108,26 +118,37 @@ object ChromiumAutoDownloader {
      * Swap in an engine staged by a Settings-triggered install (see [downloadChromium]
      * with staged=true). Must be called at startup BEFORE [isChromiumInstalled] /
      * engine creation, while nothing holds files in the engine directory.
+     *
+     * Also recovers from a hard-kill mid-swap: if [getBackupChromiumDir] exists but
+     * the target engine directory is missing, the backup is promoted back into place
+     * before any new swap runs.
      */
     fun promotePendingInstall() {
         promotePendingInstall(
             pending = getPendingChromiumDir().toFile(),
             target = getChromiumDir().toFile(),
-            backup = BossDirectories.resolve("boss-chromium.old"),
+            backup = getBackupChromiumDir(),
         )
     }
 
-    // Directory params are injectable for tests.
+    // Directory params and rename are injectable for tests.
     internal fun promotePendingInstall(
         pending: File,
         target: File,
         backup: File,
+        rename: (File, File) -> Boolean = { src, dest -> src.renameTo(dest) },
     ) {
+        // Always recover from a hard-kill mid-swap first, regardless of whether
+        // a new pending install exists. A leftover backup with no live engine is
+        // the worst case (the user has no engine at all), so it has to win over
+        // the pending-install fast path below.
+        recoverInterruptedSwap(target, backup, rename)
+
         if (!pending.exists()) return
 
         try {
             if (!pending.resolve(STAGED_COMPLETE_MARKER).exists()) {
-                // Interrupted staged download — the marker is written strictly last,
+                // Interrupted staged download - the marker is written strictly last,
                 // so its absence means extraction never completed. Discard.
                 pending.deleteRecursively()
                 logger.info(LogCategory.BROWSER, "Discarded incomplete pending engine install")
@@ -135,20 +156,20 @@ object ChromiumAutoDownloader {
             }
 
             // Swap via a backup dir so a failed rename (File.renameTo is
-            // platform-dependent — lingering handles/AV on Windows can make it
+            // platform-dependent - lingering handles/AV on Windows can make it
             // return false) never destroys the only working engine: the current
             // engine is moved aside, restored if promotion fails, and deleted
             // only after the staged engine is in place.
             if (backup.exists()) backup.deleteRecursively() // stale backup from an earlier failed swap
 
-            if (target.exists() && !target.renameTo(backup)) {
+            if (target.exists() && !rename(target, backup)) {
                 logger.warn(
                     LogCategory.BROWSER,
                     "Could not move current engine aside; keeping staged install for next launch",
                 )
                 return
             }
-            if (pending.renameTo(target)) {
+            if (rename(pending, target)) {
                 target.resolve(STAGED_COMPLETE_MARKER).delete()
                 backup.deleteRecursively()
                 logger.info(
@@ -164,7 +185,7 @@ object ChromiumAutoDownloader {
                         ),
                     ),
                 )
-            } else if (backup.exists() && backup.renameTo(target)) {
+            } else if (backup.exists() && rename(backup, target)) {
                 logger.warn(
                     LogCategory.BROWSER,
                     "Could not promote pending engine install; previous engine restored",
@@ -177,6 +198,99 @@ object ChromiumAutoDownloader {
             }
         } catch (e: Exception) {
             logger.warn(LogCategory.BROWSER, "Error promoting pending engine install", error = e)
+        }
+    }
+
+    /**
+     * If a previous swap died between `target.renameTo(backup)` and the cleanup,
+     * the live engine lives in the backup dir. Restore it before doing anything
+     * else: every later check assumes `boss-chromium` is the engine the user has.
+     */
+    internal fun recoverInterruptedSwap(
+        target: File = getChromiumDir().toFile(),
+        backup: File = getBackupChromiumDir().toFile(),
+        rename: (File, File) -> Boolean = { src, dest -> src.renameTo(dest) },
+    ) {
+        if (!backup.exists()) return
+        if (target.exists()) return // nothing to recover - a partial backup is just dead disk
+        if (!rename(backup, target)) {
+            logger.error(
+                LogCategory.BROWSER,
+                "Found orphaned engine backup from an interrupted swap but could not restore it; will re-download",
+            )
+        } else {
+            logger.info(LogCategory.BROWSER, "Restored engine from interrupted swap backup")
+        }
+    }
+
+    /**
+     * Atomically replace [target] with [swap], keeping the previous [target] in
+     * [backup] until the swap is verified, then deleting [backup]. If any rename
+     * step fails the live engine is restored from [backup] and the swap is left
+     * to be retried.
+     *
+     * Used by the non-staged install path so a failed extraction never destroys
+     * the only working engine (the host has no other copy to fall back on, unlike
+     * the staged path where [promotePendingInstall] runs at startup with nothing
+     * holding files in the engine directory).
+     *
+     * Directory params and the rename verb are injectable for tests so a failure
+     * mid-swap can be pinned without depending on the platform-specific
+     * `File.renameTo` to misbehave.
+     */
+    internal fun atomicInstallSwap(
+        swap: File,
+        target: File,
+        backup: File,
+        rename: (File, File) -> Boolean = { src, dest -> src.renameTo(dest) },
+    ): Boolean {
+        try {
+            if (backup.exists()) backup.deleteRecursively()
+
+            if (target.exists() && !rename(target, backup)) {
+                logger.error(
+                    LogCategory.BROWSER,
+                    "Could not move current engine aside during install swap; leaving existing engine in place",
+                )
+                swap.deleteRecursively()
+                return false
+            }
+
+            if (rename(swap, target)) {
+                backup.deleteRecursively()
+                logger.info(LogCategory.BROWSER, "Atomic engine swap complete")
+                return true
+            }
+
+            // swap rename failed - restore target from backup if we can
+            if (backup.exists() && rename(backup, target)) {
+                logger.error(
+                    LogCategory.BROWSER,
+                    "Could not promote swap into engine directory; previous engine restored",
+                )
+            } else {
+                logger.error(
+                    LogCategory.BROWSER,
+                    "Engine swap failed and previous engine could not be restored; re-download required",
+                )
+            }
+            swap.deleteRecursively()
+            return false
+        } catch (e: Exception) {
+            logger.warn(LogCategory.BROWSER, "Error during atomic engine swap", error = e)
+            try {
+                if (backup.exists() && !target.exists() && rename(backup, target)) {
+                    logger.warn(LogCategory.BROWSER, "Restored previous engine from backup")
+                }
+            } catch (_: Exception) {
+                // best-effort restore; logged above
+            }
+            try {
+                swap.deleteRecursively()
+            } catch (_: Exception) {
+                // best-effort cleanup
+            }
+            return false
         }
     }
 
@@ -421,6 +535,14 @@ object ChromiumAutoDownloader {
      * Try each download candidate in order: fetch, verify checksum (when the
      * catalog provides one), extract, stamp version. The transfer and extract
      * steps are injectable for tests.
+     *
+     * @param swapDir Sibling directory used as the staging area for non-staged
+     *   installs. Defaults to [getSwapChromiumDir]. For staged installs the
+     *   pending dir is isolated from the live engine and this parameter is
+     *   unused.
+     * @param backupDir Directory used as the rollback target during the atomic
+     *   swap of non-staged installs. Defaults to [getBackupChromiumDir]. For
+     *   staged installs this parameter is unused.
      */
     internal suspend fun installFromCandidates(
         candidates: List<EngineDownloadCandidate>,
@@ -428,6 +550,8 @@ object ChromiumAutoDownloader {
         targetDir: Path,
         staged: Boolean,
         onProgress: (DownloadProgress) -> Unit,
+        swapDir: Path = getSwapChromiumDir(),
+        backupDir: Path = getBackupChromiumDir(),
         fetch: (String, Path) -> Unit = { url, dest -> downloadWithProgress(url, dest, onProgress) },
         extract: (Path, Path) -> Unit = { zip, dest -> extractZip(zip, dest) },
     ): Result<Path> {
@@ -485,16 +609,27 @@ object ChromiumAutoDownloader {
                     // Update status to extracting
                     onProgress(DownloadProgress(0, 0, isExtracting = true))
 
-                    // Delete existing directory if present
-                    if (targetDir.toFile().exists()) {
-                        targetDir.toFile().deleteRecursively()
+                    // Decide where to extract. For staged installs the pending
+                    // dir is isolated from the live engine, so we extract
+                    // directly. For non-staged installs we extract to a SIBLING
+                    // swap directory so the existing engine is never destroyed
+                    // before the new one is verified - a failed extraction must
+                    // never leave the host without a working engine
+                    // (BossConsole#910).
+                    val extractDir: Path = if (staged) targetDir else swapDir
+                    val extractDirFile = extractDir.toFile()
+
+                    // Clean up any stale swap dir from a previous failed install
+                    // before we start, otherwise stale files would survive.
+                    if (extractDirFile.exists()) {
+                        extractDirFile.deleteRecursively()
                     }
 
                     // Extract
-                    extract(tempFile, targetDir)
+                    extract(tempFile, extractDir)
 
                     // Verify extraction produced executable.name
-                    val executableNameFile = targetDir.resolve("executable.name").toFile()
+                    val executableNameFile = extractDir.resolve("executable.name").toFile()
                     if (!executableNameFile.exists()) {
                         throw IllegalStateException(
                             "Extraction completed but executable.name not found. " +
@@ -503,13 +638,25 @@ object ChromiumAutoDownloader {
                     }
 
                     // Write version file to track installed version
-                    targetDir.resolve(VERSION_FILE).toFile().writeText(version)
+                    extractDir.resolve(VERSION_FILE).toFile().writeText(version)
                     logger.debug(LogCategory.BROWSER, "Version file written", mapOf("version" to version))
 
                     // Written last: promotePendingInstall refuses staging dirs
                     // without this marker.
                     if (staged) {
-                        targetDir.resolve(STAGED_COMPLETE_MARKER).toFile().writeText(version)
+                        extractDir.resolve(STAGED_COMPLETE_MARKER).toFile().writeText(version)
+                    }
+
+                    // Promote the new engine into the live target. Staged
+                    // installs extract straight into the pending dir; non-staged
+                    // installs use an atomic swap so a failed rename never
+                    // destroys the only working engine.
+                    if (!staged) {
+                        if (!atomicInstallSwap(extractDirFile, targetDir.toFile(), backupDir.toFile())) {
+                            throw IllegalStateException(
+                                "Atomic engine swap failed; existing engine preserved for retry",
+                            )
+                        }
                     }
 
                     // Clean up old JxBrowser default Chromium directory if it exists
@@ -634,6 +781,16 @@ object ChromiumAutoDownloader {
 
     /**
      * Extract using macOS native `ditto` which preserves symlinks and code signatures.
+     *
+     * The previous fallback to [extractWithJava] on ditto failure was destructive
+     * (BossConsole#910): the Java extractor materialises symlink entries as small
+     * regular text files containing the target path, so a
+     * `Chromium Framework.framework/Versions/Current` that should be a symlink
+     * becomes a literal text file with no useful contents. macOS frameworks rely
+     * on those links being real symlinks; without them the engine boots silently
+     * broken and the install is reported as success. We now surface ditto failures
+     * instead and let the caller decide - the user gets a real error rather than
+     * a non-booting engine that survives every restart.
      */
     private fun extractWithDitto(
         zipPath: Path,
@@ -646,12 +803,10 @@ object ChromiumAutoDownloader {
         val output = process.inputStream.bufferedReader().readText()
         val exitCode = process.waitFor()
         if (exitCode != 0) {
-            logger.warn(
-                LogCategory.BROWSER,
-                "ditto extraction failed, falling back to Java",
-                mapOf("exitCode" to exitCode, "output" to output),
-            )
-            extractWithJava(zipPath, targetDir)
+            val message =
+                "ditto extraction failed (exit=$exitCode): $output"
+            logger.error(LogCategory.BROWSER, message)
+            throw IllegalStateException(message)
         }
     }
 
