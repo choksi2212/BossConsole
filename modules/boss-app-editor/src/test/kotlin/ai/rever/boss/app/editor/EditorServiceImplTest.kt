@@ -5,6 +5,7 @@ import ai.rever.boss.plugin.language.LanguageIds
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.nio.file.Files
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -17,7 +18,9 @@ import kotlin.test.assertTrue
  * consolidation fixes, not just a refactor with no observable effect.
  */
 class EditorServiceImplTest {
-    @kotlin.test.BeforeTest
+    private lateinit var service: EditorServiceImpl
+
+    @BeforeTest
     fun setUp() {
         // EditorServiceImpl confines all paths to the user's home since #885; the
         // OS temp dir is outside the real home (not a prefix on any of the
@@ -27,8 +30,6 @@ class EditorServiceImplTest {
         // rather than via a process-global user.home mutation.
         service = EditorServiceImpl(root = File(System.getProperty("java.io.tmpdir")))
     }
-
-    private lateinit var service: EditorServiceImpl
 
     @Test
     fun `shell extensions now agree with the shared table, not the old local one`() {

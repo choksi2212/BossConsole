@@ -100,9 +100,11 @@ class EditorServiceImpl(
         // past it would resolve the anchor one level too high and judge the link's
         // own location instead of the target it names. A DANGLING symlink inside
         // the root is therefore its own anchor: toRealPath fails on it and the
-        // path is refused (NOT_FOUND inside the root, INVALID_ARGUMENT outside) -
-        // fail-closed; a save through a link nobody can follow is not a save the
-        // user can expect. Traversal is covered by the resolution itself, so the
+        // path is refused (NOT_FOUND inside the root, PERMISSION_DENIED
+        // outside) - fail-closed; a save through a link nobody can follow is
+        // not a save the user can expect, and the refusal names the condition
+        // (dangling symlink) rather than reading as a deleted parent. Traversal
+        // is covered by the resolution itself, so the
         // old raw-string `..` ban (which also false-refused legitimate names like
         // `notes..txt`) is gone. Best-effort against concurrent mutation, like
         // FileSystemPathPolicy: a directory component swapped for a symlink
@@ -116,32 +118,18 @@ class EditorServiceImpl(
         val resolvedAnchor =
             try {
                 anchor.toRealPath().toFile()
-            } catch (_: IOException) {
-                // The anchor is unresolvable (NoSuchFileException,
-                // AccessDeniedException, a disconnected share - any IOException):
-                // a DANGLING symlink (present at the NOFOLLOW probe, no target to
-                // resolve to) or a directory that raced into deletion between the
-                // walk and the resolution. Deny
-                // before not-found: resolve the EXISTING prefix of the path (the
-                // deepest existing ancestor above the broken piece, skipping the
-                // broken piece itself - canonicalizing it would fail), re-append
-                // the rest, and judge THAT against the root, so a stale
-                // out-of-root path reads as a refusal, not a NOT_FOUND the caller
-                // can probe with. Judging impossible => deny.
-                var up: Path? = anchor.parent
-                while (up != null && !Files.exists(up, LinkOption.NOFOLLOW_LINKS)) {
-                    up = up.parent
-                }
-                val base = up?.let { runCatching { it.toRealPath() }.getOrNull() }
-                val candidate =
-                    base?.let { it.resolve(anchor.fileName).resolve(anchor.relativize(absolute)).normalize() }
-                if (base == null || candidate == null || !candidate.startsWith(confinementRoot.toPath())) {
-                    throw denyOutsideRoot(path)
-                }
-                // Inside the root: the target is gone; NOT_FOUND, not a guess.
-                throw Status.NOT_FOUND
-                    .withDescription("Path parent no longer exists: $path")
-                    .asRuntimeException()
+            } catch (e: NoSuchFileException) {
+                // The anchor is gone (deleted, or a dangling symlink with no
+                // target to resolve to).
+                throw unresolvableAnchorRefusal(
+                    UnresolvableAnchor(path, absolute, anchor, e, confinementRoot.toPath(), true),
+                )
+            } catch (e: IOException) {
+                // The anchor is inaccessible (AccessDeniedException, a
+                // disconnected share, ...).
+                throw unresolvableAnchorRefusal(
+                    UnresolvableAnchor(path, absolute, anchor, e, confinementRoot.toPath(), false),
+                )
             }
         val tail = anchor.relativize(absolute)
         // Path arithmetic, not string splicing (the shape FileSystemPathPolicy
@@ -181,7 +169,10 @@ class EditorServiceImpl(
      * move, so "the previous version survives a crash" covers a process
      * crash, not power loss on a filesystem without the rename heuristic.
      * Windows ACLs and ownership are not mirrored across the move (only
-     * the POSIX mode is; the house helper does not either).
+     * the POSIX mode is; the house helper does not either), and a
+     * Windows replace is denied while another process holds the target
+     * open without `FILE_SHARE_DELETE` (antivirus, an indexer, a watcher)
+     * - a shape an in-place write would have survived.
      */
     private fun atomicWrite(
         target: File,
@@ -395,6 +386,74 @@ class EditorServiceImpl(
             "proto" -> "protobuf"
             else -> LanguageIds.forExtension(ext) ?: "plaintext"
         }
+}
+
+/**
+ * The anchor existed at the NOFOLLOW probe but `toRealPath` could not resolve
+ * it: a DANGLING symlink (present, no target to follow) or a directory that
+ * raced into deletion between the walk and the resolution, or an ancestor
+ * that is inaccessible / disconnected. Deny before not-found: resolve the
+ * EXISTING prefix of the path (the deepest existing ancestor above the broken
+ * piece - canonicalizing the broken piece itself would fail), re-append the
+ * rest, and judge THAT against the root, so a stale out-of-root path reads as
+ * a refusal, not a NOT_FOUND the caller can probe with. Judging impossible =>
+ * deny.
+ */
+private data class UnresolvableAnchor(
+    val path: String,
+    val absolute: Path,
+    val anchor: Path,
+    val cause: IOException,
+    val confinementRoot: Path,
+    val gone: Boolean,
+)
+
+private fun unresolvableAnchorRefusal(state: UnresolvableAnchor): StatusRuntimeException {
+    val path = state.path
+    val absolute = state.absolute
+    val anchor = state.anchor
+    val cause = state.cause
+    val confinementRoot = state.confinementRoot
+    val gone = state.gone
+
+    var up: Path? = anchor.parent
+    while (up != null && !Files.exists(up, LinkOption.NOFOLLOW_LINKS)) {
+        up = up.parent
+    }
+    val base = up?.let { runCatching { it.toRealPath() }.getOrNull() }
+    val candidate =
+        base?.let { it.resolve(anchor.fileName).resolve(anchor.relativize(absolute)).normalize() }
+    if (base == null || candidate == null || !candidate.startsWith(confinementRoot)) {
+        return denyOutsideRoot(path)
+    }
+    // Inside the root: the cause decides the wire status, and openFile /
+    // detectMainFunctions both MAP NOT_FOUND (to a File-not-found response and
+    // an empty scan), so a cause that is not "the path is gone" must not read
+    // as NOT_FOUND - an unreadable directory or a disconnected share would
+    // otherwise be reported to the user as a missing file.
+    return if (Files.isSymbolicLink(anchor)) {
+        // A symlink inside the root whose target cannot be resolved is its
+        // own anchor: the path exists, it just cannot be followed - a DANGLING
+        // link (the common shape: a relative link into a cleaned build
+        // output), or a link behind a directory the kernel refuses to
+        // traverse. Name the SYMLINK condition so a bug report can tell it
+        // apart from a deleted directory.
+        Status.NOT_FOUND
+            .withDescription("Symlink could not be resolved: $path (target missing or inaccessible)")
+            .withCause(cause)
+            .asRuntimeException()
+    } else if (gone) {
+        Status.NOT_FOUND
+            .withDescription("Path parent no longer exists: $path")
+            .withCause(cause)
+            .asRuntimeException()
+    } else {
+        val detail = cause.message ?: cause::class.java.simpleName
+        Status.PERMISSION_DENIED
+            .withDescription("Path parent is not accessible: $path ($detail)")
+            .withCause(cause)
+            .asRuntimeException()
+    }
 }
 
 /**

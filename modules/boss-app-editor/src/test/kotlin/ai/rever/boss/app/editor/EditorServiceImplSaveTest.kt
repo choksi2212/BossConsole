@@ -2,9 +2,13 @@ package ai.rever.boss.app.editor
 
 import ai.rever.boss.ipc.proto.services.OpenFileRequest
 import ai.rever.boss.ipc.proto.services.SaveFileRequest
+import io.grpc.Status
+import io.grpc.StatusRuntimeException
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.attribute.PosixFileAttributeView
+import java.nio.file.attribute.PosixFilePermission
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -58,18 +62,22 @@ class EditorServiceImplSaveTest {
 
     @Test
     fun `a save of a read-only file succeeds and leaves no temp litter`() {
-        // The real atomicity detector (a failed write must leave the target
-        // intact) lives in the failed-save test below; this one pins the
-        // SUCCESS path end to end, including the case a plain writeText cannot
-        // even do: replacing a 0444 target. writeText truncates in place, so
-        // it fails on a read-only file and leaves the old content; the atomic
+        // Pins the SUCCESS path end to end, including the case a plain writeText
+        // cannot even do: replacing a 0444 target. writeText truncates in place,
+        // so it fails on a read-only file and leaves the old content; the atomic
         // shape writes a temp and moves it over, governed by the directory
         // bits, and the mode is re-applied AFTER the temp write so a 0444
-        // target does not make the temp unwritable. (POSIX-only:
-        // setPosixFilePermissions throws on the Windows default filesystem.)
+        // target does not make the temp unwritable. It doubles as a mutation
+        // detector for the atomic shape (reverting atomicWrite to writeText
+        // fails here), but it early-returns on Windows and degrades to a
+        // tautology when the JVM runs as ROOT (root ignores the missing write
+        // bit and writeText succeeds) - the portable torn-target detector is
+        // `a failed save of an existing file leaves the previous content intact`.
+        // (POSIX-only: setPosixFilePermissions throws on the Windows default
+        // filesystem.)
         if (Files.getFileAttributeView(
                 tempDir.toPath(),
-                java.nio.file.attribute.PosixFileAttributeView::class.java,
+                PosixFileAttributeView::class.java,
             ) == null
         ) {
             return
@@ -79,9 +87,9 @@ class EditorServiceImplSaveTest {
         Files.setPosixFilePermissions(
             target.toPath(),
             setOf(
-                java.nio.file.attribute.PosixFilePermission.OWNER_READ,
-                java.nio.file.attribute.PosixFilePermission.GROUP_READ,
-                java.nio.file.attribute.PosixFilePermission.OTHERS_READ,
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.GROUP_READ,
+                PosixFilePermission.OTHERS_READ,
             ),
         )
         runBlocking { impl().saveFile(saveRequest(target)) }
@@ -90,7 +98,7 @@ class EditorServiceImplSaveTest {
         assertTrue(parts.isEmpty(), "a successful save leaves no temp litter: ${parts.map { it.name }}")
         val perms = Files.getPosixFilePermissions(target.toPath())
         assertTrue(
-            java.nio.file.attribute.PosixFilePermission.OWNER_READ in perms,
+            PosixFilePermission.OWNER_READ in perms,
             "the target's mode must survive the atomic replace, got $perms",
         )
     }
@@ -101,10 +109,10 @@ class EditorServiceImplSaveTest {
         // absolute path to a sibling outside it is the escape shape.
         val outside = File(tempDir.parentFile ?: File("/"), "escape-target.txt")
         val e =
-            assertFailsWith<io.grpc.StatusRuntimeException> {
+            assertFailsWith<StatusRuntimeException> {
                 runBlocking { impl().openFile(openRequest(outside)) }
             }
-        assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, e.status.code)
+        assertEquals(Status.Code.PERMISSION_DENIED, e.status.code)
     }
 
     @Test
@@ -122,10 +130,10 @@ class EditorServiceImplSaveTest {
         // The raw path contains no `..` and lives inside home; the canonical
         // target does not - the old raw-string gate passed this shape.
         val e =
-            assertFailsWith<io.grpc.StatusRuntimeException> {
+            assertFailsWith<StatusRuntimeException> {
                 runBlocking { impl().openFile(openRequest(link)) }
             }
-        assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, e.status.code)
+        assertEquals(Status.Code.PERMISSION_DENIED, e.status.code)
         outsideDir.deleteRecursively()
     }
 
@@ -135,10 +143,10 @@ class EditorServiceImplSaveTest {
         // normalization + confining the resolved result to the root.
         val outside = File(tempDir.parentFile ?: File("/"), "trav-${java.util.UUID.randomUUID()}/../escape.txt")
         val e =
-            assertFailsWith<io.grpc.StatusRuntimeException> {
+            assertFailsWith<StatusRuntimeException> {
                 runBlocking { impl().openFile(openRequest(outside)) }
             }
-        assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, e.status.code)
+        assertEquals(Status.Code.PERMISSION_DENIED, e.status.code)
     }
 
     @Test
@@ -159,10 +167,10 @@ class EditorServiceImplSaveTest {
         val escapeDir = File(tempDir.parentFile ?: File("/"), "escape-parent-${java.util.UUID.randomUUID()}")
         val outside = File(escapeDir, "newdir/secret.txt")
         val e =
-            assertFailsWith<io.grpc.StatusRuntimeException> {
+            assertFailsWith<StatusRuntimeException> {
                 runBlocking { impl().saveFile(saveRequest(outside)) }
             }
-        assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, e.status.code)
+        assertEquals(Status.Code.PERMISSION_DENIED, e.status.code)
         assertFalse(escapeDir.exists(), "the gate must not create directories outside the confinement root")
     }
 
@@ -202,12 +210,63 @@ class EditorServiceImplSaveTest {
         val blocker = File(tempDir, "ro").apply { writeText("not a directory\n") }
         val target = File(blocker, "file.kt")
         val e =
-            assertFailsWith<io.grpc.StatusRuntimeException> {
+            assertFailsWith<StatusRuntimeException> {
                 runBlocking { impl().saveFile(saveRequest(target)) }
             }
-        assertEquals(io.grpc.Status.Code.INTERNAL, e.status.code)
+        assertEquals(Status.Code.INTERNAL, e.status.code)
         assertEquals("not a directory\n", blocker.readText(), "the blocker must be untouched")
         assertFalse(target.exists(), "a failed save must not create the target")
+    }
+
+    @Test
+    fun `a failed save of an existing file leaves the previous content intact`() {
+        // The property defect #2 actually harmed: a save that fails partway
+        // must leave the previous COMPLETE version. This is the portable
+        // torn-target detector - the target pre-exists with known bytes, and
+        // the failure lands AFTER the target exists (createTempFile fails
+        // because a sibling directory component is a REGULAR FILE, on every
+        // platform). A plain writeText against a read-only DIRECTORY would
+        // also pass this: open succeeds, then the write fails mid-content -
+        // exactly the torn state the atomic shape must not produce. (POSIX-
+        // only injection; running as ROOT degrades it because root ignores
+        // the missing write bit, so the write would succeed and the
+        // saveFile call would not throw - skip in that case.)
+        if (Files.getFileAttributeView(
+                tempDir.toPath(),
+                PosixFileAttributeView::class.java,
+            ) == null
+        ) {
+            return
+        }
+        // Probe the injection itself: when the JVM runs as ROOT the read-only
+        // bit does not block file creation, the save would succeed, and the
+        // assertion that it fails would be wrong - skip instead of lying.
+        val probeDir = File(tempDir, "probe-${java.util.UUID.randomUUID()}").apply { mkdirs() }
+        probeDir.setWritable(false)
+        val injectionWorks =
+            runCatching { File.createTempFile("probe", ".part", probeDir).delete() }.isFailure
+        probeDir.setWritable(true)
+        if (!injectionWorks) {
+            probeDir.deleteRecursively()
+            return
+        }
+        val target = File(tempDir, "protected/Existing.kt").apply { parentFile.mkdirs() }
+        target.writeText("precious complete content\n")
+        target.parentFile.setWritable(false)
+        try {
+            val e =
+                assertFailsWith<StatusRuntimeException> {
+                    runBlocking { impl().saveFile(saveRequest(target)) }
+                }
+            assertEquals(Status.Code.INTERNAL, e.status.code)
+        } finally {
+            target.parentFile.setWritable(true)
+        }
+        assertEquals(
+            "precious complete content\n",
+            target.readText(),
+            "a failed save must leave the previous content byte-for-byte intact",
+        )
     }
 
     @Test
@@ -215,11 +274,13 @@ class EditorServiceImplSaveTest {
         // A container that sets HOME=/ (or a drive root) used to break the
         // string-prefix check: root + separator yields `//`, which nothing
         // starts with, so every save was denied and the service silently
-        // inert. Component-wise Path.startsWith handles the root root.
-        // (Assumes tempDir is reachable from the filesystem root - true on
-        // all three CI platforms; on a multi-drive Windows box this test
-        // would need a same-drive root.)
-        val impl = EditorServiceImpl(root = File("/"))
+        // inert. Component-wise Path.startsWith handles the root root. The
+        // root is derived from the fixture's OWN filesystem root rather than
+        // hardcoding `/`: on Windows `File("/")` resolves against the CWD's
+        // drive while tempDir comes from java.io.tmpdir, and a GitHub
+        // windows-latest checkout (D:) with TEMP on C: would put the fixture
+        // outside the root and flip this into a spurious refusal.
+        val impl = EditorServiceImpl(root = tempDir.toPath().root.toFile())
         val target = File(tempDir, "under-root/Saved.kt")
         runBlocking { impl.saveFile(saveRequest(target)) }
         assertEquals("saved content\n", target.readText())
@@ -246,10 +307,10 @@ class EditorServiceImplSaveTest {
         val stale = File(outsideDir, "gone/Gone.kt")
         try {
             val e =
-                assertFailsWith<io.grpc.StatusRuntimeException> {
+                assertFailsWith<StatusRuntimeException> {
                     runBlocking { impl().openFile(openRequest(stale)) }
                 }
-            assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, e.status.code)
+            assertEquals(Status.Code.PERMISSION_DENIED, e.status.code)
         } finally {
             outsideDir.deleteRecursively()
         }
@@ -266,7 +327,7 @@ class EditorServiceImplSaveTest {
         // Windows needs Developer Mode.)
         if (Files.getFileAttributeView(
                 tempDir.toPath(),
-                java.nio.file.attribute.PosixFileAttributeView::class.java,
+                PosixFileAttributeView::class.java,
             ) == null
         ) {
             return
@@ -274,10 +335,70 @@ class EditorServiceImplSaveTest {
         val link = File(tempDir, "dangling.kt")
         Files.createSymbolicLink(link.toPath(), File(tempDir, "never-existed.kt").toPath())
         val e =
-            assertFailsWith<io.grpc.StatusRuntimeException> {
+            assertFailsWith<StatusRuntimeException> {
                 runBlocking { impl().saveFile(saveRequest(link)) }
             }
-        assertEquals(io.grpc.Status.Code.NOT_FOUND, e.status.code)
+        assertEquals(Status.Code.NOT_FOUND, e.status.code)
+        val description = e.status.description.orEmpty()
+        assertTrue(
+            description.contains("Symlink could not be resolved"),
+            "the refusal must name the symlink condition, not read as a deleted parent: $description",
+        )
+    }
+
+    @Test
+    fun `a symlink whose target is behind an inaccessible directory is refused as a symlink problem`() {
+        // A link whose target path the kernel refuses to traverse (a
+        // mode-000 directory) makes toRealPath throw AccessDeniedException,
+        // not NoSuchFileException - and openFile / detectMainFunctions both
+        // MAP NOT_FOUND (File-not-found response / empty scan), so a bare
+        // not-found would read as "the file vanished". The gate must surface
+        // the SYMLINK condition instead. Driven through saveFile (no
+        // NOT_FOUND mapping) so the gate's own status and message are what
+        // land. (POSIX-only; skipped when the JVM can ignore the mode, as
+        // root does.)
+        if (Files.getFileAttributeView(
+                tempDir.toPath(),
+                PosixFileAttributeView::class.java,
+            ) == null
+        ) {
+            return
+        }
+        val gate = File(tempDir, "noperm-${java.util.UUID.randomUUID()}").apply { mkdirs() }
+        File(gate, "secret.txt").writeText("secret\n")
+        gate.setReadable(false)
+        gate.setExecutable(false)
+        gate.setWritable(false)
+        val modeBites = runCatching { File.createTempFile("probe", ".t", gate).delete() }.isFailure
+        if (!modeBites) {
+            // Root (or equivalent): the mode does not block, so the
+            // AccessDeniedException cannot be produced - skip.
+            gate.setReadable(true)
+            gate.setExecutable(true)
+            gate.setWritable(true)
+            gate.deleteRecursively()
+            return
+        }
+        val link = File(tempDir, "link-${java.util.UUID.randomUUID()}.txt")
+        Files.createSymbolicLink(link.toPath(), File(gate, "secret.txt").toPath())
+        try {
+            val e =
+                assertFailsWith<StatusRuntimeException> {
+                    runBlocking { impl().saveFile(saveRequest(link)) }
+                }
+            assertEquals(Status.Code.NOT_FOUND, e.status.code)
+            val description = e.status.description.orEmpty()
+            assertTrue(
+                description.contains("Symlink could not be resolved"),
+                "the refusal must name the symlink condition: $description",
+            )
+        } finally {
+            gate.setReadable(true)
+            gate.setExecutable(true)
+            gate.setWritable(true)
+            link.delete()
+            gate.deleteRecursively()
+        }
     }
 
     @Test
@@ -287,7 +408,7 @@ class EditorServiceImplSaveTest {
         // would lose +x and a 0600 file would WIDEN on Ctrl-S.
         if (Files.getFileAttributeView(
                 tempDir.toPath(),
-                java.nio.file.attribute.PosixFileAttributeView::class.java,
+                PosixFileAttributeView::class.java,
             ) == null
         ) {
             return
@@ -296,15 +417,15 @@ class EditorServiceImplSaveTest {
         Files.setPosixFilePermissions(
             target.toPath(),
             setOf(
-                java.nio.file.attribute.PosixFilePermission.OWNER_READ,
-                java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
-                java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE,
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE,
             ),
         )
         runBlocking { impl().saveFile(saveRequest(target)) }
         val perms = Files.getPosixFilePermissions(target.toPath())
         assertTrue(
-            java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE in perms,
+            PosixFilePermission.OWNER_EXECUTE in perms,
             "the executable bit must survive an atomic re-save, got $perms",
         )
     }
