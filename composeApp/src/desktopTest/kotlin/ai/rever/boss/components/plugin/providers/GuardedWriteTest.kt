@@ -169,11 +169,12 @@ class GuardedWriteTest {
         val path = tempPath("rename")
         File(path).writeText("seed")
         try {
-            val inodeBefore = if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
-                Files.getAttribute(File(path).toPath(), "unix:ino")
-            } else {
-                null
-            }
+            val inodeBefore =
+                if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+                    Files.getAttribute(File(path).toPath(), "unix:ino")
+                } else {
+                    null
+                }
             repeat(3) { guardedWrite(path, "write $it") }
             val dir = File(path).parentFile
             val name = File(path).name
