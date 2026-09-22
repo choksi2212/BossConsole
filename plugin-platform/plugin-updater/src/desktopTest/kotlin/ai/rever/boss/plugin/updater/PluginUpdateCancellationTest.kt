@@ -81,6 +81,7 @@ class PluginUpdateCancellationTest {
                     downloadPath = "/tmp/does-not-matter.jar",
                     unloadPlugin = { Result.success(Unit) },
                     loadPlugin = { Result.success(Unit) },
+                    verifyDownload = { Result.success(Unit) },
                 )
             }
 
@@ -118,6 +119,7 @@ class PluginUpdateCancellationTest {
                             loaded = true
                             Result.success(Unit)
                         },
+                        verifyDownload = { Result.success(Unit) },
                     )
                 }
             }

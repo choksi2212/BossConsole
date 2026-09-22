@@ -150,8 +150,7 @@ private class FakeMultiPluginRepository(
     override suspend fun searchPlugins(filter: PluginSearchFilter): Result<PluginSearchResult> =
         Result.success(PluginSearchResult(plugins, totalCount = plugins.size))
 
-    override suspend fun getPlugin(pluginId: String): Result<PluginInfo?> =
-        Result.success(plugins.firstOrNull { it.pluginId == pluginId })
+    override suspend fun getPlugin(pluginId: String): Result<PluginInfo?> = Result.success(plugins.firstOrNull { it.pluginId == pluginId })
 
     override suspend fun getPluginVersions(pluginId: String): Result<List<PluginInfo>> =
         Result.success(plugins.filter { it.pluginId == pluginId })
