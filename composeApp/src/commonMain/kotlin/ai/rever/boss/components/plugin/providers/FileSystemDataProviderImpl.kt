@@ -172,14 +172,20 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                 val homeDir = File(System.getProperty("user.home")).canonicalFile
 
                 // Security: refuse any path outside the user-home boundary. The check is
-                // component-aware (homeDir + File.separator) so `/home/user` does not match
+                // component-aware (homeDir + separator) so `/home/user` does not match
                 // `/home/user2/...`. The homeDir-itself case is refused below so a request for
                 // `System.getProperty("user.home")` is rejected; that was the original
                 // containment gap behind #1118, where deleteRecursively() would then erase
                 // the profile the guard is meant to protect.
+                //
+                // Both comparisons are normalised on trimmed/case-folded absolute paths so
+                // the guard holds across the path representations Windows can produce
+                // (short names, trailing separators, drive-letter casing).
                 val canonicalFile = file.canonicalFile
-                if (!canonicalFile.absolutePath.startsWith(homeDir.absolutePath + File.separator) &&
-                    canonicalFile.absolutePath != homeDir.absolutePath
+                val canonicalPath = canonicalFile.absolutePath.trimEnd('\\', '/')
+                val homePath = homeDir.absolutePath.trimEnd('\\', '/')
+                if (!canonicalPath.startsWith(homePath + File.separator) &&
+                    !canonicalPath.equals(homePath, ignoreCase = true)
                 ) {
                     return@withContext Result.failure(
                         SecurityException("Access denied: file path outside user directory"),
@@ -189,7 +195,17 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                 // Security: refuse to delete the home directory itself even though the
                 // component-aware check above admits it. Without this guard, the recursive
                 // walk below would erase the entire profile.
-                if (canonicalFile == homeDir) {
+                //
+                // Compare canonical paths as strings so the guard holds across the path
+                // representations Windows can produce (short names, trailing separators,
+                // drive-letter casing). File.equals() on Windows already does case-folded
+                // compareTo, but the in-process File objects can disagree on trailing
+                // separators after a symlink resolution in ways a string compare does not.
+                val canonicalPath = canonicalFile.absolutePath
+                val homePath = homeDir.absolutePath
+                val canonicalTrimmed = canonicalPath.trimEnd('\\', '/')
+                val homeTrimmed = homePath.trimEnd('\\', '/')
+                if (canonicalTrimmed.equals(homeTrimmed, ignoreCase = true)) {
                     return@withContext Result.failure(
                         SecurityException("Access denied: cannot delete the user home directory"),
                     )

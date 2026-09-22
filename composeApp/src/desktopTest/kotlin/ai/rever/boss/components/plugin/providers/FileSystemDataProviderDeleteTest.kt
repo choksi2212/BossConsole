@@ -114,7 +114,12 @@ class FileSystemDataProviderDeleteTest {
         // component-aware containment check runs on the canonical path, so the request is
         // refused and the external canary is left intact. The nested/chain tests below
         // pin the separate NOFOLLOW_LINKS guarantee for in-scope directories.
-        val outside = Files.createTempDirectory("fsd-provider-outside-")
+        //
+        // `Files.createTempDirectory` lands under the system temp dir, which on Windows
+        // is itself under `user.home`; that would put the canary IN-SCOPE and the delete
+        // would correctly succeed. Place the outside directory next to homeDir so the
+        // canonical resolution is unambiguously outside the home boundary.
+        val outside = Files.createDirectory(homeDir.parent.resolve("fsd-provider-outside-${System.nanoTime()}"))
         try {
             val externalCanary = Files.createFile(outside.resolve("canary.txt"))
             val link =
