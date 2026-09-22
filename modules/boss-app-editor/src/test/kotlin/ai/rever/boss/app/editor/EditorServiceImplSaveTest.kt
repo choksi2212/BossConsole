@@ -10,6 +10,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -112,5 +113,29 @@ class EditorServiceImplSaveTest {
         assertFailsWith<IllegalArgumentException> {
             runBlocking { impl().openFile(openRequest(File(tempDir, "../escape.txt"))) }
         }
+    }
+
+    @Test
+    fun `a refused outside-home save creates no directories outside the confinement root`() {
+        // A save whose target does not exist yet used to mkdirs its parent BEFORE
+        // validating (the new-file case), so a refused outside-home path still
+        // created directories outside the confinement root. The gate now resolves
+        // the deepest existing ancestor first and refuses before any mkdirs.
+        val escapeDir = File(tempDir.parentFile ?: File("/"), "escape-parent-$$")
+        val outside = File(escapeDir, "newdir/secret.txt")
+        assertFailsWith<IllegalArgumentException> {
+            runBlocking { impl().saveFile(saveRequest(outside)) }
+        }
+        assertFalse(escapeDir.exists(), "the gate must not create directories outside the confinement root")
+    }
+
+    @Test
+    fun `a new-file save into a fresh subdirectory inside the home still succeeds`() {
+        // No caller pre-creates the parent anymore: validatePath resolves the
+        // deepest existing ancestor and re-appends the missing tail, and
+        // atomicWrite mkdirs the validated parent itself.
+        val target = File(tempDir, "fresh/deep/nested/NewFile.kt")
+        runBlocking { impl().saveFile(saveRequest(target)) }
+        assertEquals("saved content\n", target.readText())
     }
 }

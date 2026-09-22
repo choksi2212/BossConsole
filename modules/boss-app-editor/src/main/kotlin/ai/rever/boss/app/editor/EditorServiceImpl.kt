@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.io.File
+import java.nio.file.Files
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -51,32 +52,33 @@ class EditorServiceImpl : EditorServiceGrpcKt.EditorServiceCoroutineImplBase() {
         // link, so a symlink inside the home pointing at an outside target passed
         // the gate (BossConsole#885). toRealPath() resolves the link chain to the
         // actual filesystem location, which is what the confinement check must see.
-        //
-        // The path may not exist yet (a save creating a new file): the caller
-        // creates the parent directory BEFORE this check for exactly that case
-        // (saveFile's atomicWrite mkdirs first, openFile requires existence), so
-        // toRealPath on the existing parent plus the file name is always resolvable
-        // and resolves every link in the chain that matters.
-        val real = File(path).toPath()
-        // Resolve the FULL path when it exists (openFile; the save-new-file case
-        // falls to the parent below). This is what catches a symlink FILE
-        // inside the home pointing at an outside target: toRealPath follows the
-        // link to its actual location.
-        val resolved =
+        // Resolve the deepest EXISTING ancestor with toRealPath (which follows
+        // every symlink in it) and re-append the missing tail - a missing tail
+        // component has no link to follow. This mirrors the house
+        // FileSystemPathPolicy shape and is what keeps a save for a NEW file in a
+        // fresh subdirectory valid WITHOUT any caller pre-creating the parent:
+        // nothing may mkdirs a path the gate has not yet approved. It also catches
+        // a symlink FILE inside the home pointing at an outside target: toRealPath
+        // follows the link to its actual location.
+        val absolute = File(path).toPath().toAbsolutePath().normalize()
+        var anchor = absolute
+        while (!Files.exists(anchor)) {
+            anchor = anchor.parent ?: break
+        }
+        val resolvedAnchor =
             try {
-                real.toRealPath().toFile()
+                anchor.toRealPath().toFile()
             } catch (_: java.nio.file.NoSuchFileException) {
-                // New-file save: resolve the existing parent (the caller mkdirs
-                // first), then re-append the file name. The parent's links
-                // resolve; the not-yet-existing file name has no link to follow.
-                val parent = real.parent ?: throw IllegalArgumentException("Path has no parent directory: $path")
-                val resolvedParent =
-                    try {
-                        parent.toRealPath().toFile()
-                    } catch (_: java.nio.file.NoSuchFileException) {
-                        throw IllegalArgumentException("Parent directory does not exist: $path")
-                    }
-                real.fileName?.let { File(resolvedParent, it.toString()) } ?: resolvedParent
+                // The anchor raced into deletion between the exists() walk and the
+                // resolution: refuse rather than guess at a half-gone tree.
+                throw IllegalArgumentException("Path parent no longer exists: $path")
+            }
+        val tail = anchor.relativize(absolute)
+        val resolved =
+            if (tail.getNameCount() == 0) {
+                resolvedAnchor
+            } else {
+                File(resolvedAnchor, tail.toString().replace(java.io.File.separatorChar, '/'))
             }
         val root = confinementRoot.absolutePath + File.separator
         require(
@@ -166,9 +168,10 @@ class EditorServiceImpl : EditorServiceGrpcKt.EditorServiceCoroutineImplBase() {
     override suspend fun saveFile(request: SaveFileRequest): Empty =
         withContext(Dispatchers.IO) {
             logger.info("saveFile: path={}", request.path)
-            // Create the parent BEFORE validating: a save may target a new file,
-            // and validatePath resolves the existing parent (see its KDoc).
-            File(request.path).parentFile?.mkdirs()
+            // Validate BEFORE any mkdirs: a save may target a new file (validatePath
+            // resolves the deepest existing ancestor and re-appends the missing
+            // tail), and creating the parent first would let a refused outside-home
+            // save still create directories outside the confinement root.
             val file = validatePath(request.path)
             try {
                 atomicWrite(file, request.content)
