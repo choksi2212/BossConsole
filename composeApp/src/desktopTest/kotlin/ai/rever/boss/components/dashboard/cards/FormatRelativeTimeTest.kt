@@ -7,7 +7,9 @@ import kotlin.test.assertEquals
 
 /**
  * Pins that `formatRelativeTime`'s "Yesterday" bucket is a calendar-day
- * boundary in the local zone, not an elapsed-hours window.
+ * boundary in the supplied zone, not an elapsed-hours window, AND that the
+ * absolute-date formatter uses the SAME zone the calendar classification was
+ * computed in.
  *
  * Two cases were broken before this and would have shipped if anyone had
  * opened the dashboard late at night or first thing in the morning:
@@ -17,9 +19,14 @@ import kotlin.test.assertEquals
  *  - A timestamp from yesterday at 23:59 read "Just now" at 00:01 when the
  *    calendar truth was Yesterday.
  *
- * Pinned against Asia/Kolkata (UTC+5:30) so the test does not move with the
- * runner's clock. `now` and `zone` are injected through the function's
- * parameters - the only public shape is the displayed string.
+ * A third case, not in the original PR but found while wiring this up, was
+ * the formatter using the host default timezone while the calendar
+ * classification used the supplied one - so a timestamp classified as Sep 18
+ * in the supplied zone could be displayed as Sep 17 when the host default
+ * zone was a day ahead.
+ *
+ * `now` and `zone` are injected through the function's parameters - the only
+ * public shape is the displayed string.
  */
 class FormatRelativeTimeTest {
     private val zone = ZoneId.of("Asia/Kolkata")
@@ -110,5 +117,33 @@ class FormatRelativeTimeTest {
         val now = at(2026, 9, 20, 12, 0)
         val threeHoursAgo = now - 3L * 3600_000L
         assertEquals("3h ago", formatRelativeTime(threeHoursAgo, now, zone))
+    }
+
+    @Test
+    fun `absolute date formatter honours the supplied zone not the host default`() {
+        // Pick a zone far enough from anywhere plausible as a CI runner's
+        // host zone that the bug shows up in every reasonable configuration:
+        // Pacific/Pago_Pago is UTC-11, so any host running UTC, UTC+0..+14,
+        // or anywhere in the Americas ahead of Samoa would disagree with it.
+        // Build the wall-clock times in that zone so the instants are
+        // independent of the host clock.
+        val remoteZone = ZoneId.of("Pacific/Pago_Pago")
+
+        fun remoteAt(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long =
+            LocalDateTime
+                .of(year, month, day, hour, minute)
+                .atZone(remoteZone)
+                .toInstant()
+                .toEpochMilli()
+
+        // In Pago Pago, the timestamp and "now" are two calendar days apart:
+        // Sep 18 vs Sep 20, both at noon local. The classification is daysAgo = 2.
+        val now = remoteAt(2026, 9, 20, 12, 0)
+        val twoDaysAgo = remoteAt(2026, 9, 18, 12, 0)
+
+        // The classification and the formatter MUST agree on the zone, so
+        // the displayed date is Sep 18 in Pago Pago - not whatever the host
+        // default happens to think those same instants are.
+        assertEquals("Sep 18", formatRelativeTime(twoDaysAgo, now, remoteZone))
     }
 }

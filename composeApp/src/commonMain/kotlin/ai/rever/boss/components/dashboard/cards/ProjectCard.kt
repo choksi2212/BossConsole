@@ -43,6 +43,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 /**
  * Card displaying a recent project.
@@ -167,6 +169,10 @@ fun ProjectCard(
  * days (and so should read as the absolute date, not "Yesterday"), while a
  * 2-minute gap near midnight can still be "Yesterday". Elapsed-time buckets
  * below a day stay as they are - they promise elapsed time and deliver it.
+ *
+ * The absolute-date formatter uses the SAME [zone] the calendar classification
+ * was computed in, with an explicit [Locale], so a host running in a different
+ * zone than the one the user picked cannot display a neighbouring day.
  */
 internal fun formatRelativeTime(
     timestamp: Long,
@@ -185,7 +191,10 @@ internal fun formatRelativeTime(
         }
 
         daysAgo >= 2 -> {
-            SimpleDateFormat("MMM d").format(Date(timestamp))
+            val formatter = SimpleDateFormat("MMM d", Locale.ENGLISH).apply {
+                timeZone = TimeZone.getTimeZone(zone.id)
+            }
+            formatter.format(Date(timestamp))
         }
 
         else -> {
