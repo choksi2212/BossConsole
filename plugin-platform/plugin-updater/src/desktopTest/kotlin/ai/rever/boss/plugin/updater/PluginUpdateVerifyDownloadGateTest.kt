@@ -17,8 +17,10 @@ import kotlin.test.assertTrue
  * The verify step runs after the download and before `swapPlugin`, so a failure here means the
  * running instance is never unloaded.
  *
- * The default lambda is a no-op so callers that do not need the gate are unchanged - that path
- * is covered by every existing test, and these tests only assert the new contract.
+ * `verifyDownload` is REQUIRED with no default: a silent pass-through would leave the swap
+ * unvetted and the security boundary fail-open. The default-lambda test that used to live
+ * here has been removed because the default no longer exists - a caller that forgets to pass
+ * a verifier breaks the build rather than shipping without the gate.
  */
 class PluginUpdateVerifyDownloadGateTest {
     private val pluginId = "ai.rever.boss.plugin.dynamic.demo"
@@ -100,33 +102,6 @@ class PluginUpdateVerifyDownloadGateTest {
             assertTrue(unloadCalled, "the swap must run after a passing verifyDownload")
             assertTrue(loadCalled, "the load must run after a passing verifyDownload")
             assertEquals(listOf("/tmp/does-not-matter.jar"), verifyCalledWith)
-        }
-
-    @Test
-    fun `the default verifyDownload is a no-op so existing callers are unchanged`() =
-        runTest {
-            val mgr = manager()
-            mgr.checkForUpdates(mapOf(pluginId to "1.0.0"))
-
-            var unloadCalled = false
-            var loadCalled = false
-            val result =
-                mgr.updatePlugin(
-                    pluginId = pluginId,
-                    downloadPath = "/tmp/does-not-matter.jar",
-                    unloadPlugin = {
-                        unloadCalled = true
-                        Result.success(Unit)
-                    },
-                    loadPlugin = {
-                        loadCalled = true
-                        Result.success(Unit)
-                    },
-                )
-
-            assertTrue(result.isSuccess, "the default verifyDownload must not block a passing update")
-            assertTrue(unloadCalled)
-            assertTrue(loadCalled)
         }
 
     @Test

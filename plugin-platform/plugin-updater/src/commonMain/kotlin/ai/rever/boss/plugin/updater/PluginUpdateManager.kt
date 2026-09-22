@@ -457,7 +457,9 @@ class PluginUpdateManager(
      *   identity does not match the plugin being updated - the same gate the store
      *   installers apply, so an Update button cannot hot-swap the api layer or
      *   uninstall a working plugin for an identity-mismatched jar (reopens #927).
-     *   The default is a no-op so callers that do not need the gate are unchanged.
+     *   REQUIRED with no default: a silent pass-through would leave the swap
+     *   unvetted and the security boundary fail-open. A construction site or call
+     *   site that forgets the gate must break the build, not ship without it.
      *   Returning a failure here returns the update as failed WITHOUT unloading
      *   anything; the caller is responsible for any cleanup of [downloadPath].
      * @return Result indicating success or failure
@@ -469,7 +471,7 @@ class PluginUpdateManager(
         loadPlugin: suspend (String) -> Result<Unit>,
         onProgress: ((Float) -> Unit)? = null,
         onInstalling: (() -> Unit)? = null,
-        verifyDownload: suspend (downloadedPath: String) -> Result<Unit> = { Result.success(Unit) },
+        verifyDownload: suspend (downloadedPath: String) -> Result<Unit>,
     ): Result<Unit> {
         val update =
             _availableUpdates.value.find { it.pluginId == pluginId }
@@ -599,15 +601,23 @@ class PluginUpdateManager(
     /**
      * Update all plugins with available updates.
      *
+     * Each per-plugin update runs the same [verifyDownload] gate as [updatePlugin]:
+     * one gate, threaded through every entry point, so a rejection in any one
+     * plugin update leaves none of the running instances unloaded.
+     *
      * @param downloadDir Directory to download updates to
      * @param unloadPlugin Function to unload plugins
      * @param loadPlugin Function to load plugins
+     * @param verifyDownload REQUIRED with no default - the same identity gate
+     *   [updatePlugin] runs, threaded here so a multi-update sweep is not
+     *   fail-open just because it does not call [updatePlugin] one at a time.
      * @return Map of plugin ID to update result
      */
     suspend fun updateAll(
         downloadDir: String,
         unloadPlugin: suspend (String) -> Result<Unit>,
         loadPlugin: suspend (String) -> Result<Unit>,
+        verifyDownload: suspend (downloadedPath: String) -> Result<Unit>,
     ): Map<String, Result<Unit>> {
         val results = mutableMapOf<String, Result<Unit>>()
 
@@ -619,6 +629,7 @@ class PluginUpdateManager(
                     downloadPath = downloadPath,
                     unloadPlugin = unloadPlugin,
                     loadPlugin = loadPlugin,
+                    verifyDownload = verifyDownload,
                 )
         }
 
