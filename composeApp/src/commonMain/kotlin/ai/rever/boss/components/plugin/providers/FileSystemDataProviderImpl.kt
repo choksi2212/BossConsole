@@ -201,10 +201,8 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                 // drive-letter casing). File.equals() on Windows already does case-folded
                 // compareTo, but the in-process File objects can disagree on trailing
                 // separators after a symlink resolution in ways a string compare does not.
-                val canonicalPath = canonicalFile.absolutePath
-                val homePath = homeDir.absolutePath
-                val canonicalTrimmed = canonicalPath.trimEnd('\\', '/')
-                val homeTrimmed = homePath.trimEnd('\\', '/')
+                val canonicalTrimmed = canonicalFile.absolutePath.trimEnd('\\', '/')
+                val homeTrimmed = homeDir.absolutePath.trimEnd('\\', '/')
                 if (canonicalTrimmed.equals(homeTrimmed, ignoreCase = true)) {
                     return@withContext Result.failure(
                         SecurityException("Access denied: cannot delete the user home directory"),
