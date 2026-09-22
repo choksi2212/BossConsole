@@ -186,8 +186,16 @@ object CLISecurityValidator {
         val components = path.split('\\', '/')
         for (component in components) {
             if (component.isEmpty()) continue
-            val normalized = component.trimEnd('.', ' ').uppercase()
-            if (normalized in WINDOWS_RESERVED_NAMES) return true
+            // Windows treats a reserved device stem as special even when
+            // it has an extension - `CON.txt`, `COM1.log`, `LPT9.anything`
+            // all resolve to the device, not a file. The check operates
+            // on the STEM (the part before the last dot) AFTER trailing
+            // dots/spaces are stripped from the whole component, so the
+            // bare name and the extension-bearing form both fail closed.
+            val stripped = component.trimEnd('.', ' ')
+            val stem = if ('.' in stripped) stripped.substringBeforeLast('.') else stripped
+            if (stem.isEmpty()) continue
+            if (stem.uppercase() in WINDOWS_RESERVED_NAMES) return true
         }
         return false
     }
@@ -211,7 +219,7 @@ object CLISecurityValidator {
      */
     fun isValidPath(path: String): Boolean {
         // Check for null bytes
-        if (path.contains(' ')) {
+        if (path.contains('\u0000')) {
             return false
         }
 
