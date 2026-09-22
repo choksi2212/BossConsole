@@ -330,7 +330,7 @@ Deno.test("getPluginVersions goes through the viewer-scoped + status-scoped RPC,
     "getPluginVersions must invoke the get_plugin_versions RPC; that is the single source of truth that filters status='published' and joins the viewer-scoped visibility check plus download_count",
   )
   assertEquals(
-    rpcs[0].args[1]?.p_plugin_id,
+    (rpcs[0].args[1] as Record<string, unknown> | undefined)?.p_plugin_id,
     "plugin-uuid",
     "getPluginVersions must pass the plugin id as p_plugin_id so the RPC scopes by it",
   )
