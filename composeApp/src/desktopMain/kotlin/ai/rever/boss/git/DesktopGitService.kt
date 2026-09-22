@@ -107,13 +107,18 @@ actual object GitService {
 
     /**
      * Monotonic project epoch for the shared [currentProjectPath] (BossConsole#813):
-     * a window captures the epoch when it starts its refresh and only publishes the
-     * global if the epoch is unchanged at publish time. A project switch/close that
-     * landed while this refresh waited on the mutex (or while its git subprocesses
-     * ran) bumps the epoch, so the stale refresh cannot repoint the global at a
-     * project the user has already left - the queued-refresh resurrection the
-     * review's staleness analysis describes. Mutual exclusion alone cannot reject
-     * stale work; the epoch does.
+     * a window captures the epoch at its [refreshForWindow] ENTRY and only publishes
+     * the global if the epoch is unchanged at publish time (which sits just after
+     * the dispatcher hop - the guarded interval is entry through that publish, NOT
+     * through the git subprocesses). A project switch/close that landed in that
+     * interval bumped the epoch, so the stale refresh cannot repoint the global at
+     * a project the user has already left - the queued-refresh resurrection the
+     * review's staleness analysis describes. It is a PROJECT-CHANGE counter: every
+     * writer bumps it only when the path actually changes (a redundant align is a
+     * no-op), and it is incremented on every real change, so two concurrent
+     * REFRESHES still race last-write-wins - switching is how a window states a
+     * claim, not refreshing. Mutual exclusion alone cannot reject stale work; the
+     * epoch does.
      */
     private val projectEpoch = AtomicLong()
 
@@ -1681,21 +1686,34 @@ actual object GitService {
     // ===== Window-Specific Operations =====
 
     /**
-     * Points the shared global project path at [projectPath] and bumps
-     * [projectEpoch] (BossConsole#813, production scope): this is the SWITCH
-     * verb, so it always wins - a [refreshForWindow] that captured the old
-     * epoch at entry drops its stale global publish.
+     * Points the shared global project path at [projectPath] (BossConsole#813,
+     * production scope): this is the SWITCH verb, so it always wins - a
+     * [refreshForWindow] that captured the old epoch at entry drops its stale
+     * global publish.
+     *
+     * [projectEpoch] is bumped ONLY when the path actually changes. This verb is
+     * called from `GitDataProviderImpl.ensureRepoStateLocked` at the head of
+     * roughly twenty-four provider verbs (status polls, log reads, every
+     * stage/unstage/commit), so an unconditional bump would turn the counter
+     * into a git-provider-call counter - a panel's status poll would
+     * invalidate another window's in-flight refresh while nothing about the
+     * project changed. A redundant align leaves an in-flight refresh's
+     * captured epoch valid, and its publish is then a no-op anyway because
+     * [currentProjectPath] already equals the aligned path - safe in every
+     * ordering.
      */
     actual fun alignCurrentProjectPath(projectPath: String) {
-        // Bump the epoch under the SAME monitor refreshForWindow's publish takes
+        // Under the SAME monitor refreshForWindow's publish takes
         // ([globalProjectPathLock], a plain object monitor - this verb is
         // non-suspend, so it cannot use a coroutines Mutex at all, and a
         // `synchronized` on the mutex object would not have excluded the
         // refresh's `withLock` in the first place). Held only for the two
         // writes below, never across a suspension.
         synchronized(globalProjectPathLock) {
-            projectEpoch.incrementAndGet()
-            currentProjectPath = projectPath
+            if (currentProjectPath != projectPath) {
+                projectEpoch.incrementAndGet()
+                currentProjectPath = projectPath
+            }
         }
     }
 
@@ -1731,10 +1749,12 @@ actual object GitService {
         //
         // Epoch-checked publish (BossConsole#813, production scope): publish
         // ONLY if the epoch captured at entry is unchanged - a switch/close
-        // that landed while this refresh was in flight bumped the epoch, and
-        // the stale refresh must not repoint the global at a project the user
-        // has left. The window-scoped GitState this refresh builds is
-        // unaffected; only the global seed for the diff verbs is refused.
+        // that landed from entry through THIS publish (the dispatcher hop and
+        // setProjectPath above; the git subprocesses below run AFTER it)
+        // bumped the epoch, and the stale refresh must not repoint the global
+        // at a project the user has left. The window-scoped GitState this
+        // refresh builds is unaffected; only the global seed for the diff
+        // verbs is refused.
         synchronized(globalProjectPathLock) {
             if (epochAtEntry == projectEpoch.get() && currentProjectPath != projectPath) {
                 currentProjectPath = projectPath
@@ -1806,11 +1826,14 @@ actual object GitService {
      * Refresh a window's git state and - if the epoch is unchanged - seed the global
      * project path from it (BossConsole#813).
      *
-     * The epoch is captured at this REAL entry, before any dispatcher hop, so a
-     * project switch that lands between the caller's launch and the body landing
-     * still invalidates this refresh. The full body and its single epoch-gated
-     * publish live in [refreshForWindowWithEpoch], which this delegates to - tests
-     * exercise the production path, not a shadow of it.
+     * The epoch is captured at this REAL entry, before the dispatcher hop into
+     * [refreshForWindowWithEpoch], so the guarded interval is entry through the
+     * publish (a switch landing in that interval invalidates this refresh; a
+     * switch landing BEFORE the function body starts is captured post-bump and
+     * cannot be - capturing at function entry is the furthest a callee can
+     * reach). The full body and its single epoch-gated publish live in
+     * [refreshForWindowWithEpoch], which this delegates to - tests exercise the
+     * production path, not a shadow of it.
      */
     actual suspend fun refreshForWindow(
         projectPath: String,

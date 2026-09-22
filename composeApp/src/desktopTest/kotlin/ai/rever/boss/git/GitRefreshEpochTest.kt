@@ -1,8 +1,12 @@
 package ai.rever.boss.git
 
 import ai.rever.boss.window.WindowGitState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -14,14 +18,17 @@ import kotlin.test.assertTrue
  * Regression tests for the epoch-checked global git state (BossConsole#813,
  * production scope from the #814 review).
  *
- * The production cross-window race: `refreshForWindow` and
- * `alignCurrentProjectPath` both wrote the shared GLOBAL `currentProjectPath`
- * from any window's coroutine with no ordering, so two windows' refreshes
- * interleaved and the last write won - and a refresh that started before a
- * project switch and finished after it repointed the global at a project the
- * user had already left. The fix: a monotonic project epoch - a window
- * captures it at refresh entry, and publishes the global seed ONLY if the
- * epoch is unchanged at publish time; every switch bumps it.
+ * The production cross-window race: a refresh that started before a project
+ * switch and finished after it repointed the shared GLOBAL
+ * `currentProjectPath` at a project the user had already left. The fix: a
+ * monotonic project epoch - a window captures it at refresh entry, and
+ * publishes the global seed ONLY if the epoch is unchanged at publish time;
+ * every real project change bumps it (a redundant align is a no-op).
+ *
+ * Scope: SWITCH-vs-refresh. Two concurrent REFRESHES still resolve
+ * last-write-wins (both capture the same epoch; neither is a switch, and a
+ * window states a claim by aligning, not by refreshing) - the racing test
+ * pins the per-window states, not the global winner.
  *
  * Uses real `git` in a temp directory (the repo's established git-test
  * pattern) and deterministic in-process interleaving - no coroutine-scheduling
@@ -72,6 +79,16 @@ class GitRefreshEpochTest {
             val windowA = WindowGitState("win-a")
             val windowB = WindowGitState("win-b")
 
+            // The singleton probes `git --version` at init on a REAL-time
+            // background scope; until it lands, refreshForWindow
+            // short-circuits before reading any repo. Await it so the branch
+            // assertions below are deterministic instead of racing that probe.
+            // Real-time context: runTest's virtual clock would otherwise
+            // time out a wait on real-dispatcher work.
+            withContext(Dispatchers.Default.limitedParallelism(1)) {
+                withTimeout(10_000) { GitService.isGitAvailable.first { it } }
+            }
+
             // Both windows refresh in parallel - the production interleaving
             // (two panels' status polls, or panel + top bar). Unserialized, the
             // global seed was a coin flip between entry orders.
@@ -87,9 +104,13 @@ class GitRefreshEpochTest {
                 global == repoA.absolutePath || global == repoB.absolutePath,
                 "the global must name one of the refreshed projects, got $global",
             )
-            // And each window's OWN state stayed its own.
+            // And each window's OWN state stayed its own - including the
+            // branch its refresh actually read from its own repo (the
+            // cross-contamination the test is named for).
             assertEquals(repoA.absolutePath, windowA.projectPath.value)
             assertEquals(repoB.absolutePath, windowB.projectPath.value)
+            assertEquals("alpha-branch", windowA.currentBranch.value)
+            assertEquals("beta-branch", windowB.currentBranch.value)
         }
 
     @Test
@@ -120,6 +141,32 @@ class GitRefreshEpochTest {
             // The window's own state still refreshed for A - only the global
             // seed for the diff verbs was refused.
             assertEquals(repoA.absolutePath, windowA.projectPath.value)
+        }
+
+    @Test
+    fun `a redundant align does not invalidate an in-flight refresh`() =
+        runTest {
+            val repoA = repo("eta", "eta-branch")
+            val windowA = WindowGitState("win-a")
+
+            GitService.alignCurrentProjectPath(repoA.absolutePath)
+            val epochAfterAlign = GitService.projectEpochForTests()
+
+            // The align is called at the head of ~24 provider verbs (status
+            // polls included), so it must NOT bump the epoch when the path is
+            // already aligned - otherwise the counter is a call counter, and
+            // a poll would invalidate every other window's in-flight refresh.
+            GitService.alignCurrentProjectPath(repoA.absolutePath)
+            assertEquals(
+                epochAfterAlign,
+                GitService.projectEpochForTests(),
+                "a redundant align must not bump the epoch",
+            )
+
+            // The in-flight refresh that captured the epoch survives the
+            // redundant align and still publishes.
+            GitService.refreshForWindowWithEpoch(repoA.absolutePath, windowA, epochAfterAlign)
+            assertEquals(repoA.absolutePath, GitService.getCurrentProjectPath())
         }
 
     @Test
