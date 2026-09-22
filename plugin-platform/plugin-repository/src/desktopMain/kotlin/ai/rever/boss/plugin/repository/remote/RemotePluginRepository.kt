@@ -600,7 +600,9 @@ class RemotePluginRepository(
                         PluginSignatureSidecar.persist(targetPath, downloadInfo.signature)
 
                         // Cache the downloaded JAR
-                        cacheOrNull("write") { downloadCache.cacheJar(pluginId, downloadInfo.version, File(targetPath)) }
+                        cacheOrNull("write") {
+                            downloadCache.cacheJar(pluginId, downloadInfo.version, File(targetPath))
+                        }
 
                         progressFlow.value = 1f
                         onProgress?.invoke(1f)
