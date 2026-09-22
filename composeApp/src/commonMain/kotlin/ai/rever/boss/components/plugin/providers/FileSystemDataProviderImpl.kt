@@ -178,12 +178,20 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                 // containment gap behind #1118, where deleteRecursively() would then erase
                 // the profile the guard is meant to protect.
                 //
-                // Both comparisons are normalised on trimmed/case-folded absolute paths so
-                // the guard holds across the path representations Windows can produce
-                // (short names, trailing separators, drive-letter casing).
+                // BOTH sides use Path.toRealPath() so the symlink target is fully resolved
+                // before the boundary check runs. File.canonicalFile does NOT reliably resolve
+                // reparse-point symlinks on Windows (measured 2026-09-22: `File.canonicalFile`
+                // on a directory symlink returned the link path, while `Path.toRealPath()`
+                // returned the target). Walking the unresolved path through Files.walk below
+                // would then descend into the target and erase it - which is exactly the
+                // #1118 escape this guard is meant to prevent.
                 val canonicalFile = file.canonicalFile
-                val canonicalPath = canonicalFile.absolutePath.trimEnd('\\', '/')
-                val homePath = homeDir.absolutePath.trimEnd('\\', '/')
+                val realCanonicalPath = runCatching { canonicalFile.toPath().toRealPath().toString() }
+                    .getOrDefault(canonicalFile.absolutePath)
+                val realHomePath = runCatching { homeDir.toPath().toRealPath().toString() }
+                    .getOrDefault(homeDir.absolutePath)
+                val canonicalPath = realCanonicalPath.trimEnd('\\', '/')
+                val homePath = realHomePath.trimEnd('\\', '/')
                 if (!canonicalPath.startsWith(homePath + File.separator) &&
                     !canonicalPath.equals(homePath, ignoreCase = true)
                 ) {
@@ -195,19 +203,7 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                 // Security: refuse to delete the home directory itself even though the
                 // component-aware check above admits it. Without this guard, the recursive
                 // walk below would erase the entire profile.
-                //
-                // Compare real paths (symlink-resolved) as case-folded, trailing-slash-trimmed
-                // absolute strings. File.canonicalFile alone is not reliable enough on Windows:
-                // a symlink in a different drive or with reparse-point semantics can land on
-                // a path that File.equals() compares unequal to homeDir even though they name
-                // the same directory.
-                val realCanonicalPath = runCatching { canonicalFile.toPath().toRealPath().toString() }
-                    .getOrDefault(canonicalFile.absolutePath)
-                val realHomePath = runCatching { homeDir.toPath().toRealPath().toString() }
-                    .getOrDefault(homeDir.absolutePath)
-                val realCanonicalTrimmed = realCanonicalPath.trimEnd('\\', '/')
-                val realHomeTrimmed = realHomePath.trimEnd('\\', '/')
-                if (realCanonicalTrimmed.equals(realHomeTrimmed, ignoreCase = true)) {
+                if (canonicalPath.equals(homePath, ignoreCase = true)) {
                     return@withContext Result.failure(
                         SecurityException("Access denied: cannot delete the user home directory"),
                     )
