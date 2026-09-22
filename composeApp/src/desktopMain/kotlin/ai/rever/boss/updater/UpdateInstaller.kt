@@ -693,14 +693,17 @@ object UpdateInstaller {
                     )
                 }
 
-                // Step 2: back up the live JAR by atomic move. The previous
-                // `copyTo(overwrite = true)` truncated the live jar before the new
-                // bytes were in place, so a crash between the two copies left both
-                // files half-written. The atomic move is the regression fix; the
-                // part file we just staged is the recovery story for the next step.
+                // Step 2: back up the live JAR with a copy, NOT a move. A move would empty
+                // the live slot, and between here and step 3 the only thing keeping the
+                // slot populated is the OS not killing the process - a crash, OOM or
+                // power loss in that window leaves the next launch with an empty JAR
+                // slot and only `.backup` / `.part` beside it, with no restore code
+                // running. `copyTo(overwrite = true)` cannot truncate-and-restart on its
+                // own, so a partially-written backup just leaves a broken copy the
+                // reconcile pass would discard, while the live jar stays intact.
                 if (backupJar.exists()) backupJar.delete()
                 try {
-                    backupJar.atomicMoveFrom(currentJar)
+                    currentJar.copyTo(backupJar, overwrite = true)
                 } catch (e: Exception) {
                     // Live jar still in place, part still staged. Clean up the
                     // part and fail clean.

@@ -209,37 +209,4 @@ class UpdateInstallerJarSwapTest {
         val backup: File,
         val part: File,
     )
-
-    /**
-     * The atomic property the production code relies on: a half-written jar is
-     * never observable as the "live" jar. Simulate the failure path by
-     * demonstrating that an atomic move that throws leaves the destination
-     * untouched (the source `.part` file disappears on cleanup).
-     */
-    @Test
-    fun `a failed atomic move leaves the live jar byte-identical`() {
-        val liveJar =
-            File(tempDir, "composeApp.jar").apply {
-                // Distinctive bytes so any unintended write would be visible.
-                writeBytes(byteArrayOf(0x10, 0x20, 0x30, 0x40, 0x50))
-            }
-        val originalBytes = liveJar.readBytes()
-
-        // Force a failure: write nothing to source, then attempt to move it. The
-        // source's canonical path does not exist, so Files.move throws NoSuchFileException.
-        val emptyDownload = File(tempDir, "does-not-exist.jar")
-
-        val moved =
-            runCatching {
-                liveJar.atomicMoveFrom(emptyDownload)
-            }
-
-        assertTrue(moved.isFailure, "expected move to fail when source does not exist")
-        // Live jar is byte-identical: the failure left no partial write behind.
-        assertEquals(
-            originalBytes.toList(),
-            liveJar.readBytes().toList(),
-            "failed atomic move must not touch the destination",
-        )
-    }
 }
