@@ -3,11 +3,11 @@ package ai.rever.boss.git
 import ai.rever.boss.window.WindowGitState
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
 import kotlin.test.assertEquals
-import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
@@ -30,6 +30,14 @@ import kotlin.test.assertTrue
 class GitRefreshEpochTest {
     @TempDir
     lateinit var tempDir: File
+
+    @AfterEach
+    fun resetGlobal() {
+        // The tests repoint the process-global currentProjectPath at temp repos;
+        // reset it after every test so a later suite in the same JVM does not
+        // read a deleted directory as "the" project.
+        GitService.clearCurrentProjectPathForTests()
+    }
 
     private fun git(
         dir: File,
@@ -94,7 +102,7 @@ class GitRefreshEpochTest {
 
             // Capture the pre-switch epoch the way refreshForWindow does at
             // entry, then run the switch (align) BEFORE the refresh publishes.
-            val staleEpoch = GitService.projectEpochForTests().get()
+            val staleEpoch = GitService.projectEpochForTests()
 
             // The switch: the user leaves A and opens B.
             GitService.alignCurrentProjectPath(repoB.absolutePath)
@@ -102,7 +110,7 @@ class GitRefreshEpochTest {
 
             // The stale refresh for A now publishes - the epoch moved, so its
             // global seed is refused and B stays the pointed project.
-            GitService.refreshForWindowWithEpochForTests(repoA.absolutePath, windowA, staleEpoch)
+            GitService.refreshForWindowWithEpoch(repoA.absolutePath, windowA, staleEpoch)
 
             assertEquals(
                 repoB.absolutePath,

@@ -21,7 +21,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
@@ -84,17 +83,27 @@ actual object GitService {
     private val _stashList = MutableStateFlow<List<GitStashInfo>>(emptyList())
     actual val stashList: StateFlow<List<GitStashInfo>> = _stashList.asStateFlow()
 
+    @Volatile
     private var currentProjectPath: String? = null
     private var refreshJob: Job? = null
 
     /**
-     * Serializes every writer of the shared [currentProjectPath] (BossConsole#813, the
-     * production scope the #814 review identified). The production writers are
-     * [refreshForWindow] and [alignCurrentProjectPath]; both previously plain assignments
-     * from any window's coroutine, so two windows' refreshes interleaved and the last
-     * write won regardless of which project the user is looking at.
+     * The ONE lock every writer of the shared [currentProjectPath] takes
+     * (BossConsole#813, the production scope the #814 review identified). The
+     * writers are [refreshForWindow]'s epoch-checked publish,
+     * [alignCurrentProjectPath] (the switch verb), and the legacy [refresh] /
+     * [clear] - all previously plain assignments from any window's coroutine,
+     * so two windows' refreshes interleaved and the last write won regardless
+     * of which project the user is looking at.
+     *
+     * A plain JVM monitor, not a coroutines [kotlinx.coroutines.sync.Mutex]:
+     * the kotlinx `withLock` is a suspension, not an object monitor, so a
+     * `synchronized(mutexObject)` elsewhere (or in a non-suspend verb) would
+     * NOT exclude it - the two would interleave as unrelated critical
+     * sections. `synchronized` is only safe around non-suspending writes, and
+     * every critical section here is exactly that.
      */
-    private val refreshMutex = Mutex()
+    private val globalProjectPathLock = Any()
 
     /**
      * Monotonic project epoch for the shared [currentProjectPath] (BossConsole#813):
@@ -129,7 +138,13 @@ actual object GitService {
             // Cancel any pending refresh
             refreshJob?.cancel()
 
-            currentProjectPath = projectPath
+            // Legacy global writer (no production callers): same monitor and
+            // epoch bump as the switch verb, so a repoint here also invalidates
+            // in-flight refreshes that captured the old epoch.
+            synchronized(globalProjectPathLock) {
+                projectEpoch.incrementAndGet()
+                currentProjectPath = projectPath
+            }
             _isLoading.value = true
             _lastError.value = null
 
@@ -421,7 +436,14 @@ actual object GitService {
 
     actual fun clear() {
         refreshJob?.cancel()
-        currentProjectPath = null
+        // Legacy unpoint (no production callers): unpointing is a project
+        // change, so it takes the same monitor and bumps the epoch - an
+        // in-flight refresh that captured the old epoch must not repoint the
+        // global after the close.
+        synchronized(globalProjectPathLock) {
+            projectEpoch.incrementAndGet()
+            currentProjectPath = null
+        }
         _currentBranch.value = null
         _isGitRepository.value = false
         _localBranches.value = emptyList()
@@ -1666,13 +1688,12 @@ actual object GitService {
      */
     actual fun alignCurrentProjectPath(projectPath: String) {
         // Bump the epoch under the SAME monitor refreshForWindow's publish takes
-        // (the expect signature is non-suspend, so a plain monitor on the mutex
-        // object - held only for the two writes below, never across a suspension).
-        // Two different monitors would let a switch's increment/assign and a
-        // refresh's check/assign interleave as separate critical sections, and a
-        // stale refresh could assign its old project after the switch - the race
-        // the epoch exists to close.
-        synchronized(refreshMutex) {
+        // ([globalProjectPathLock], a plain object monitor - this verb is
+        // non-suspend, so it cannot use a coroutines Mutex at all, and a
+        // `synchronized` on the mutex object would not have excluded the
+        // refresh's `withLock` in the first place). Held only for the two
+        // writes below, never across a suspension.
+        synchronized(globalProjectPathLock) {
             projectEpoch.incrementAndGet()
             currentProjectPath = projectPath
         }
@@ -1680,43 +1701,23 @@ actual object GitService {
 
     /**
      * Test-only view of [projectEpoch], so the stale-refresh regression can capture the
-     * pre-switch epoch exactly the way refreshForWindow does and then drive the
-     * post-switch publish deterministically - no coroutine scheduling involved.
+     * pre-switch epoch exactly the way [refreshForWindow] does at entry and then drive
+     * the post-switch publish deterministically - no coroutine-scheduling luck.
      */
-    internal fun projectEpochForTests(): AtomicLong = projectEpoch
+    internal fun projectEpochForTests(): Long = projectEpoch.get()
 
     /**
-     * Test-only entry that publishes with an explicit captured epoch (the stale-refresh
-     * half of [refreshForWindow]): the production body re-checks the epoch under the
-     * mutex and drops the global seed when a switch bumped it. The window-scoped state
-     * still refreshes; only the global publish is epoch-gated.
+     * The full [refreshForWindow] body with an EXPLICIT captured epoch instead of one
+     * taken at entry (BossConsole#813): the single epoch-gated publish happens under
+     * [globalProjectPathLock] and is dropped when a switch bumped the epoch. The
+     * window-scoped state still refreshes; only the global seed for the diff verbs is
+     * refused. [refreshForWindow] delegates here with the epoch captured at its real
+     * entry, so tests exercise the production path, not a shadow of it.
      */
-    internal suspend fun refreshForWindowWithEpochForTests(
+    internal suspend fun refreshForWindowWithEpoch(
         projectPath: String,
         windowGitState: WindowGitState?,
         epochAtEntry: Long,
-    ) {
-        if (windowGitState == null) return
-        windowGitState.setProjectPath(projectPath)
-        refreshMutex.withLock {
-            if (epochAtEntry == projectEpoch.get() && currentProjectPath != projectPath) {
-                currentProjectPath = projectPath
-            }
-        }
-    }
-
-    /**
-     * Test-only inverse of [alignCurrentProjectPath], which can only point, never
-     * unpoint: a test that steers the global at a temp repo must be able to put
-     * "no project" back, or a later test in the same JVM reads a deleted dir.
-     */
-    internal fun clearCurrentProjectPathForTests() {
-        currentProjectPath = null
-    }
-
-    actual suspend fun refreshForWindow(
-        projectPath: String,
-        windowGitState: WindowGitState?,
     ) = withContext(Dispatchers.IO) {
         if (windowGitState == null) return@withContext
 
@@ -1728,21 +1729,18 @@ actual object GitService {
         // the same panel listed the changes correctly. Seed it from the window
         // that is asking; null is never the better answer.
         //
-        // Epoch-checked publish (BossConsole#813, production scope): capture
-        // the epoch on entry, and under the mutex publish ONLY if it is
-        // unchanged - a switch/close that landed while this refresh waited (or
-        // while its subprocesses ran) bumped the epoch, and the stale refresh
-        // must not repoint the global at a project the user has left. The
-        // window-scoped GitState this refresh builds is unaffected; only the
-        // global seed for the diff verbs is refused.
-        val epochAtEntry = projectEpoch.get()
-        refreshMutex.withLock {
+        // Epoch-checked publish (BossConsole#813, production scope): publish
+        // ONLY if the epoch captured at entry is unchanged - a switch/close
+        // that landed while this refresh was in flight bumped the epoch, and
+        // the stale refresh must not repoint the global at a project the user
+        // has left. The window-scoped GitState this refresh builds is
+        // unaffected; only the global seed for the diff verbs is refused.
+        synchronized(globalProjectPathLock) {
             if (epochAtEntry == projectEpoch.get() && currentProjectPath != projectPath) {
                 currentProjectPath = projectPath
             }
         }
         windowGitState.setLoading(true)
-
         try {
             if (!_isGitAvailable.value) {
                 windowGitState.updateGitState(
@@ -1789,6 +1787,35 @@ actual object GitService {
             windowGitState.setLoading(false)
         }
     }
+
+    /**
+     * Test-only inverse of [alignCurrentProjectPath], which can only point, never
+     * unpoint: a test that steers the global at a temp repo must be able to put
+     * "no project" back, or a later test in the same JVM reads a deleted dir.
+     */
+    internal fun clearCurrentProjectPathForTests() {
+        // A writer of [currentProjectPath] too: unpointing is a project change,
+        // so it takes the same monitor and bumps the epoch like [clear] does.
+        synchronized(globalProjectPathLock) {
+            projectEpoch.incrementAndGet()
+            currentProjectPath = null
+        }
+    }
+
+    /**
+     * Refresh a window's git state and - if the epoch is unchanged - seed the global
+     * project path from it (BossConsole#813).
+     *
+     * The epoch is captured at this REAL entry, before any dispatcher hop, so a
+     * project switch that lands between the caller's launch and the body landing
+     * still invalidates this refresh. The full body and its single epoch-gated
+     * publish live in [refreshForWindowWithEpoch], which this delegates to - tests
+     * exercise the production path, not a shadow of it.
+     */
+    actual suspend fun refreshForWindow(
+        projectPath: String,
+        windowGitState: WindowGitState?,
+    ) = refreshForWindowWithEpoch(projectPath, windowGitState, projectEpoch.get())
 
     /**
      * Refresh stash list for a specific window.
