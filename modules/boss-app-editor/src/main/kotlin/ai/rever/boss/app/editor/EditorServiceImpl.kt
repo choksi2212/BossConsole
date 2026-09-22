@@ -91,9 +91,17 @@ class EditorServiceImpl(
         // follows the link to its actual location. The exists() probe uses
         // NOFOLLOW_LINKS so a BROKEN symlink still counts as present - walking
         // past it would resolve the anchor one level too high and judge the link's
-        // own location instead of the target it names. Traversal is covered by the
-        // resolution itself, so the old raw-string `..` ban (which also false-refused
-        // legitimate names like `notes..txt`) is gone.
+        // own location instead of the target it names. A DANGLING symlink inside
+        // the root is therefore its own anchor: toRealPath fails on it and the
+        // path is refused (NOT_FOUND inside the root, INVALID_ARGUMENT outside) -
+        // fail-closed; a save through a link nobody can follow is not a save the
+        // user can expect. Traversal is covered by the resolution itself, so the
+        // old raw-string `..` ban (which also false-refused legitimate names like
+        // `notes..txt`) is gone. Best-effort against concurrent mutation, like
+        // FileSystemPathPolicy: a directory component swapped for a symlink
+        // between the gate and the write is followed by the write itself - the
+        // gate closes the static-configuration holes (links, prefixes, case),
+        // not a live adversary.
         var anchor = absolute
         while (!Files.exists(anchor, LinkOption.NOFOLLOW_LINKS)) {
             anchor = anchor.parent ?: break
@@ -102,21 +110,45 @@ class EditorServiceImpl(
             try {
                 anchor.toRealPath().toFile()
             } catch (_: java.nio.file.NoSuchFileException) {
-                // The anchor raced into deletion between the exists() walk and the
-                // resolution: refuse rather than guess at a half-gone tree.
+                // The anchor is unresolvable: a DANGLING symlink (present at the
+                // NOFOLLOW probe, no target to resolve to) or a directory that
+                // raced into deletion between the walk and the resolution. Deny
+                // before not-found: resolve the EXISTING prefix of the path (the
+                // deepest existing ancestor above the broken piece, skipping the
+                // broken piece itself - canonicalizing it would fail), re-append
+                // the rest, and judge THAT against the root, so a stale
+                // out-of-root path reads as a refusal, not a NOT_FOUND the caller
+                // can probe with. Judging impossible => deny.
+                var up: java.nio.file.Path? = anchor.parent
+                while (up != null && !Files.exists(up, LinkOption.NOFOLLOW_LINKS)) {
+                    up = up.parent
+                }
+                val base = up?.let { runCatching { it.toRealPath() }.getOrNull() }
+                val candidate =
+                    base?.let { it.resolve(anchor.fileName).resolve(anchor.relativize(absolute)).normalize() }
+                if (base == null || candidate == null || !candidate.startsWith(confinementRoot.toPath())) {
+                    throw Status.INVALID_ARGUMENT
+                        .withDescription("Access denied: path outside the user's home directory: $path")
+                        .asRuntimeException()
+                }
+                // Inside the root: the target is gone; NOT_FOUND, not a guess.
                 throw Status.NOT_FOUND
                     .withDescription("Path parent no longer exists: $path")
                     .asRuntimeException()
             }
         val tail = anchor.relativize(absolute)
+        // Path arithmetic, not string splicing (the shape FileSystemPathPolicy
+        // uses): a string prefix check misbehaves when the root is a
+        // filesystem root (root + separator yields `//`, which nothing
+        // starts with - the service would silently refuse everything) and
+        // compares case-sensitively on case-insensitive filesystems.
         val resolved =
-            if (tail.getNameCount() == 0) {
-                resolvedAnchor
-            } else {
-                File(resolvedAnchor, tail.toString().replace(java.io.File.separatorChar, '/'))
-            }
-        val root = confinementRoot.absolutePath + File.separator
-        if (!resolved.absolutePath.startsWith(root) && resolved.absolutePath != confinementRoot.absolutePath) {
+            resolvedAnchor
+                .toPath()
+                .resolve(tail)
+                .normalize()
+                .toFile()
+        if (!resolved.toPath().startsWith(confinementRoot.toPath())) {
             throw Status.INVALID_ARGUMENT
                 .withDescription("Access denied: path outside the user's home directory: $path")
                 .asRuntimeException()
@@ -131,32 +163,41 @@ class EditorServiceImpl(
      * re-implemented locally because the helper lives in composeApp and this module
      * is a standalone kernel service. `File.renameTo` is deliberately not used: its
      * behavior when the destination exists is platform-dependent in exactly the way
-     * that hid the favicon-cache bug on Windows.
+     * that hid the favicon-cache bug on Windows. A process killed mid-save
+     * leaves the `.part` sibling in the user's source tree (visible in git
+     * status) - the trade is a torn target, which is worse.
      */
     private fun atomicWrite(
         target: File,
         content: String,
     ) {
         target.parentFile?.mkdirs()
-        // Unique sibling temp file, moved atomically over the target. The prefix
-        // is padded to three characters: File.createTempFile requires >= 3 and
-        // the target's name is arbitrary user input (a one-character filename).
-        val prefix = target.name.takeIf { it.length >= 2 } ?: "ed."
+        // Unique sibling temp file, moved atomically over the target. The
+        // prefix is the target's name, capped: createTempFile appends random
+        // digits plus the suffix, so a ~230-char filename at the usual 255
+        // NAME_MAX would overflow and fail EVERY save of that file (and a
+        // one-char name is under createTempFile's 3-char minimum, hence the
+        // pad).
+        val prefix = target.name.take(64).takeIf { it.length >= 2 } ?: "ed."
         val tmp = File.createTempFile("$prefix.", ".part", target.parentFile)
         try {
-            // Preserve the target's existing POSIX mode: createTempFile takes the
-            // umask-derived 0644, and the moved temp file BECOMES the target -
-            // without this an executable script loses +x on Ctrl-S and a 0600
-            // file widens, the exact failure the house atomicWriteText's permission
-            // pin prevents for state files. A brand-new file keeps the umask
-            // default. (Windows ACLs are not mirrored; the house helper does not.)
+            tmp.writeText(content, Charsets.UTF_8)
+            // Preserve the target's existing POSIX mode: createTempFile takes
+            // the umask-derived 0644, and the moved temp file BECOMES the
+            // target - without this an executable script loses +x on Ctrl-S
+            // and a 0600 file widens, the exact failure the house
+            // atomicWriteText's permission pin prevents for state files. A
+            // brand-new file keeps the umask default. (Windows ACLs are not
+            // mirrored; the house helper does not.) AFTER the write: a 0444
+            // target would otherwise make the freshly-created temp unwritable
+            // by its own owner and the save would fail inside the very write
+            // it is trying to make atomic.
             if (target.exists()) {
                 val view = Files.getFileAttributeView(target.toPath(), PosixFileAttributeView::class.java)
                 if (view != null) {
                     Files.setPosixFilePermissions(tmp.toPath(), view.readAttributes().permissions())
                 }
             }
-            tmp.writeText(content, Charsets.UTF_8)
             java.nio.file.Files.move(
                 tmp.toPath(),
                 target.toPath(),
@@ -248,13 +289,11 @@ class EditorServiceImpl(
                 openFiles[request.path] = false
             } catch (e: CancellationException) {
                 throw e
-            } catch (
-                @Suppress("SwallowedException")
-                e: java.io.IOException, // logged, then rethrown as INTERNAL
-            ) {
+            } catch (e: java.io.IOException) {
                 logger.error("saveFile failed for {}: {}", request.path, e.message)
                 throw Status.INTERNAL
                     .withDescription("Save failed for ${request.path}: ${e.message}")
+                    .withCause(e)
                     .asRuntimeException()
             }
             Empty.getDefaultInstance()
@@ -275,7 +314,18 @@ class EditorServiceImpl(
     override suspend fun detectMainFunctions(request: DetectMainRequest): DetectMainResponse =
         withContext(Dispatchers.IO) {
             logger.info("detectMainFunctions: path={}", request.path)
-            val file = validatePath(request.path)
+            val file =
+                try {
+                    validatePath(request.path)
+                } catch (e: StatusRuntimeException) {
+                    if (e.status.code == Status.Code.NOT_FOUND) {
+                        // Stale path whose parent raced away: the same
+                        // empty-scan response the missing-file check below
+                        // returns, not an RPC error.
+                        return@withContext DetectMainResponse.newBuilder().build()
+                    }
+                    throw e
+                }
             if (!file.exists() || !file.isFile) return@withContext DetectMainResponse.newBuilder().build()
 
             val functions = mutableListOf<MainFunctionInfo>()
