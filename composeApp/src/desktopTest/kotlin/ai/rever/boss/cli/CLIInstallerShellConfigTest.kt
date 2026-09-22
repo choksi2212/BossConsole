@@ -112,4 +112,47 @@ class CLIInstallerShellConfigTest {
         assertTrue(result.success)
         assertEquals(true, result.alreadyConfigured)
     }
+
+    /**
+     * Regression for the "symlink refuses the whole install" bug. A symlinked
+     * `.zshrc` (the dotfile-manager case) must not block a perfectly writable
+     * `.bashrc` further down the candidate list - the loop must `continue`,
+     * not `return`, on a symlink. Before the fix, the symlink was returned as
+     * the result and `.bashrc` was never considered.
+     */
+    @Test
+    fun `a symlinked zshrc does not block a real bashrc further down the candidate list`() {
+        val zshrc = java.io.File(homeDir, ".zshrc")
+        Files.createSymbolicLink(zshrc.toPath(), realZshrcTarget.toPath())
+        val bashrc = java.io.File(homeDir, ".bashrc")
+        bashrc.writeText("# my bash config\n")
+
+        val result = CLIInstaller.testUpdateShellConfigForHome(homeDir)
+
+        assertTrue(
+            result.success,
+            "bashrc must have been written despite zshrc being a symlink: ${result.skippedReason}",
+        )
+        assertEquals(false, result.alreadyConfigured)
+        // result.configPath uses the candidate-list template ("$homeDir/.bashrc"), so
+        // path separators may differ from bashrc.absolutePath on Windows. Compare
+        // by file name to assert "bashrc was the one that won".
+        assertTrue(
+            result.configPath?.endsWith(".bashrc") == true,
+            "the writable candidate is .bashrc, got: ${result.configPath}",
+        )
+        // The symlink target is untouched (the symlink itself was never written to).
+        assertEquals(
+            "# my notes\ndo not overwrite me\n",
+            realZshrcTarget.readText(),
+            "symlink target must not be overwritten",
+        )
+        // .bashrc now carries the PATH export and its original line.
+        val updated = bashrc.readText()
+        assertTrue(updated.contains("# my bash config"), "original bashrc content must survive")
+        assertTrue(
+            updated.contains("export PATH=") && updated.contains(".local/bin"),
+            "PATH export must be appended to bashrc",
+        )
+    }
 }

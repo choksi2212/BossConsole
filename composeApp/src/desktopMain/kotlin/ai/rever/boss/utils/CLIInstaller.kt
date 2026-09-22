@@ -300,6 +300,11 @@ actual object CLIInstaller {
         val pathExport = "export PATH=\"\$HOME/.local/bin:\$PATH\""
         val fishPathExport = "set -gx PATH \$HOME/.local/bin \$PATH"
 
+        // Last symlinked candidate we refused, for the post-loop "every existing
+        // candidate was a symlink" case. Without it, returning nothing would lose
+        // the reason the install refused, and the existing test pins that contract.
+        var lastSymlinkPath: String? = null
+
         // Find first existing config file
         for ((configPath, shell) in shellConfigs) {
             val configFile = File(configPath)
@@ -311,18 +316,20 @@ actual object CLIInstaller {
                 // would have that notes file overwritten with a shell config on the next
                 // CLI install. The check is on the candidate, not the resolved target,
                 // because the resolved target is exactly what we are refusing to touch.
+                //
+                // `continue`, not `return`: a symlinked `.zshrc` (common with dotfile
+                // managers that symlink the rc into a repo) must not prevent the
+                // remaining candidates - a perfectly writable plain `~/.bashrc` - from
+                // being considered. The post-loop fallback reports the symlink so the
+                // refusal is observable end-to-end.
                 if (Files.isSymbolicLink(configFile.toPath())) {
                     logger.warn(
                         LogCategory.SYSTEM,
                         "Refusing to update a symlinked shell config; add the PATH export by hand",
                         mapOf("configPath" to configPath, "target" to configFile.toPath().toAbsolutePath()),
                     )
-                    return ShellConfigResult(
-                        success = false,
-                        configPath = configPath,
-                        alreadyConfigured = false,
-                        skippedReason = "symlink",
-                    )
+                    lastSymlinkPath = configPath
+                    continue
                 }
 
                 // Read current content
@@ -365,13 +372,25 @@ actual object CLIInstaller {
             }
         }
 
-        // No config file found or all failed
-        return ShellConfigResult(
-            success = false,
-            configPath = null,
-            alreadyConfigured = false,
-            skippedReason = null,
-        )
+        // No candidate was written. If every existing candidate was a symlink we
+        // refused, surface that rather than a generic "nothing to write", so the
+        // caller and the test can distinguish "no rc on disk" from "all candidates
+        // were symlinked". Otherwise nothing existed and skippedReason stays null.
+        return if (lastSymlinkPath != null) {
+            ShellConfigResult(
+                success = false,
+                configPath = lastSymlinkPath,
+                alreadyConfigured = false,
+                skippedReason = "symlink",
+            )
+        } else {
+            ShellConfigResult(
+                success = false,
+                configPath = null,
+                alreadyConfigured = false,
+                skippedReason = null,
+            )
+        }
     }
 
     /**
