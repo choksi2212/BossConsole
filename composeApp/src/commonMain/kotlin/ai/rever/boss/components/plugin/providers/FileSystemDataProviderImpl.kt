@@ -186,10 +186,12 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                 // would then descend into the target and erase it - which is exactly the
                 // #1118 escape this guard is meant to prevent.
                 val canonicalFile = file.canonicalFile
-                val realCanonicalPath = runCatching { canonicalFile.toPath().toRealPath().toString() }
-                    .getOrDefault(canonicalFile.absolutePath)
-                val realHomePath = runCatching { homeDir.toPath().toRealPath().toString() }
-                    .getOrDefault(homeDir.absolutePath)
+                val realCanonicalPath =
+                    runCatching { canonicalFile.toPath().toRealPath().toString() }
+                        .getOrDefault(canonicalFile.absolutePath)
+                val realHomePath =
+                    runCatching { homeDir.toPath().toRealPath().toString() }
+                        .getOrDefault(homeDir.absolutePath)
                 val canonicalPath = realCanonicalPath.trimEnd('\\', '/')
                 val homePath = realHomePath.trimEnd('\\', '/')
                 if (!canonicalPath.startsWith(homePath + File.separator) &&
