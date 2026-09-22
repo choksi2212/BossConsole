@@ -127,7 +127,7 @@ object ChromiumAutoDownloader {
         promotePendingInstall(
             pending = getPendingChromiumDir().toFile(),
             target = getChromiumDir().toFile(),
-            backup = getBackupChromiumDir(),
+            backup = getBackupChromiumDir().toFile(),
         )
     }
 
