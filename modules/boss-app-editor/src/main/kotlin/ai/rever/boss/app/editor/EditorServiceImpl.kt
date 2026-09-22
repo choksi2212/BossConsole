@@ -10,10 +10,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.io.File
+import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.InvalidPathException
 import java.nio.file.LinkOption
+import java.nio.file.NoSuchFileException
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFileAttributeView
-import java.nio.file.attribute.PosixFilePermission
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -49,7 +54,9 @@ class EditorServiceImpl(
      */
     private val confinementRoot: File =
         runCatching { root.toPath().toRealPath().toFile() }
-            .getOrElse { root.canonicalFile }
+            // canonicalFile can itself throw IOException; an absolute path is
+            // the last-resort total, so construction never fails.
+            .getOrElse { runCatching { root.canonicalFile }.getOrElse { root.absoluteFile } }
 
     private val logger = LoggerFactory.getLogger(EditorServiceImpl::class.java)
 
@@ -74,7 +81,7 @@ class EditorServiceImpl(
         val absolute =
             try {
                 File(path).toPath().toAbsolutePath().normalize()
-            } catch (_: java.nio.file.InvalidPathException) {
+            } catch (_: InvalidPathException) {
                 // Illegal name characters (e.g. `C:\a<b` on Windows) must read as a
                 // bad argument, not a service crash (UNKNOWN on the wire).
                 throw Status.INVALID_ARGUMENT
@@ -109,17 +116,19 @@ class EditorServiceImpl(
         val resolvedAnchor =
             try {
                 anchor.toRealPath().toFile()
-            } catch (_: java.nio.file.NoSuchFileException) {
-                // The anchor is unresolvable: a DANGLING symlink (present at the
-                // NOFOLLOW probe, no target to resolve to) or a directory that
-                // raced into deletion between the walk and the resolution. Deny
+            } catch (_: IOException) {
+                // The anchor is unresolvable (NoSuchFileException,
+                // AccessDeniedException, a disconnected share - any IOException):
+                // a DANGLING symlink (present at the NOFOLLOW probe, no target to
+                // resolve to) or a directory that raced into deletion between the
+                // walk and the resolution. Deny
                 // before not-found: resolve the EXISTING prefix of the path (the
                 // deepest existing ancestor above the broken piece, skipping the
                 // broken piece itself - canonicalizing it would fail), re-append
                 // the rest, and judge THAT against the root, so a stale
                 // out-of-root path reads as a refusal, not a NOT_FOUND the caller
                 // can probe with. Judging impossible => deny.
-                var up: java.nio.file.Path? = anchor.parent
+                var up: Path? = anchor.parent
                 while (up != null && !Files.exists(up, LinkOption.NOFOLLOW_LINKS)) {
                     up = up.parent
                 }
@@ -127,9 +136,7 @@ class EditorServiceImpl(
                 val candidate =
                     base?.let { it.resolve(anchor.fileName).resolve(anchor.relativize(absolute)).normalize() }
                 if (base == null || candidate == null || !candidate.startsWith(confinementRoot.toPath())) {
-                    throw Status.INVALID_ARGUMENT
-                        .withDescription("Access denied: path outside the user's home directory: $path")
-                        .asRuntimeException()
+                    throw denyOutsideRoot(path)
                 }
                 // Inside the root: the target is gone; NOT_FOUND, not a guess.
                 throw Status.NOT_FOUND
@@ -149,9 +156,7 @@ class EditorServiceImpl(
                 .normalize()
                 .toFile()
         if (!resolved.toPath().startsWith(confinementRoot.toPath())) {
-            throw Status.INVALID_ARGUMENT
-                .withDescription("Access denied: path outside the user's home directory: $path")
-                .asRuntimeException()
+            throw denyOutsideRoot(path)
         }
         return resolved
     }
@@ -166,6 +171,17 @@ class EditorServiceImpl(
      * that hid the favicon-cache bug on Windows. A process killed mid-save
      * leaves the `.part` sibling in the user's source tree (visible in git
      * status) - the trade is a torn target, which is worse.
+     *
+     * A rename-based save also MOVES the permission requirement from the
+     * file to its directory: a read-only FILE in a writable directory is
+     * now saveable, but a writable file in a read-only directory is not
+     * (previously a plain writeText needed only the file). And the move
+     * changes the target's inode - hard links to it keep the old content,
+     * and inode-based watchers lose the file - with no fsync before the
+     * move, so "the previous version survives a crash" covers a process
+     * crash, not power loss on a filesystem without the rename heuristic.
+     * Windows ACLs and ownership are not mirrored across the move (only
+     * the POSIX mode is; the house helper does not either).
      */
     private fun atomicWrite(
         target: File,
@@ -198,20 +214,18 @@ class EditorServiceImpl(
                     Files.setPosixFilePermissions(tmp.toPath(), view.readAttributes().permissions())
                 }
             }
-            java.nio.file.Files.move(
+            Files.move(
                 tmp.toPath(),
                 target.toPath(),
-                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE,
             )
-        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-            java.nio.file
-                .Files
-                .move(
-                    tmp.toPath(),
-                    target.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                )
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(
+                tmp.toPath(),
+                target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+            )
         } finally {
             // No-op when the move took it away; cleans up on failure paths.
             if (tmp.exists()) tmp.delete()
@@ -289,7 +303,7 @@ class EditorServiceImpl(
                 openFiles[request.path] = false
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: java.io.IOException) {
+            } catch (e: IOException) {
                 logger.error("saveFile failed for {}: {}", request.path, e.message)
                 throw Status.INTERNAL
                     .withDescription("Save failed for ${request.path}: ${e.message}")
@@ -382,3 +396,17 @@ class EditorServiceImpl(
             else -> LanguageIds.forExtension(ext) ?: "plaintext"
         }
 }
+
+/**
+ * The refusal for a well-formed path the policy forbids: PERMISSION_DENIED,
+ * not INVALID_ARGUMENT - the client must be able to tell "this path is
+ * nonsense" (bad argument) from "this path is fine, policy forbids it"
+ * (denied). The message does not hardcode "home": the confinement root is
+ * injectable, and a project-root follow-up will pass a different one.
+ * File-scope (not a member) so it does not count toward the class's
+ * function budget.
+ */
+private fun denyOutsideRoot(path: String) =
+    Status.PERMISSION_DENIED
+        .withDescription("Access denied: path outside the confinement root: $path")
+        .asRuntimeException()

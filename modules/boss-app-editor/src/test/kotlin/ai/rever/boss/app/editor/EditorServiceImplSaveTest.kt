@@ -65,7 +65,15 @@ class EditorServiceImplSaveTest {
         // it fails on a read-only file and leaves the old content; the atomic
         // shape writes a temp and moves it over, governed by the directory
         // bits, and the mode is re-applied AFTER the temp write so a 0444
-        // target does not make the temp unwritable.
+        // target does not make the temp unwritable. (POSIX-only:
+        // setPosixFilePermissions throws on the Windows default filesystem.)
+        if (Files.getFileAttributeView(
+                tempDir.toPath(),
+                java.nio.file.attribute.PosixFileAttributeView::class.java,
+            ) == null
+        ) {
+            return
+        }
         val target = File(tempDir, "locked/readonly.txt").apply { parentFile.mkdirs() }
         target.writeText("original complete content\n")
         Files.setPosixFilePermissions(
@@ -96,7 +104,7 @@ class EditorServiceImplSaveTest {
             assertFailsWith<io.grpc.StatusRuntimeException> {
                 runBlocking { impl().openFile(openRequest(outside)) }
             }
-        assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, e.status.code)
+        assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, e.status.code)
     }
 
     @Test
@@ -117,7 +125,7 @@ class EditorServiceImplSaveTest {
             assertFailsWith<io.grpc.StatusRuntimeException> {
                 runBlocking { impl().openFile(openRequest(link)) }
             }
-        assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, e.status.code)
+        assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, e.status.code)
         outsideDir.deleteRecursively()
     }
 
@@ -130,7 +138,7 @@ class EditorServiceImplSaveTest {
             assertFailsWith<io.grpc.StatusRuntimeException> {
                 runBlocking { impl().openFile(openRequest(outside)) }
             }
-        assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, e.status.code)
+        assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, e.status.code)
     }
 
     @Test
@@ -154,7 +162,7 @@ class EditorServiceImplSaveTest {
             assertFailsWith<io.grpc.StatusRuntimeException> {
                 runBlocking { impl().saveFile(saveRequest(outside)) }
             }
-        assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, e.status.code)
+        assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, e.status.code)
         assertFalse(escapeDir.exists(), "the gate must not create directories outside the confinement root")
     }
 
@@ -186,21 +194,20 @@ class EditorServiceImplSaveTest {
         // The old code caught every exception and returned the same Empty a
         // successful save returns; the client marks the buffer clean on Empty,
         // so a disk-full save lost the edit silently. A write failure must
-        // surface as an INTERNAL error.
-        val target = File(tempDir, "ro/file.kt")
-        target.parentFile.mkdirs()
-        target.writeText("original\n")
-        target.parentFile.setWritable(false)
-        try {
-            val e =
-                assertFailsWith<io.grpc.StatusRuntimeException> {
-                    runBlocking { impl().saveFile(saveRequest(target)) }
-                }
-            assertEquals(io.grpc.Status.Code.INTERNAL, e.status.code)
-        } finally {
-            target.parentFile.setWritable(true)
-        }
-        assertEquals("original\n", target.readText(), "the previous content must survive a failed save")
+        // surface as an INTERNAL error. Portable failure injection: a parent
+        // path component that is a REGULAR FILE - mkdirs/createTempFile fail
+        // with IOException on every platform (a read-only directory would not
+        // stop createTempFile on Windows, where the DOS read-only bit does
+        // not block file creation).
+        val blocker = File(tempDir, "ro").apply { writeText("not a directory\n") }
+        val target = File(blocker, "file.kt")
+        val e =
+            assertFailsWith<io.grpc.StatusRuntimeException> {
+                runBlocking { impl().saveFile(saveRequest(target)) }
+            }
+        assertEquals(io.grpc.Status.Code.INTERNAL, e.status.code)
+        assertEquals("not a directory\n", blocker.readText(), "the blocker must be untouched")
+        assertFalse(target.exists(), "a failed save must not create the target")
     }
 
     @Test
@@ -209,6 +216,9 @@ class EditorServiceImplSaveTest {
         // string-prefix check: root + separator yields `//`, which nothing
         // starts with, so every save was denied and the service silently
         // inert. Component-wise Path.startsWith handles the root root.
+        // (Assumes tempDir is reachable from the filesystem root - true on
+        // all three CI platforms; on a multi-drive Windows box this test
+        // would need a same-drive root.)
         val impl = EditorServiceImpl(root = File("/"))
         val target = File(tempDir, "under-root/Saved.kt")
         runBlocking { impl.saveFile(saveRequest(target)) }
@@ -229,8 +239,8 @@ class EditorServiceImplSaveTest {
     @Test
     fun `a stale out-of-root path whose parent is gone is refused, not reported not-found`() {
         // Deny before not-found: an out-of-root path must read as a
-        // confinement refusal (INVALID_ARGUMENT), never a NOT_FOUND the caller
-        // can probe with to learn whether the parent once existed.
+        // confinement refusal (PERMISSION_DENIED), never a NOT_FOUND the
+        // caller can probe with to learn whether the parent once existed.
         val outsideDir = File(tempDir.parentFile ?: File("/"), "vanished-outside-${java.util.UUID.randomUUID()}")
         outsideDir.mkdirs()
         val stale = File(outsideDir, "gone/Gone.kt")
@@ -239,7 +249,7 @@ class EditorServiceImplSaveTest {
                 assertFailsWith<io.grpc.StatusRuntimeException> {
                     runBlocking { impl().openFile(openRequest(stale)) }
                 }
-            assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, e.status.code)
+            assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, e.status.code)
         } finally {
             outsideDir.deleteRecursively()
         }
