@@ -488,7 +488,7 @@ internal fun mergeUserPath(
 internal fun parseRegPathOutput(output: String): String? {
     val match =
         Regex(
-            """\s+Path\s+(?:REG_SZ|REG_EXPAND_SZ)\s+(.*)""",
+            """\s+Path\s+(?:REG_SZ|REG_EXPAND_SZ)\s*(.*)""",
         ).find(output)
     return match?.groupValues?.get(1)
 }
