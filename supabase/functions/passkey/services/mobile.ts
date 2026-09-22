@@ -122,13 +122,28 @@ export const generateMobileAuthenticationPage = withErrorHandler(
     // otherwise show a victim the wrong account). The challenge row's user_id
     // is the source of truth: it was set by /auth/challenge after Supabase
     // resolved the email server-side.
+    //
+    // Failing closed here - no `?? email` fallback, no challenge update on
+    // lookup failure - closes the regression where an attacker-controlled
+    // `email` URL parameter would be shown to a victim on any of: lookup
+    // error, no row, or a blank stored email. The generic error returned
+    // below is the same one a stale or missing challenge produces, so the
+    // caller cannot probe whether a user id is real.
     const { data: userRow, error: userError } = await supabase
       .from('users')
       .select('email')
       .eq('id', userId)
       .single()
 
-    const resolvedEmail = userRow?.email ?? email
+    if (userError || !userRow || !userRow.email) {
+      console.error('❌ Cannot resolve user email for challenge:', userError)
+      return {
+        success: false,
+        error: 'Invalid authentication challenge'
+      }
+    }
+
+    const resolvedEmail = userRow.email
 
     // Get user's passkey credential
     const { data: passkey, error: passkeyError } = await supabase
