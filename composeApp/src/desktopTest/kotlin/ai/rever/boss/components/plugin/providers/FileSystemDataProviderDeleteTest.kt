@@ -83,24 +83,23 @@ class FileSystemDataProviderDeleteTest {
     }
 
     @Test
-    fun `deleting a path with parent traversal that escapes home is no longer refused`() {
-        // homeDir/../sibling resolves to a directory outside home. The user-home boundary
-        // was deliberately removed, so the path resolves to the sibling through `..` and
-        // the delete goes through. The test now verifies the path IS erased - the
-        // boundary was the gate that used to refuse it.
-        val sibling = Files.createTempDirectory("fsd-provider-sibling-")
+    fun `deleting a path with parent traversal that escapes home is refused`() {
+        // Place a sibling under the homeDir's parent so homeDir/../sibling resolves to a
+        // real directory outside home. The component-aware home-containment check must
+        // canonicalise the path and refuse the request, leaving the canary intact.
+        val sibling = Files.createDirectory(homeDir.parent.resolve("fsd-provider-sibling-${System.nanoTime()}"))
         try {
             val siblingCanary = Files.createFile(sibling.resolve("canary.txt"))
-            val target = sibling.resolve("canary.txt")
             val traversalPath = homeDir.resolve("..").resolve(sibling.fileName).resolve("canary.txt")
 
             val result = runBlocking { provider.delete(traversalPath.toString()) }
 
-            // No throw - the user-home boundary is gone.
-            assertTrue(result.isSuccess, "traversal path is no longer refused; got $result")
-            assertFalse(
+            assertTrue(result.isFailure, "traversal that escapes home should be refused; got $result")
+            val failure = result.exceptionOrNull()
+            assertTrue(failure is SecurityException, "expected SecurityException, got $failure")
+            assertTrue(
                 Files.exists(siblingCanary),
-                "sibling canary must be erased since the boundary was removed",
+                "sibling canary at $siblingCanary must NOT be erased when traversal is refused",
             )
         } finally {
             Files.walk(sibling).use { paths ->
@@ -110,11 +109,11 @@ class FileSystemDataProviderDeleteTest {
     }
 
     @Test
-    fun `symlink to outside is accepted after boundary drop`() {
-        // The user.home boundary was deliberately removed. This test used to pin that a
-        // symlink whose target lives outside home was refused at the boundary - that gate
-        // is gone, and the test must move with it. The remaining protection (no traversal
-        // past directory symlinks) is still pinned by the nested / chain tests below.
+    fun `deleting a symlink whose target lives outside home is refused`() {
+        // The link itself sits under homeDir, but its canonical target is outside. The
+        // component-aware containment check runs on the canonical path, so the request is
+        // refused and the external canary is left intact. The nested/chain tests below
+        // pin the separate NOFOLLOW_LINKS guarantee for in-scope directories.
         val outside = Files.createTempDirectory("fsd-provider-outside-")
         try {
             val externalCanary = Files.createFile(outside.resolve("canary.txt"))
@@ -126,8 +125,13 @@ class FileSystemDataProviderDeleteTest {
 
             val result = runBlocking { provider.delete(link.getOrThrow().toString()) }
 
-            // No throw - the boundary was removed.
-            assertTrue(result.isSuccess, "symlink to outside is no longer refused; got $result")
+            assertTrue(result.isFailure, "symlink-to-outside should be refused; got $result")
+            val failure = result.exceptionOrNull()
+            assertTrue(failure is SecurityException, "expected SecurityException, got $failure")
+            assertTrue(
+                Files.exists(externalCanary),
+                "external canary at $externalCanary must NOT be erased when the symlink-to-outside is refused",
+            )
         } finally {
             Files.walk(outside).use { paths ->
                 paths.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }

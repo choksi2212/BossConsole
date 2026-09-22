@@ -171,11 +171,25 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                 val file = java.io.File(path)
                 val homeDir = File(System.getProperty("user.home")).canonicalFile
 
-                // Security: refuse to delete the home directory itself. A plugin request for
-                // System.getProperty("user.home") used to be a permitted target, and the
-                // recursive walk below would then erase the profile the guard is meant to
-                // protect (fixes #1118).
-                if (file.canonicalFile == homeDir) {
+                // Security: refuse any path outside the user-home boundary. The check is
+                // component-aware (homeDir + File.separator) so `/home/user` does not match
+                // `/home/user2/...`. The homeDir-itself case is refused below so a request for
+                // `System.getProperty("user.home")` is rejected; that was the original
+                // containment gap behind #1118, where deleteRecursively() would then erase
+                // the profile the guard is meant to protect.
+                val canonicalFile = file.canonicalFile
+                if (!canonicalFile.absolutePath.startsWith(homeDir.absolutePath + File.separator) &&
+                    canonicalFile.absolutePath != homeDir.absolutePath
+                ) {
+                    return@withContext Result.failure(
+                        SecurityException("Access denied: file path outside user directory"),
+                    )
+                }
+
+                // Security: refuse to delete the home directory itself even though the
+                // component-aware check above admits it. Without this guard, the recursive
+                // walk below would erase the entire profile.
+                if (canonicalFile == homeDir) {
                     return@withContext Result.failure(
                         SecurityException("Access denied: cannot delete the user home directory"),
                     )
