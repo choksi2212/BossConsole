@@ -1659,22 +1659,20 @@ actual object GitService {
     // ===== Window-Specific Operations =====
 
     /**
-     * Refresh git state for a specific window.
-     * Updates the provided WindowGitState instead of global state.
-     * This allows multiple windows to have independent git states.
-     *
-     * The global seed is now epoch-checked (BossConsole#813, production scope):
-     * the write happens under [refreshMutex] and bumps [projectEpoch], so a
-     * refresh that started before a switch and finished after it cannot
-     * repoint the global - the epoch moved and the stale publish is dropped.
+     * Points the shared global project path at [projectPath] and bumps
+     * [projectEpoch] (BossConsole#813, production scope): this is the SWITCH
+     * verb, so it always wins - a [refreshForWindow] that captured the old
+     * epoch at entry drops its stale global publish.
      */
     actual fun alignCurrentProjectPath(projectPath: String) {
-        // Bump the epoch under the mutex so an in-flight refreshForWindow that
-        // captured the old epoch drops its stale global publish. tryLock keeps
-        // this non-suspending (the expect signature is non-suspend): if a
-        // refresh holds the mutex, IT re-checks the epoch and this write lands
-        // on the next caller's capture - the ordering the epoch exists for.
-        synchronized(projectEpoch) {
+        // Bump the epoch under the SAME monitor refreshForWindow's publish takes
+        // (the expect signature is non-suspend, so a plain monitor on the mutex
+        // object - held only for the two writes below, never across a suspension).
+        // Two different monitors would let a switch's increment/assign and a
+        // refresh's check/assign interleave as separate critical sections, and a
+        // stale refresh could assign its old project after the switch - the race
+        // the epoch exists to close.
+        synchronized(refreshMutex) {
             projectEpoch.incrementAndGet()
             currentProjectPath = projectPath
         }
@@ -1708,6 +1706,7 @@ actual object GitService {
     }
 
     /**
+     * Test-only inverse of [alignCurrentProjectPath], which can only point, never
      * unpoint: a test that steers the global at a temp repo must be able to put
      * "no project" back, or a later test in the same JVM reads a deleted dir.
      */
