@@ -191,9 +191,10 @@ internal fun formatRelativeTime(
         }
 
         daysAgo >= 2 -> {
-            val formatter = SimpleDateFormat("MMM d", Locale.ENGLISH).apply {
-                timeZone = TimeZone.getTimeZone(zone.id)
-            }
+            val formatter =
+                SimpleDateFormat("MMM d", Locale.ENGLISH).apply {
+                    timeZone = TimeZone.getTimeZone(zone.id)
+                }
             formatter.format(Date(timestamp))
         }
 

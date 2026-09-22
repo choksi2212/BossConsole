@@ -129,7 +129,13 @@ class FormatRelativeTimeTest {
         // independent of the host clock.
         val remoteZone = ZoneId.of("Pacific/Pago_Pago")
 
-        fun remoteAt(year: Int, month: Int, day: Int, hour: Int, minute: Int): Long =
+        fun remoteAt(
+            year: Int,
+            month: Int,
+            day: Int,
+            hour: Int,
+            minute: Int,
+        ): Long =
             LocalDateTime
                 .of(year, month, day, hour, minute)
                 .atZone(remoteZone)
