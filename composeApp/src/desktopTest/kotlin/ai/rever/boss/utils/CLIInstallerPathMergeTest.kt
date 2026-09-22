@@ -201,7 +201,7 @@ class CLIInstallerEmptyUserPathTest {
         // tell updateWindowsPath to return false without writing anything.
         assertEquals("", currentPath)
 
-        val merged = mergeUserPath(currentPath, binDir)
+        val merged = mergeUserPath(currentPath!!, binDir)
         assertEquals("$binDir;", merged)
     }
 }
