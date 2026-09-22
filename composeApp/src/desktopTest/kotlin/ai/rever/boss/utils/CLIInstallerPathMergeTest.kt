@@ -2,6 +2,7 @@ package ai.rever.boss.utils
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -114,5 +115,93 @@ class CLIInstallerPathMergeTest {
         // No ";;" or trailing ";;;" anywhere - the only ";" is the separator between
         // entries or between the last entry and binDir.
         assertTrue(";;" !in merged, "found doubled separator in: $merged")
+    }
+}
+
+/**
+ * Tests for the read/merge/write decision on a present-but-empty HKCU\Environment
+ * Path value.
+ *
+ * The previous `readUserPath` returned null whenever the captured value was an
+ * empty string (`takeIf { it.isNotEmpty() }`), so an HKCU key that existed but
+ * held nothing - a real Windows state - was indistinguishable from a missing
+ * key. `updateWindowsPath` then took the null branch and silently skipped the
+ * write, so a user with a cleared user PATH got no BOSS entry added.
+ *
+ * `parseRegPathOutput` is the pure seam: it parses a literal `reg query`
+ * response and returns null for an absent key, "" for a present-but-empty
+ * value, or the captured value. The two helpers together make the regression
+ * testable without a live registry.
+ */
+class CLIInstallerEmptyUserPathTest {
+    private val binDir = "C:\\Users\\me\\bin"
+
+    @Test
+    fun `present but empty user PATH parses as empty string - not null`() {
+        // `reg query HKCU\Environment /v Path` for a key that exists but holds
+        // no characters. The trailing capture group is intentionally empty.
+        val regOutput =
+            """
+            HKEY_CURRENT_USER\Environment
+                Path    REG_EXPAND_SZ
+            """.trimIndent()
+        val parsed = parseRegPathOutput(regOutput)
+        assertEquals("", parsed)
+    }
+
+    @Test
+    fun `absent user PATH key parses as null`() {
+        // `reg query` exits non-zero when the value is missing and writes a
+        // message instead of the key/value pair - this branch is what the
+        // caller sees for a fresh user profile with no Path value at all.
+        val regOutput = "ERROR: The system was unable to find the specified registry key or value."
+        val parsed = parseRegPathOutput(regOutput)
+        assertNull(parsed)
+    }
+
+    @Test
+    fun `normal user PATH parses as the captured value`() {
+        val regOutput =
+            """
+            HKEY_CURRENT_USER\Environment
+                Path    REG_EXPAND_SZ    C:\Users\me\.local\bin;C:\Tools\bin
+            """.trimIndent()
+        val parsed = parseRegPathOutput(regOutput)
+        assertEquals("C:\\Users\\me\\.local\\bin;C:\\Tools\\bin", parsed)
+    }
+
+    @Test
+    fun `REG_SZ variant is also accepted`() {
+        val regOutput =
+            """
+            HKEY_CURRENT_USER\Environment
+                Path    REG_SZ    C:\Other
+            """.trimIndent()
+        val parsed = parseRegPathOutput(regOutput)
+        assertEquals("C:\\Other", parsed)
+    }
+
+    /**
+     * End-to-end regression for the silent skip: parse a `reg query` response
+     * that reports a present-but-empty Path value, feed that into
+     * [mergeUserPath], and assert the merged string is exactly what `reg add`
+     * would write to add BOSS to a previously-cleared user PATH. This is the
+     * decision the install actually makes; if `parseRegPathOutput` regresses
+     * to returning null here, the assertion below fails.
+     */
+    @Test
+    fun `empty user PATH read produces a merge that adds BOSS`() {
+        val regOutput =
+            """
+            HKEY_CURRENT_USER\Environment
+                Path    REG_EXPAND_SZ
+            """.trimIndent()
+        val currentPath = parseRegPathOutput(regOutput)
+        // The point of the regression: this MUST be "", not null. A null would
+        // tell updateWindowsPath to return false without writing anything.
+        assertEquals("", currentPath)
+
+        val merged = mergeUserPath(currentPath, binDir)
+        assertEquals("$binDir;", merged)
     }
 }

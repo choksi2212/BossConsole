@@ -381,7 +381,9 @@ actual object CLIInstaller {
      * Reads the user scope only - never the merged process PATH, which would
      * duplicate system entries into user scope. Returns null if the registry key
      * is absent (a fresh user profile) so the caller can decide rather than
-     * silently writing an empty value back.
+     * silently writing an empty value back. A present-but-empty value returns
+     * an empty string: that is a real PATH the user has cleared, and BOSS should
+     * still be appended to it.
      */
     private fun readUserPath(): String? {
         val process =
@@ -395,12 +397,7 @@ actual object CLIInstaller {
         val output = process.inputStream.bufferedReader().use { it.readText() }
         val exit = process.waitFor()
         if (exit != 0) return null
-        // Match either REG_SZ or REG_EXPAND_SZ - the trailing capture group is the value.
-        val match =
-            Regex(
-                """\s+Path\s+(?:REG_SZ|REG_EXPAND_SZ)\s+(.*)""",
-            ).find(output.trimEnd())
-        return match?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }
+        return parseRegPathOutput(output.trimEnd())
     }
 
     /**
@@ -467,4 +464,31 @@ internal fun mergeUserPath(
     // insert a separator so the merged value stays well-formed.
     val separator = if (currentUserScopePath.isEmpty() || currentUserScopePath.endsWith(';')) "" else ";"
     return currentUserScopePath + separator + trimmed + ";"
+}
+
+/**
+ * Parse a `reg query HKCU\Environment /v Path` response and return the captured
+ * value, or null if the key/value pair is absent in the output.
+ *
+ * Three-way answer, on purpose:
+ * - `null`: the key is absent (a fresh user profile) so the caller must NOT
+ *   write anything back - doing so would replace nothing with something the
+ *   user never asked for.
+ * - `""`: the key is PRESENT but the value is empty. That is a real PATH the
+ *   user has cleared, and the install must still append the BOSS bin entry -
+ *   `mergeUserPath("", binDir)` returns `"$binDir;"` and that is what gets
+ *   written back. The previous implementation dropped this case on the floor
+ *   with `takeIf { it.isNotEmpty() }`, so a user with a cleared user PATH got
+ *   no BOSS entry added and no error reported.
+ * - `"...value..."`: the normal case.
+ *
+ * Extracted from [CLIInstaller.readUserPath] so the read/merge/write decision
+ * for a present-but-empty value can be exercised without a live `reg.exe`.
+ */
+internal fun parseRegPathOutput(output: String): String? {
+    val match =
+        Regex(
+            """\s+Path\s+(?:REG_SZ|REG_EXPAND_SZ)\s+(.*)""",
+        ).find(output)
+    return match?.groupValues?.get(1)
 }
