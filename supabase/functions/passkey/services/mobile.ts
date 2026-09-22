@@ -85,7 +85,7 @@ export const generateMobileRegistrationPage = withErrorHandler(
         // CAS: only bind if the row is still unbound. Two concurrent first-load
         // requests carrying different session_ids will both read session_id as
         // NULL; only one of them will see the row it just updated.
-        .not('session_id', 'is', null)
+        .is('session_id', null)
         .select('id')
 
       if (bindError || rowsOf(bound).length === 0) {
@@ -203,7 +203,7 @@ export const generateMobileAuthenticationPage = withErrorHandler(
           status: 'in_progress'
         })
         .eq('challenge', challenge)
-        .not('session_id', 'is', null)
+        .is('session_id', null)
         .select('id')
 
       if (bindError || rowsOf(bound).length === 0) {

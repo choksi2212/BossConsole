@@ -506,9 +506,10 @@ Deno.test("generateMobileAuthenticationPage - should return credential metadata"
 // The mobile page is public and unauthenticated, so a URL parameter must NOT
 // be able to silently rebind the challenge row's session_id - that would
 // redirect the completed ceremony's token handoff to whichever session_id last
-// won the write. These tests pin the compare-and-set on session_id IS NULL
-// that closes the gap, and the same-session reload path that keeps legitimate
-// page refreshes working.
+// won the write. These tests pin the `.is('session_id', null)` compare-and-set
+// that closes the gap (a `.not('session_id', 'is', null)` would do the
+// opposite and refuse every legitimate first bind), and the same-session
+// reload path that keeps legitimate page refreshes working.
 // ============================================================================
 
 Deno.test("generateMobileRegistrationPage - rejects second load with a DIFFERENT sessionId (issue #924)", async () => {
@@ -622,7 +623,7 @@ Deno.test("generateMobileRegistrationPage - rejects CAS race on concurrent first
 
   // Second racing first-load reads the row as still unbound (its SELECT
   // happened before the first CAS landed), then its CAS update comes back
-  // empty: the .not('session_id', 'is', null) filter no longer matches.
+  // empty: the .is('session_id', null) filter no longer matches.
   mockClient.mockResponse('passkey_challenges', {
     data: {
       ...mockChallenge,
@@ -738,4 +739,215 @@ Deno.test("generateMobileAuthenticationPage - allows same-session reload to refr
   const updateCall = history.find(h => h.operation === 'update')
   assertExists(updateCall)
   assertEquals((updateCall!.params.data as { session_id?: string }).session_id, undefined)
+})
+
+// ============================================================================
+// Filter-aware CAS coverage for issue #924
+//
+// The mock used to ignore the `.is(...)` / `.not(...)` clause on UPDATE entirely
+// and return whatever the test had queued next. That let the inverted
+// `.not('session_id', 'is', null)` predicate pass review even though real
+// PostgREST would have rejected every legitimate first bind. These tests pin
+// the corrected `.is('session_id', null)` predicate by asserting the WHERE
+// clause the query actually carries AND by checking the second bind's outcome
+// against the row state the first bind left behind.
+// ============================================================================
+
+Deno.test("generateMobileRegistrationPage - first bind SUCCEEDS because session_id IS NULL (issue #924)", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'registration',
+      session_id: null,
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+  mockClient.mockResponse('passkey_challenges', {
+    data: [{ id: 'challenge-789' }],
+    error: null
+  }, 'update')
+
+  const result = await generateMobileRegistrationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-first',
+    'api.risaboss.com',
+    'BOSS'
+  )
+
+  assertEquals(result.success, true)
+
+  const history = mockClient.getQueryHistory()
+  const updateCall = history.find(h => h.operation === 'update')
+  assertExists(updateCall)
+  const isFilters = (updateCall!.params.is ?? []) as Array<{ column: string; value: unknown }>
+  assertEquals(isFilters.length, 1, 'CAS must carry exactly one `.is()` filter')
+  assertEquals(isFilters[0].column, 'session_id')
+  assertEquals(isFilters[0].value, null)
+})
+
+Deno.test("generateMobileRegistrationPage - second bind FAILS because session_id IS no longer null (issue #924)", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  // 1. First legitimate page load: row unbound, CAS binds it.
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'registration',
+      session_id: null,
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+  mockClient.mockResponse('passkey_challenges', {
+    data: [{ id: 'challenge-789' }],
+    error: null
+  }, 'update')
+
+  const first = await generateMobileRegistrationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-first',
+    'api.risaboss.com',
+    'BOSS'
+  )
+  assertEquals(first.success, true)
+
+  // 2. Second page load, same challenge URL, different session id. The
+  // SELECT happens to read what the first SELECT observed (a stale view),
+  // but the CAS predicate against the now-bound row fails and PostgREST
+  // returns an empty row set. No UPDATE response is queued here - the
+  // CAS-aware mock must return [] on its own; that is what the bug was.
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'registration',
+      session_id: null,
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+
+  const second = await generateMobileRegistrationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-second',
+    'api.risaboss.com',
+    'BOSS'
+  )
+
+  assertEquals(second.success, false)
+  if (!second.success) {
+    assertEquals(second.error, 'Challenge session was concurrently bound by another request')
+  }
+})
+
+Deno.test("generateMobileAuthenticationPage - first bind SUCCEEDS because session_id IS NULL (issue #924)", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'authentication',
+      session_id: null,
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+  mockClient.mockResponse('user_passkeys', {
+    data: mockPasskey,
+    error: null
+  }, 'select')
+  mockClient.mockResponse('passkey_challenges', {
+    data: [{ id: 'challenge-789' }],
+    error: null
+  }, 'update')
+
+  const result = await generateMobileAuthenticationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-first',
+    'credential-abc',
+    'api.risaboss.com'
+  )
+
+  assertEquals(result.success, true)
+
+  const history = mockClient.getQueryHistory()
+  const updateCall = history.find(h => h.operation === 'update')
+  assertExists(updateCall)
+  const isFilters = (updateCall!.params.is ?? []) as Array<{ column: string; value: unknown }>
+  assertEquals(isFilters.length, 1, 'CAS must carry exactly one `.is()` filter')
+  assertEquals(isFilters[0].column, 'session_id')
+  assertEquals(isFilters[0].value, null)
+})
+
+Deno.test("generateMobileAuthenticationPage - second bind FAILS because session_id IS no longer null (issue #924)", async () => {
+  const mockClient = createMockSupabaseClient()
+
+  // 1. First bind succeeds.
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'authentication',
+      session_id: null,
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+  mockClient.mockResponse('user_passkeys', {
+    data: mockPasskey,
+    error: null
+  }, 'select')
+  mockClient.mockResponse('passkey_challenges', {
+    data: [{ id: 'challenge-789' }],
+    error: null
+  }, 'update')
+
+  const first = await generateMobileAuthenticationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-first',
+    'credential-abc',
+    'api.risaboss.com'
+  )
+  assertEquals(first.success, true)
+
+  // 2. Second bind - the CAS predicate against the now-bound row fails.
+  // No UPDATE response is queued; the CAS-aware mock returns [] on its own.
+  mockClient.mockResponse('passkey_challenges', {
+    data: {
+      ...mockChallenge,
+      type: 'authentication',
+      session_id: null,
+      expires_at: new Date(Date.now() + 60000).toISOString()
+    },
+    error: null
+  }, 'select')
+  mockClient.mockResponse('user_passkeys', {
+    data: mockPasskey,
+    error: null
+  }, 'select')
+
+  const second = await generateMobileAuthenticationPage(
+    mockClient as unknown as SupabaseClient,
+    'mock-challenge-base64',
+    'test@example.com',
+    'session-second',
+    'credential-abc',
+    'api.risaboss.com'
+  )
+
+  assertEquals(second.success, false)
+  if (!second.success) {
+    assertEquals(second.error, 'Challenge session was concurrently bound by another request')
+  }
 })

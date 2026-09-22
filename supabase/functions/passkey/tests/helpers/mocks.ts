@@ -33,6 +33,7 @@ export interface MockQueryBuilder extends Promise<MockSupabaseResponse> {
   eq: (column: string, value: unknown) => MockQueryBuilder
   gt: (column: string, value: unknown) => MockQueryBuilder
   lt: (column: string, value: unknown) => MockQueryBuilder
+  is: (column: string, value: unknown) => MockQueryBuilder
   not: (column: string, operator: string, value: unknown) => MockQueryBuilder
   or: (filters: string) => MockQueryBuilder
   order: (column: string, options?: Record<string, unknown>) => MockQueryBuilder
@@ -52,6 +53,11 @@ export class MockSupabaseClient {
   // email -> user id, used by the auth stub when minting a session
   private authUsers: Map<string, string> = new Map()
   private pendingLinks: Map<string, string> = new Map()
+  // In-memory row state for `passkey_challenges` keyed by challenge value, so
+  // CAS predicates on UPDATE (e.g. `.is('session_id', null)`) can be evaluated
+  // against what a previous SELECT observed, not just the next queued response.
+  // Without this the queue could be hand-arranged to lie about a CAS outcome.
+  private challengeRows: Map<string, Record<string, unknown>> = new Map()
 
   // access token -> the user it resolves to, for auth.getUser()
   private accessTokens: Map<string, { id: string; email?: string; role?: string }> = new Map()
@@ -254,10 +260,64 @@ export class MockSupabaseClient {
         return queue.splice(index, 1)[0].response
       }
 
+      // CAS-aware UPDATE: if the queued response is for a CAS (`.is('session_id', null)`)
+      // that no longer holds because a previous UPDATE already bound the row, return
+      // the empty row set that PostgREST would. The queued response stays in place
+      // for a query that doesn't actually carry the predicate.
+      if (
+        operation === 'update' &&
+        table === 'passkey_challenges' &&
+        this.casPredicatesFail(params)
+      ) {
+        return { data: [], error: null }
+      }
+
       return queue.shift()!.response
     }
 
     return { data: null, error: null }
+  }
+
+  /**
+   * True when every `.is()` predicate on the query fails against the row's current
+   * state, e.g. a CAS asking for `session_id IS NULL` on a row that's already bound.
+   *
+   * Only `passkey_challenges.session_id` is modelled here because that's the only
+   * column a CAS predicate guards in the suite today; the queue fallback above still
+   * serves other tables and predicates unchanged.
+   */
+  private casPredicatesFail(params: QueryParams): boolean {
+    const isFilters = (params.is ?? []) as Array<{ column: string; value: unknown }>
+    if (isFilters.length === 0) return false
+
+    // Locate the row by the challenge value the query filtered on.
+    const eqFilters = (params.eq ?? []) as Array<{ column: string; value: unknown }>
+    const challengeEq = eqFilters.find(f => f.column === 'challenge')
+    if (!challengeEq) return false
+    const row = this.challengeRows.get(String(challengeEq.value))
+    if (!row) return false
+
+    return isFilters.some(f =>
+      f.column === 'session_id' &&
+      f.value === null &&
+      row.session_id !== null &&
+      row.session_id !== undefined
+    )
+  }
+
+  /**
+   * Apply the UPDATE's data column values onto the in-memory row so a later CAS
+   * predicate against the same row sees the post-write state.
+   */
+  private applyUpdate(table: string, params: QueryParams): void {
+    if (table !== 'passkey_challenges') return
+    const eqFilters = (params.eq ?? []) as Array<{ column: string; value: unknown }>
+    const challengeEq = eqFilters.find(f => f.column === 'challenge')
+    if (!challengeEq) return
+    const row = this.challengeRows.get(String(challengeEq.value))
+    if (!row) return
+    const data = (params.data ?? {}) as Record<string, unknown>
+    Object.assign(row, data)
   }
 
   /**
@@ -279,6 +339,17 @@ export class MockSupabaseClient {
     const executeQuery = (): Promise<MockSupabaseResponse> => {
       this.queryHistory.push({ table, operation: currentOperation, params: currentParams })
       const response = this.getNextResponse(table, currentOperation, currentParams)
+      // Mirror successful UPDATE writes so a later CAS predicate sees the
+      // post-write state. A CAS that fails (empty row set) does not mutate
+      // the row, matching PostgREST. SELECT observations are NOT recorded -
+      // a racing SELECT returning a stale read must not roll the row back
+      // before its own UPDATE's CAS is evaluated.
+      if (currentOperation === 'update') {
+        const rows = Array.isArray(response.data) ? response.data : (response.data ? [response.data] : [])
+        if (rows.length > 0) {
+          this.applyUpdate(table, currentParams)
+        }
+      }
       return Promise.resolve(response)
     }
 
@@ -327,6 +398,11 @@ export class MockSupabaseClient {
       },
       lt: (column: string, value: unknown) => {
         currentParams.lt = { column, value }
+        return builder
+      },
+      is: (column: string, value: unknown) => {
+        if (!currentParams.is) currentParams.is = []
+        currentParams.is.push({ column, value })
         return builder
       },
       not: (column: string, operator: string, value: unknown) => {
