@@ -1,6 +1,9 @@
 package ai.rever.boss.plugin.loader
 
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFileAttributeView
+import java.nio.file.attribute.PosixFilePermission
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -10,6 +13,7 @@ import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class PluginBundledTrustTest {
@@ -25,6 +29,43 @@ class PluginBundledTrustTest {
         val jar = File(tempDir, "bundled.jar").apply { writeText("jar-bytes") }
         PluginBundledTrust.markTrusted(jar.absolutePath, FileHashing.sha256(jar))
         assertTrue(PluginBundledTrust.isTrusted(jar.absolutePath))
+    }
+
+    @Test
+    fun `a failed marker replacement preserves the last complete trust record`() {
+        // The defect #1108 fixed: the old in-place `File.writeText()` truncated the existing
+        // marker before writing, so a writer that crashed (or had no write permission on the
+        // directory) could leave a reader holding nothing at all - the bundled JAR would lose
+        // its exemption for the rest of the session. The new staging path cannot create its
+        // sibling in a read-only directory, so the last complete marker stays untouched. This
+        // test is skipped where no POSIX attribute view exists; the existing trust and
+        // enforcement tests remain cross-platform.
+        val jar = File(tempDir, "atomic-marker.jar").apply { writeText("bundled-bytes") }
+        val digest = FileHashing.sha256(jar)
+        PluginBundledTrust.markTrusted(jar.absolutePath, digest)
+        if (Files.getFileAttributeView(tempDir.toPath(), PosixFileAttributeView::class.java) == null) return
+
+        try {
+            Files.setPosixFilePermissions(
+                tempDir.toPath(),
+                setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE),
+            )
+
+            PluginBundledTrust.markTrusted(jar.absolutePath, "not-the-jar-digest")
+            assertTrue(
+                PluginBundledTrust.isTrusted(jar.absolutePath),
+                "a staging failure must not truncate or replace the last complete marker",
+            )
+        } finally {
+            Files.setPosixFilePermissions(
+                tempDir.toPath(),
+                setOf(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE,
+                ),
+            )
+        }
     }
 
     @Test
@@ -208,8 +249,14 @@ class PluginBundledTrustTest {
         }
 
         assertTrue(PluginBundledTrust.isTrusted(jar.absolutePath))
-        // The reader may have observed nothing structural, but never a partial digest.
-        // (No assertion against null - absence is the expected outcome.)
+        // Every observation was either absence or the complete published digest; a partial
+        // prefix captured here would mean the synchronized write/read contract regressed. Pin
+        // that the producer/consumer loop never surfaced a partial digest, not just that the
+        // final state is consistent.
+        assertNull(
+            partialObserved.get(),
+            "Reader observed a partial digest under concurrent writes: ${partialObserved.get()}",
+        )
         assertFalse(
             File(tempDir, "racing.jar.bundled-trust.tmp").exists(),
             "fixed-name tmp leaked across concurrent writes",
