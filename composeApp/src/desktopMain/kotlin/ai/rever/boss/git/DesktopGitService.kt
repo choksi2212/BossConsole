@@ -113,12 +113,15 @@ actual object GitService {
      * through the git subprocesses). A project switch/close that landed in that
      * interval bumped the epoch, so the stale refresh cannot repoint the global at
      * a project the user has already left - the queued-refresh resurrection the
-     * review's staleness analysis describes. It is a PROJECT-CHANGE counter: every
-     * writer bumps it only when the path actually changes (a redundant align is a
-     * no-op), and it is incremented on every real change, so two concurrent
-     * REFRESHES still race last-write-wins - switching is how a window states a
-     * claim, not refreshing. Mutual exclusion alone cannot reject stale work; the
-     * epoch does.
+     * review's staleness analysis describes. It counts CHANGES TO THE GLOBAL:
+     * every writer that actually changes [currentProjectPath] bumps it (a
+     * redundant align is a no-op; the refresh publish bumps when it assigns).
+     * [refresh] and [clear] bump unconditionally - harmless over-invalidation,
+     * the fail-safe direction. Two concurrent REFRESHES with different paths
+     * are first-publisher-wins (each publish bumps, so the later one's
+     * captured epoch is already stale) - switching is how a window states a
+     * claim, not refreshing. Mutual exclusion alone cannot reject stale work;
+     * the epoch does.
      */
     private val projectEpoch = AtomicLong()
 
@@ -1757,6 +1760,15 @@ actual object GitService {
         // verbs is refused.
         synchronized(globalProjectPathLock) {
             if (epochAtEntry == projectEpoch.get() && currentProjectPath != projectPath) {
+                // The publish CHANGES the global, so it is a project change
+                // too: bump, exactly like a switch. Without this, a switch to
+                // a path a refresh has already seeded makes the later switch
+                // verb's align a no-op (path already aligned - no bump), and
+                // another window's in-flight refresh that captured the
+                // pre-switch epoch still passes its check and repoints the
+                // global back - the #813 resurrection through the publish
+                // itself.
+                projectEpoch.incrementAndGet()
                 currentProjectPath = projectPath
             }
         }

@@ -25,10 +25,11 @@ import kotlin.test.assertTrue
  * publishes the global seed ONLY if the epoch is unchanged at publish time;
  * every real project change bumps it (a redundant align is a no-op).
  *
- * Scope: SWITCH-vs-refresh. Two concurrent REFRESHES still resolve
- * last-write-wins (both capture the same epoch; neither is a switch, and a
- * window states a claim by aligning, not by refreshing) - the racing test
- * pins the per-window states, not the global winner.
+ * Scope: SWITCH-vs-refresh. Two concurrent REFRESHES with different paths
+ * are first-publisher-wins - each publish that assigns bumps the epoch, so
+ * the other refresh's captured epoch is already stale by the time it
+ * publishes (and a window states a claim by aligning, not by refreshing).
+ * The racing test pins the per-window states, not the global winner.
  *
  * Uses real `git` in a temp directory (the repo's established git-test
  * pattern) and deterministic in-process interleaving - no coroutine-scheduling
@@ -85,7 +86,7 @@ class GitRefreshEpochTest {
             // assertions below are deterministic instead of racing that probe.
             // Real-time context: runTest's virtual clock would otherwise
             // time out a wait on real-dispatcher work.
-            withContext(Dispatchers.Default.limitedParallelism(1)) {
+            withContext(Dispatchers.Default) {
                 withTimeout(10_000) { GitService.isGitAvailable.first { it } }
             }
 
@@ -147,6 +148,7 @@ class GitRefreshEpochTest {
     fun `a redundant align does not invalidate an in-flight refresh`() =
         runTest {
             val repoA = repo("eta", "eta-branch")
+            val repoB = repo("theta", "theta-branch")
             val windowA = WindowGitState("win-a")
 
             GitService.alignCurrentProjectPath(repoA.absolutePath)
@@ -163,10 +165,48 @@ class GitRefreshEpochTest {
                 "a redundant align must not bump the epoch",
             )
 
-            // The in-flight refresh that captured the epoch survives the
-            // redundant align and still publishes.
-            GitService.refreshForWindowWithEpoch(repoA.absolutePath, windowA, epochAfterAlign)
-            assertEquals(repoA.absolutePath, GitService.getCurrentProjectPath())
+            // The in-flight refresh that captured the epoch before the
+            // redundant align survives it and still publishes - publishing a
+            // DIFFERENT path than the aligned one, so this assertion proves
+            // the publish actually landed (against the aligned path it would
+            // be a no-op assignment).
+            GitService.refreshForWindowWithEpoch(repoB.absolutePath, windowA, epochAfterAlign)
+            assertEquals(repoB.absolutePath, GitService.getCurrentProjectPath())
+        }
+
+    @Test
+    fun `a switch to a path a refresh already seeded still invalidates a stale refresh`() =
+        runTest {
+            // The ordering the top bar produces: the project-change effect
+            // calls refreshForWindow for the new project BEFORE the provider's
+            // align runs. With the publish not bumping the epoch, that later
+            // align would be a no-op (path already aligned) and a stale
+            // in-flight refresh for the LEFT project could still publish.
+            val repoQ = repo("iota", "iota-branch")
+            val repoP = repo("kappa", "kappa-branch")
+            val windowB = WindowGitState("win-b") // in flight for Q
+            val windowA = WindowGitState("win-a") // switching to P
+
+            GitService.alignCurrentProjectPath(repoQ.absolutePath)
+            val staleEpoch = GitService.projectEpochForTests()
+
+            // Window A's refresh for the newly switched project publishes P.
+            GitService.refreshForWindowWithEpoch(repoP.absolutePath, windowA, staleEpoch)
+            assertEquals(repoP.absolutePath, GitService.getCurrentProjectPath())
+
+            // The switch verb for the same path: a no-op (already aligned),
+            // so it must NOT be what invalidates the stale refresh.
+            GitService.alignCurrentProjectPath(repoP.absolutePath)
+
+            // Window B's refresh, which captured the pre-switch epoch while
+            // the user was still on Q: its publish must be dropped, and the
+            // global must stay P.
+            GitService.refreshForWindowWithEpoch(repoQ.absolutePath, windowB, staleEpoch)
+            assertEquals(
+                repoP.absolutePath,
+                GitService.getCurrentProjectPath(),
+                "a stale refresh for the left project must not repoint the global back",
+            )
         }
 
     @Test
