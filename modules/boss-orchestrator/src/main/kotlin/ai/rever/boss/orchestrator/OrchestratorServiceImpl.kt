@@ -402,15 +402,31 @@ private fun outcomeToStrategy(outcome: RepairOutcome): RepairStrategy =
         // the only branch that honours RestartAction.jvm_args_override. Plain restarts
         // carry no override and stay on REPAIR_STRATEGY_RESTART, so the two stay
         // distinguishable end-to-end.
-        is RepairOutcome.Restarted ->
+        is RepairOutcome.Restarted -> {
             if (outcome.jvmArgs.isNotEmpty()) {
                 RepairStrategy.REPAIR_STRATEGY_RESTART_TUNED
             } else {
                 RepairStrategy.REPAIR_STRATEGY_RESTART
             }
-        is RepairOutcome.StateReset -> RepairStrategy.REPAIR_STRATEGY_RESET_STATE
-        is RepairOutcome.ConfigPatched -> RepairStrategy.REPAIR_STRATEGY_PATCH_CONFIG
-        is RepairOutcome.CodeFixProposed -> RepairStrategy.REPAIR_STRATEGY_PATCH_SOURCE
-        is RepairOutcome.Escalated -> RepairStrategy.REPAIR_STRATEGY_ESCALATE
-        is RepairOutcome.Failed -> RepairStrategy.REPAIR_STRATEGY_ESCALATE
+        }
+
+        is RepairOutcome.StateReset -> {
+            RepairStrategy.REPAIR_STRATEGY_RESET_STATE
+        }
+
+        is RepairOutcome.ConfigPatched -> {
+            RepairStrategy.REPAIR_STRATEGY_PATCH_CONFIG
+        }
+
+        is RepairOutcome.CodeFixProposed -> {
+            RepairStrategy.REPAIR_STRATEGY_PATCH_SOURCE
+        }
+
+        is RepairOutcome.Escalated -> {
+            RepairStrategy.REPAIR_STRATEGY_ESCALATE
+        }
+
+        is RepairOutcome.Failed -> {
+            RepairStrategy.REPAIR_STRATEGY_ESCALATE
+        }
     }
