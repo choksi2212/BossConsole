@@ -242,12 +242,15 @@ class EditorServiceImpl(
                     validatePath(request.path)
                 } catch (e: StatusRuntimeException) {
                     if (e.status.code == Status.Code.NOT_FOUND) {
-                        // The file's parent directory is gone (a stale recent-files
-                        // entry): the not-found response, not an RPC error.
+                        // The path is unresolvable (a stale recent-files entry, a
+                        // dangling symlink, ...): the not-found response, not an
+                        // RPC error - with the gate's own description, which says
+                        // WHY the path does not resolve (a deleted parent, a broken
+                        // link), instead of the generic "File not found".
                         return@withContext OpenFileResponse
                             .newBuilder()
                             .setSuccess(false)
-                            .setErrorMessage("File not found: ${request.path}")
+                            .setErrorMessage(e.status.description ?: "File not found: ${request.path}")
                             .build()
                     }
                     throw e
@@ -431,29 +434,32 @@ private fun unresolvableAnchorRefusal(state: UnresolvableAnchor): StatusRuntimeE
     // an empty scan), so a cause that is not "the path is gone" must not read
     // as NOT_FOUND - an unreadable directory or a disconnected share would
     // otherwise be reported to the user as a missing file.
-    return if (Files.isSymbolicLink(anchor)) {
-        // A symlink inside the root whose target cannot be resolved is its
-        // own anchor: the path exists, it just cannot be followed - a DANGLING
-        // link (the common shape: a relative link into a cleaned build
-        // output), or a link behind a directory the kernel refuses to
-        // traverse. Name the SYMLINK condition so a bug report can tell it
-        // apart from a deleted directory.
-        Status.NOT_FOUND
-            .withDescription("Symlink could not be resolved: $path (target missing or inaccessible)")
-            .withCause(cause)
-            .asRuntimeException()
-    } else if (gone) {
-        Status.NOT_FOUND
-            .withDescription("Path parent no longer exists: $path")
-            .withCause(cause)
-            .asRuntimeException()
-    } else {
-        val detail = cause.message ?: cause::class.java.simpleName
-        Status.PERMISSION_DENIED
-            .withDescription("Path parent is not accessible: $path ($detail)")
-            .withCause(cause)
-            .asRuntimeException()
-    }
+    val detail = cause.message ?: cause::class.java.simpleName
+    val isLink = Files.isSymbolicLink(anchor)
+    // A SYMLINK anchor decorates the cause decision rather than overriding
+    // it: a link behind an inaccessible directory is an ACCESS FAULT
+    // (PERMISSION_DENIED, the directory mode is what the user can fix), a
+    // link with a missing target is a gone path (NOT_FOUND). Either way the
+    // wording names the symlink condition so a bug report can tell it apart
+    // from a plain deleted directory.
+    val status =
+        if (!gone) {
+            Status.PERMISSION_DENIED
+                .withDescription(
+                    if (isLink) {
+                        "Symlink target is not accessible: $path ($detail)"
+                    } else {
+                        "Path parent is not accessible: $path ($detail)"
+                    },
+                )
+        } else if (isLink) {
+            Status.NOT_FOUND
+                .withDescription("Symlink could not be resolved: $path (target missing)")
+        } else {
+            Status.NOT_FOUND
+                .withDescription("Path parent no longer exists: $path")
+        }
+    return status.withCause(cause).asRuntimeException()
 }
 
 /**

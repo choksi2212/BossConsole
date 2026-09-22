@@ -220,17 +220,20 @@ class EditorServiceImplSaveTest {
 
     @Test
     fun `a failed save of an existing file leaves the previous content intact`() {
-        // The property defect #2 actually harmed: a save that fails partway
-        // must leave the previous COMPLETE version. This is the portable
-        // torn-target detector - the target pre-exists with known bytes, and
-        // the failure lands AFTER the target exists (createTempFile fails
-        // because a sibling directory component is a REGULAR FILE, on every
-        // platform). A plain writeText against a read-only DIRECTORY would
-        // also pass this: open succeeds, then the write fails mid-content -
-        // exactly the torn state the atomic shape must not produce. (POSIX-
-        // only injection; running as ROOT degrades it because root ignores
-        // the missing write bit, so the write would succeed and the
-        // saveFile call would not throw - skip in that case.)
+        // The mutation detector for the atomic shape. The target pre-exists
+        // with known bytes and the failure is injected where ONLY the atomic
+        // shape fails: createTempFile in a read-only DIRECTORY (POSIX -
+        // clearing the directory's write bit still lets a plain writeText
+        // REOPEN the existing 644 target, so writeText fully succeeds and
+        // assertFailsWith finds no exception - that is how this test catches
+        // the revert, not via a torn target). The atomic path fails BEFORE
+        // writing any byte, so the previous-content assertion is trivially
+        // true here; the stronger property - a write that dies PARTWAY
+        // leaves the previous complete version - needs a failure inside the
+        // content write (a Writer seam or a size-limited tmpfs) and is not
+        // asserted in this suite. (Running as ROOT degrades the injection
+        // because root ignores the missing write bit - the probe below
+        // detects that and skips instead of asserting the wrong status.)
         if (Files.getFileAttributeView(
                 tempDir.toPath(),
                 PosixFileAttributeView::class.java,
@@ -321,9 +324,10 @@ class EditorServiceImplSaveTest {
         // A broken link counts as present (NOFOLLOW_LINKS probe) so it is its
         // own anchor; toRealPath then fails and the gate refuses - fail-closed
         // on a link nobody can follow. Driven through saveFile (no NOT_FOUND
-        // mapping) so the gate's own status is what lands on the wire; openFile
-        // maps the same condition to its File-not-found response like any
-        // stale path. (Requires symlink support; CI platforms have it,
+        // mapping) so the gate's own status and message are what land on the
+        // wire; openFile maps the same condition to its not-found RESPONSE
+        // (success=false) but keeps the gate's description, which names the
+        // symlink condition. (Requires symlink support; CI platforms have it,
         // Windows needs Developer Mode.)
         if (Files.getFileAttributeView(
                 tempDir.toPath(),
@@ -347,16 +351,17 @@ class EditorServiceImplSaveTest {
     }
 
     @Test
-    fun `a symlink whose target is behind an inaccessible directory is refused as a symlink problem`() {
+    fun `a symlink whose target is behind an inaccessible directory is a permission fault, not not-found`() {
         // A link whose target path the kernel refuses to traverse (a
         // mode-000 directory) makes toRealPath throw AccessDeniedException,
-        // not NoSuchFileException - and openFile / detectMainFunctions both
-        // MAP NOT_FOUND (File-not-found response / empty scan), so a bare
-        // not-found would read as "the file vanished". The gate must surface
-        // the SYMLINK condition instead. Driven through saveFile (no
-        // NOT_FOUND mapping) so the gate's own status and message are what
-        // land. (POSIX-only; skipped when the JVM can ignore the mode, as
-        // root does.)
+        // not NoSuchFileException. openFile / detectMainFunctions both MAP
+        // NOT_FOUND (File-not-found response / empty scan), so the access
+        // fault must NOT read as NOT_FOUND - the user's problem is a
+        // directory mode they can fix, not a vanished file. The gate must
+        // surface PERMISSION_DENIED, and the wording must name the SYMLINK
+        // condition so a bug report can tell it apart from a deleted
+        // directory. (POSIX-only; skipped when the JVM can ignore the mode,
+        // as root does.)
         if (Files.getFileAttributeView(
                 tempDir.toPath(),
                 PosixFileAttributeView::class.java,
@@ -386,11 +391,11 @@ class EditorServiceImplSaveTest {
                 assertFailsWith<StatusRuntimeException> {
                     runBlocking { impl().saveFile(saveRequest(link)) }
                 }
-            assertEquals(Status.Code.NOT_FOUND, e.status.code)
+            assertEquals(Status.Code.PERMISSION_DENIED, e.status.code)
             val description = e.status.description.orEmpty()
             assertTrue(
-                description.contains("Symlink could not be resolved"),
-                "the refusal must name the symlink condition: $description",
+                description.contains("Symlink target is not accessible"),
+                "the refusal must name the symlink access-fault condition: $description",
             )
         } finally {
             gate.setReadable(true)
