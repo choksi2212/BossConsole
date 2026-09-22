@@ -205,9 +205,12 @@ class PluginBundledTrustTest {
         PluginBundledTrust.markTrusted(jar.absolutePath, originalDigest)
 
         val executor = Executors.newFixedThreadPool(2)
+        // Hoisted out of the `try` so the post-loop assertion below can read it. The
+        // reference is also published from inside the reader thread, but capture is
+        // by reference and the `AtomicReference` gives the safe-publication guarantee.
+        val partialObserved = AtomicReference<String?>(null)
         try {
             val stop = AtomicBoolean(false)
-            val partialObserved = AtomicReference<String?>(null)
             val start = CountDownLatch(1)
             val writer =
                 executor.submit {
