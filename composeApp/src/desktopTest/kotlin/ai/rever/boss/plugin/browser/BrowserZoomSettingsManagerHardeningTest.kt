@@ -444,4 +444,46 @@ class BrowserZoomSettingsManagerHardeningTest {
             asides.map { it.readText() }.toSet(),
         )
     }
+
+    /**
+     * The cap operates on OTHERS, not on the just-created aside. A same-
+     * millisecond tie (or a clock that stepped back, or an unparseable
+     * older stamp) used to drop the freshly-quarantined file from the
+     * survivor set, breaking the "newest is kept" guarantee. The new aside
+     * is pinned first; the cap deletes the older candidates only.
+     *
+     * The injected `now()` returns the SAME value for the fourth quarantine
+     * as for the third (a same-ms tie) AND for the fourth returns a value
+     * smaller than the third - so the sort tie would otherwise put the new
+     * aside last. The cap must still keep the freshly-created copy.
+     */
+    @Test
+    fun `the cap never deletes the aside it just created (#1051)`() {
+        val live = File(tmp, "browser-zoom-settings.json")
+        val nows =
+            listOf(
+                1_726_000_000_000L,
+                1_726_000_000_001L,
+                // Fourth quarantine returns the same millis as the third - a tie.
+                // On Windows + ext4 the tie would have sorted the new aside last,
+                // dropping it under the cap.
+                1_726_000_000_002L,
+                1_726_000_000_002L,
+            )
+        val nowIter = nows.iterator()
+        repeat(4) { i ->
+            live.writeText("garbage #$i")
+            moveCorruptSettingsAside(live, now = { nowIter.next() })
+        }
+        val asides = tmp.listFiles()!!.filter { it.name.contains(".corrupt.") }
+        assertEquals(3, asides.size, "the cap is 3 - the freshly-created aside must survive the tie")
+        // The fourth-quarantine bytes must be present - the new aside was not
+        // deleted by its own cap. With the OLD broken logic, the same-ms tie
+        // would have dropped it; the survivor set would be garbage #1, #2, #3.
+        assertTrue(
+            asides.any { it.readText() == "garbage #3" },
+            "the just-created aside must survive a same-ms tie with an older one: " +
+                "asides = ${asides.map { it.name to it.readText() }}",
+        )
+    }
 }

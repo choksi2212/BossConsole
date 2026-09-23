@@ -191,12 +191,12 @@ object BrowserZoomSettingsManager {
                 canSaveSafely = true
             }
         } catch (e: SerializationException) {
-            // Real decode failure: the bytes are not what the schema expects.
-            // Self-heal instead of silent data loss (#925, #1051): the
-            // corrupt file is renamed aside so the fault is diagnosable AND
-            // does not re-fail every launch, and the previous per-domain
-            // zoom levels are lost only when no backup survives - not on any
-            // decode hiccup. The live path is now empty, so saves are safe.
+            // The ONLY decode failure we treat as "the file is corrupt":
+            // kotlinx.serialization throws this when the bytes do not match
+            // the schema. Self-heal instead of silent data loss (#925,
+            // #1051): the corrupt file is renamed aside so the fault is
+            // diagnosable AND does not re-fail every launch. The live path
+            // is now empty, so saves are safe.
             logger.warn(
                 LogCategory.BROWSER,
                 "Zoom settings file is corrupt - quarantining",
@@ -207,19 +207,28 @@ object BrowserZoomSettingsManager {
                 settings = BrowserZoomSettingsData()
                 canSaveSafely = true
             }
-        } catch (e: IllegalArgumentException) {
-            // kotlinx.serialization throws IllegalArgumentException for some
-            // decode failures (notably structural ones the schema check
-            // rejects). Same recovery as a SerializationException.
+        } catch (e: Exception) {
+            // Any other decode exception - IllegalArgumentException,
+            // NumberFormatException, a custom serializer throwing something
+            // unanticipated, an unrelated bug in our code - falls into the
+            // same keep-file path as [IOException]. We do NOT know whether
+            // the bytes are valid, so we do not quarantine (which would
+            // delete them). Defaults stand in memory; saves are gated until
+            // a later load succeeds (#1051 review).
+            //
+            // Importantly this catches decode exceptions that escape the
+            // singleton's `init { loadSettings() }` otherwise - an
+            // IllegalArgumentException from kotlinx.serialization's
+            // structural check, for example, used to bubble past the catch
+            // list and crash startup with no log line.
             logger.warn(
                 LogCategory.BROWSER,
-                "Zoom settings file is structurally invalid - quarantining",
+                "Unexpected error decoding zoom settings - keeping file, using defaults in memory",
                 error = e,
             )
-            moveCorruptSettingsAside(settingsFile)
             synchronized(saveLock) {
                 settings = BrowserZoomSettingsData()
-                canSaveSafely = true
+                canSaveSafely = false
             }
         }
     }
@@ -393,14 +402,19 @@ internal fun moveCorruptSettingsAside(
         // share a `lastModified` on filesystems with millisecond resolution,
         // so the sort would not be deterministic across filesystems - the
         // embedded timestamp is the one we wrote and is sortable.
+        //
+        // The new aside is PINNED in the survivor set: the cap operates on
+        // OTHERS only. Otherwise a same-millisecond tie (or an unparseable
+        // older stamp that sorts ahead) could delete the copy we just made,
+        // breaking the "newest is kept" guarantee in the comment.
         val parent = file.parentFile ?: return@runCatching
         val asidePrefix = file.name + ".corrupt."
         val asides =
             listFiles(parent)
-                ?.filter { it.name.startsWith(asidePrefix) }
+                ?.filter { it.name.startsWith(asidePrefix) && it.name != aside.name }
                 ?.sortedByDescending { asideTimestampMillis(it.name, asidePrefix) }
                 ?: return@runCatching
-        for (old in asides.drop(maxAsides)) {
+        for (old in asides.drop(maxAsides - 1)) {
             old.delete()
         }
     }
