@@ -428,13 +428,11 @@ object WorkspaceMcpToolProvider : McpToolProvider {
                     "properties": {
                         "templateId": {
                             "type": "string",
-                            "description": "Id of the built-in template to materialise, e.g. " +
-                                "workspace-project-studio, workspace-claude-code, workspace-code-review"
+                            "description": "Id of the built-in template to materialise, e.g. workspace-claude-code, workspace-code-review, workspace-codex, workspace-gemini"
                         },
                         "projectPath": {
                             "type": "string",
-                            "description": "Absolute path of the project directory the template " +
-                                "placeholders resolve against; ~ is expanded, relative paths are refused"
+                            "description": "Absolute path of the project directory the template placeholders resolve against; ~ is expanded, relative paths are refused"
                         },
                         "windowId": {
                             "type": "string",
