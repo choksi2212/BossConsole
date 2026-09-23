@@ -39,7 +39,16 @@ internal fun deleteUserPath(
             throw SecurityException("Access denied: file path outside user directory")
         }
 
-        val target = file.toPath().toAbsolutePath().normalize()
+        // The walk MUST operate on the SAME resolved path the containment check used.
+        // The check above resolves `home/link/../<sibling>` through both lexical `..`
+        // resolution and symlink resolution; the walk operating on the original input
+        // would let the OS re-resolve through the link and reach a path the check never
+        // saw. Use toRealPath() to keep the two paths byte-identical; fall back to the
+        // canonical path when toRealPath() throws (file missing), which is still in scope
+        // because the check above already admitted it.
+        val target =
+            runCatching { canonicalFile.toRealPath() }
+                .getOrElse { canonicalFile }
         val deleted =
             if (Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
                 Files.walk(target).use { paths ->
