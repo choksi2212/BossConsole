@@ -75,10 +75,15 @@ class ApplyTemplateToolTest {
         project: File,
     ): String = """{"templateId":"$templateId","projectPath":"${project.absolutePath.replace('\\', '/')}"}"""
 
-    private fun createTestCore(): McpToolRegistryCore {
+    private fun createTestCore(approvalBus: McpApprovalBus = McpApprovalBus()): McpToolRegistryCore {
         val policyEngine = McpPolicyEngine(policyFile = null)
         policyEngine.setProviderPolicy("boss-workspace", McpPolicyAction.ALLOW)
-        val core = McpToolRegistryCore(disabledFile = null, policyEngine = policyEngine)
+        val core =
+            McpToolRegistryCore(
+                disabledFile = null,
+                policyEngine = policyEngine,
+                approvalBus = approvalBus,
+            )
         core.registerProvider(WorkspaceMcpToolProvider)
         return core
     }
@@ -102,20 +107,24 @@ class ApplyTemplateToolTest {
             // The escalation is the behaviour we want: an unknown template id rates HIGH
             // (fail closed - cannot classify what would run), so a saved ALLOW on
             // apply_template cannot silently approve a HIGH-risk template. The test core
-            // wires no approver, so the call fails before the tool's own refusal text
-            // runs; that is the mutation check - the assertion would have been the
-            // "Unknown templateId" / "list_workspaces" pointer if the escalation was
-            // missing or did not see the unknown template.
-            val result = invoke(argsFor("workspace-no-such-template", projectDir()))
-            assertTrue(result.isError)
+            // wires no approver AND a short ASK timeout, so the call fails before the
+            // tool's own refusal text runs; that is the mutation check - the assertion
+            // would have been the "Unknown templateId" / "list_workspaces" pointer if
+            // the escalation was missing or did not see the unknown template. The short
+            // timeout keeps CI fast - waiting 45 seconds for an operator that never
+            // arrives is the wrong default for a test.
+            val core = createTestCore(approvalBus = McpApprovalBus(defaultTimeoutMs = 50L))
+            val args = argsFor("workspace-no-such-template", projectDir())
+            val outcome = core.invoke("apply_template", args)
+            assertTrue(outcome.isError)
             assertTrue(
-                result.text.contains("rejected by operator") ||
-                    result.text.contains("approval") ||
-                    result.text.contains("withheld"),
-                "the call must surface the ASK outcome, not the tool's own discovery pointer: ${result.text}",
+                outcome.text.contains("rejected by operator") ||
+                    outcome.text.contains("approval") ||
+                    outcome.text.contains("withheld"),
+                "the call must surface the ASK outcome, not the tool's own discovery pointer: ${outcome.text}",
             )
             assertFalse(
-                result.text.contains("Unknown templateId"),
+                outcome.text.contains("Unknown templateId"),
                 "without the escalation the tool's discovery text would have run first - " +
                     "its absence is the regression signal",
             )
@@ -128,7 +137,9 @@ class ApplyTemplateToolTest {
             // NOT silently approve a HIGH template (Claude Code launches
             // --dangerously-skip-permissions). Without the escalation, this would
             // auto-allow; with the escalation, ASK fires before the tool runs.
-            val core = createTestCore()
+            // The short ASK timeout keeps CI fast - waiting 45 seconds for an
+            // operator that never arrives is the wrong default for a test.
+            val core = createTestCore(approvalBus = McpApprovalBus(defaultTimeoutMs = 50L))
             val args = argsFor(PredefinedWorkspaces.CLAUDE_CODE_ID, projectDir())
             val outcome = core.invoke("apply_template", args)
             assertTrue(outcome.isError, "ASK with no approver must deny: ${outcome.text}")
@@ -182,9 +193,15 @@ class ApplyTemplateToolTest {
     @Test
     fun `a relative project path is refused`() =
         runBlocking {
+            // Use Browser Only (LOW risk) so the apply_template escalation does NOT
+            // fire on this test - that escalation is covered by the dedicated tests
+            // below. A HIGH template here would route through ASK before reaching
+            // the tool's own path check, and the assertion would have passed even
+            // if the path restriction were removed entirely. Browser Only's only
+            // failure mode is the tool's own path refusal.
             val result =
                 invoke(
-                    """{"templateId":"${PredefinedWorkspaces.CLAUDE_CODE_ID}","projectPath":"relative/path"}""",
+                    """{"templateId":"${PredefinedWorkspaces.BROWSER_ONLY_ID}","projectPath":"relative/path"}""",
                 )
             assertTrue(result.isError)
         }
