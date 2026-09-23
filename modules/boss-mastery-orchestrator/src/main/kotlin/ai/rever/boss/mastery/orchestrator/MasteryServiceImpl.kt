@@ -398,6 +398,15 @@ private fun validateDefinition(request: PMasteryDef) {
     validateArgument(request.nodesList.all { it.maxRetries in 0..5 && it.timeoutMs in 0..300_000 }) {
         "Mastery nodes support at most 5 retries and a 5-minute timeout"
     }
+    // `MasteryEdge.condition` is documented and transported but the executor never reads it
+    // (see issue #1060) - a guarded edge would silently execute its dependent node regardless
+    // of the guard. Refuse any non-blank condition until an evaluator is implemented, so a
+    // definition that depends on a guard fails closed at create time rather than running
+    // unconditionally.
+    validateArgument(request.edgesList.all { it.condition.isNullOrBlank() }) {
+        "MasteryEdge.condition is reserved; non-null conditions are not yet evaluated. " +
+            "Remove the condition or split the mastery so each branch is unconditional."
+    }
 }
 
 private fun masteryLimit(message: String) = Status.RESOURCE_EXHAUSTED.withDescription(message).asRuntimeException()
