@@ -26,6 +26,18 @@ class ProjectCardYesterdayTest {
             .toInstant()
             .toEpochMilli()
 
+    private fun atIn(
+        targetZone: ZoneId,
+        day: LocalDate,
+        hour: Int,
+        minute: Int,
+    ): Long =
+        day
+            .atTime(hour, minute)
+            .atZone(targetZone)
+            .toInstant()
+            .toEpochMilli()
+
     @Test
     fun `a 47h-old late-evening timestamp is the day before yesterday not Yesterday`() {
         val today = LocalDate.of(2026, 9, 19)
@@ -70,5 +82,38 @@ class ProjectCardYesterdayTest {
         assertEquals("Just now", formatRelativeTime(now - 30_000, now, zone))
         assertEquals("5m ago", formatRelativeTime(now - 5 * 60_000, now, zone))
         assertEquals("2h ago", formatRelativeTime(now - 2 * 3600_000, now, zone))
+    }
+
+    @Test
+    fun `a far-east zone formats the fallback label in that zone's calendar day`() {
+        // Pacific/Kiritimati sits at UTC+14, east of the +06:30 edge where the fallback-label
+        // bug used to show a date one day off: with a host default of UTC the SimpleDateFormat
+        // would emit the UTC date while the bucket decision used Kiritimati's. Before b749bc0
+        // the label here would have read "Sep 13".
+        val kiritimati = ZoneId.of("Pacific/Kiritimati")
+        val today = LocalDate.of(2026, 9, 19)
+        val fiveDaysBackNoon = atIn(kiritimati, today.minusDays(5), 12, 0)
+        val nowNoon = atIn(kiritimati, today, 12, 0)
+
+        val label = formatRelativeTime(fiveDaysBackNoon, nowNoon, kiritimati)
+
+        assertEquals("Sep 14", label)
+    }
+
+    @Test
+    fun `a fall-back 25-hour day - 24h elapsed on the same calendar day reads as that day, not Yesterday`() {
+        // 2025-11-02 in America/New_York is the fall-back day: clocks go from EDT (UTC-4) to
+        // EST (UTC-5) at 02:00, making the day 25 hours long. A timestamp at 00:30 EDT
+        // (04:30 UTC) and "now" at 23:30 EST (04:30 UTC the next day) sit on the same calendar
+        // day but are 24h apart, so the bucket decision must use the date rather than
+        // "Yesterday" for that rare case.
+        val newYork = ZoneId.of("America/New_York")
+        val day = LocalDate.of(2025, 11, 2)
+        val earlyMorning = atIn(newYork, day, 0, 30)
+        val lateEvening = atIn(newYork, day, 23, 30)
+
+        val label = formatRelativeTime(earlyMorning, lateEvening, newYork)
+
+        assertEquals("Nov 2", label)
     }
 }
