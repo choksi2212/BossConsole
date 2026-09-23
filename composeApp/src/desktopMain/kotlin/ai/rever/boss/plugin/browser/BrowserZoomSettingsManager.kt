@@ -320,10 +320,17 @@ object BrowserZoomSettingsManager {
 
     /**
      * Clear all domain zoom settings. R-M-W under [saveLock] (#1051).
+     *
+     * Also lifts the I/O-error save gate, so a test that has flipped
+     * [canSaveSafely] to `false` (or any caller clearing settings before
+     * the gate would naturally re-open via a successful read) starts clean.
+     * The next [loadSettings] will set [canSaveSafely] from the file state
+     * again - this just makes "clear all" a safe reset for in-memory state.
      */
     fun clearAllSettings() {
         synchronized(saveLock) {
             settings = BrowserZoomSettingsData()
+            canSaveSafely = true
         }
     }
 }
@@ -381,15 +388,40 @@ internal fun moveCorruptSettingsAside(
         // Cap: keep the newest [maxAsides] - delete older ones so repeated
         // corruption cannot fill the user's settings directory. The newest
         // (just-created) aside is the most diagnostic for whatever the user
-        // saw last.
+        // saw last. Sort by the timestamp embedded in the aside name rather
+        // than `lastModified`: two asides created in the same millisecond
+        // share a `lastModified` on filesystems with millisecond resolution,
+        // so the sort would not be deterministic across filesystems - the
+        // embedded timestamp is the one we wrote and is sortable.
         val parent = file.parentFile ?: return@runCatching
+        val asidePrefix = file.name + ".corrupt."
         val asides =
             listFiles(parent)
-                ?.filter { it.name.startsWith(file.name + ".corrupt.") }
-                ?.sortedByDescending { it.lastModified() }
+                ?.filter { it.name.startsWith(asidePrefix) }
+                ?.sortedByDescending { asideTimestampMillis(it.name, asidePrefix) }
                 ?: return@runCatching
         for (old in asides.drop(maxAsides)) {
             old.delete()
         }
     }
 }
+
+/**
+ * Parses the millisecond timestamp from an aside name `<name>.corrupt.<millis>.<uuid>`
+ * for use as a deterministic sort key. Falls back to `Long.MIN_VALUE` if the name
+ * does not match the expected shape - the entry is still considered an aside by the
+ * filter, just at the bottom of any sort.
+ */
+private fun asideTimestampMillis(
+    name: String,
+    prefix: String,
+): Long =
+    run {
+        val tail = name.removePrefix(prefix)
+        val millisEnd = tail.indexOf('.')
+        if (millisEnd < 0) {
+            Long.MIN_VALUE
+        } else {
+            tail.substring(0, millisEnd).toLongOrNull() ?: Long.MIN_VALUE
+        }
+    }

@@ -394,18 +394,20 @@ class BrowserZoomSettingsManagerHardeningTest {
             """.trimIndent(),
         )
 
-        // First load fails: gate is closed.
+        // First load fails: gate is closed, in-memory state is reset to defaults.
         BrowserZoomSettingsManager.loadSettings(readText = { throw IOException("flaky") })
-        BrowserZoomSettingsManager.setZoomForDomain("pending.example", 1.25)
         BrowserZoomSettingsManager.saveSettingsSync()
         assertEquals(
             true,
             live.readText().contains("first.example"),
-            "save must still be refused after the first failed load",
+            "save must still be refused after the first failed load - " +
+                "the file must stay byte-for-byte what the user had",
         )
 
-        // Second load succeeds: gate re-opens, the next save lands.
+        // Second load succeeds: gate re-opens. The next save carries the
+        // post-recovery mutator's domain to disk.
         BrowserZoomSettingsManager.loadSettings()
+        BrowserZoomSettingsManager.setZoomForDomain("pending.example", 1.25)
         BrowserZoomSettingsManager.saveSettingsSync()
         val onDisk = live.readText()
         assertTrue(
