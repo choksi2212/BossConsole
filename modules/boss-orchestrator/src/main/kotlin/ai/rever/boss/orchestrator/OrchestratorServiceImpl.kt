@@ -398,7 +398,16 @@ private fun noApprovalSinkReason(
 
 private fun outcomeToStrategy(outcome: RepairOutcome): RepairStrategy =
     when (outcome) {
-        is RepairOutcome.Restarted -> RepairStrategy.REPAIR_STRATEGY_RESTART
+        is RepairOutcome.Restarted -> {
+            // A tuned restart carries JVM-arg overrides on the wire; the kernel's recovery
+            // decision only reads them when the strategy is RESTART_TUNED, so anything else
+            // would silently hand the respawn back the configured heap and lose the OOM fix.
+            if (outcome.jvmArgs.isNotEmpty()) {
+                RepairStrategy.REPAIR_STRATEGY_RESTART_TUNED
+            } else {
+                RepairStrategy.REPAIR_STRATEGY_RESTART
+            }
+        }
         is RepairOutcome.StateReset -> RepairStrategy.REPAIR_STRATEGY_RESET_STATE
         is RepairOutcome.ConfigPatched -> RepairStrategy.REPAIR_STRATEGY_PATCH_CONFIG
         is RepairOutcome.CodeFixProposed -> RepairStrategy.REPAIR_STRATEGY_PATCH_SOURCE

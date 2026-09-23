@@ -268,6 +268,57 @@ class RepairEngineTest {
             assertEquals(RepairOutcome.Restarted("p10", emptyList()), outcome)
         }
 
+    // ---- the tuned heap is floored against the configured heap (#980) ----
+
+    @Test
+    fun `a tuned restart floors the heap at the configured value when it is above the floor (#980)`() =
+        runTest {
+            // A user with a 2 GB plugin must come back from an OOM on 2 GB, not on the 512 MB
+            // floor. The configured value comes in via ProcessFailureReport.currentJvmArgs.
+            val capturedArgs = mutableListOf<List<String>>()
+
+            val report =
+                report("p-big", RepairStrategy.REPAIR_STRATEGY_RESTART_TUNED)
+                    .toBuilder()
+                    .addAllCurrentJvmArgs(listOf("-Xmx2048m"))
+                    .build()
+
+            val outcome =
+                engine(onRequestRestart = { _, args -> capturedArgs.add(args) })
+                    .handleFailure(report)
+
+            assertEquals(listOf(listOf("-Xmx2048m")), capturedArgs)
+            assertEquals(RepairOutcome.Restarted("p-big", listOf("-Xmx2048m")), outcome)
+        }
+
+    @Test
+    fun `a tuned restart applies the floor when the configured heap is below it (#980)`() =
+        runTest {
+            // A 256 MB plugin OOMing is the exact case the 512 MB floor exists for.
+            val report =
+                report("p-small", RepairStrategy.REPAIR_STRATEGY_RESTART_TUNED)
+                    .toBuilder()
+                    .addAllCurrentJvmArgs(listOf("-Xmx256m"))
+                    .build()
+
+            val outcome =
+                engine(onRequestRestart = { _, _ -> }).handleFailure(report)
+
+            assertEquals(RepairOutcome.Restarted("p-small", listOf("-Xmx512m")), outcome)
+        }
+
+    @Test
+    fun `a tuned restart without a current heap applies the floor (#980)`() =
+        runTest {
+            // An older kernel that does not populate currentJvmArgs still gets the floor; the
+            // value is read on the report side, not the manifest side, so it stays a guess.
+            val outcome =
+                engine(onRequestRestart = { _, _ -> })
+                    .handleFailure(report("p-default", RepairStrategy.REPAIR_STRATEGY_RESTART_TUNED))
+
+            assertEquals(RepairOutcome.Restarted("p-default", listOf("-Xmx512m")), outcome)
+        }
+
     @Test
     fun `a state reset with no snapshot recorded is a plain restart`() =
         runTest {

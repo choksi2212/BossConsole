@@ -56,6 +56,13 @@ class RepairEngine(
 ) {
     private val logger = LoggerFactory.getLogger(RepairEngine::class.java)
 
+    /**
+     * Floor for the heap a tuned restart applies. A user's configured heap above this is left
+     * alone; anything below is bumped up to it. Expressed in MiB so the comparison with the
+     * parsed current value does not need to think about units.
+     */
+    private val minTunedHeapMb = 512
+
     /** Manifest source file paths come from the diagnosed process, so they are confined. */
     private val sourceRoots =
         if (projectRoot == null) AllowedRoots.none() else AllowedRoots.of(File(projectRoot))
@@ -134,7 +141,7 @@ class RepairEngine(
 
             RepairStrategy.REPAIR_STRATEGY_RESTART_TUNED -> {
                 try {
-                    val tunedArgs = listOf("-Xmx512m")
+                    val tunedArgs = listOf("-Xmx${tunedHeapMb(report)}m")
                     onRequestRestart(processId, tunedArgs)
                     logger.info("Tuned restart requested for process: {} with {}", processId, tunedArgs)
                     RepairOutcome.Restarted(processId, tunedArgs)
@@ -296,6 +303,50 @@ class RepairEngine(
             return ""
         }
         return bytes.toString(Charsets.UTF_8)
+    }
+
+    /**
+     * Heap a tuned restart should apply, in MiB. Floors the configured [minTunedHeapMb] against
+     * whatever heap the failing process was started with, so a user with a 2 GB plugin does not
+     * come back from an OOM on a 512 MB one.
+     *
+     * The current heap comes from `report.currentJvmArgsList`, populated by the kernel from the
+     * live `ProcessConfig.jvmArgs`. An unparseable or absent `-Xmx` is treated as "no floor" so
+     * a malformed report cannot lock the user out of a tuned restart.
+     */
+    private fun tunedHeapMb(report: ProcessFailureReport): Int {
+        val currentMb = parseXmxMb(report.currentJvmArgsList) ?: return minTunedHeapMb
+        return maxOf(minTunedHeapMb, currentMb)
+    }
+
+    /**
+     * The largest `-Xmx{N}[g|G|m|M|k|K]` (in MiB) in [args], or null when none parses.
+     *
+     * A process can name multiple `-Xmx` flags (the last wins), but [args] here is the kernel's
+     * actual spawn list, so there is at most one. The unit suffix is required: an unrecognised
+     * unit or an unparseable number is "no floor" rather than zero, because zero would floor
+     * every process against a meaningless minimum.
+     */
+    private fun parseXmxMb(args: List<String>): Int? =
+        args
+            .asSequence()
+            .mapNotNull { arg ->
+                val match = XMX_PATTERN.matchEntire(arg) ?: return@mapNotNull null
+                val value = match.groupValues[1].toLongOrNull() ?: return@mapNotNull null
+                val unit = match.groupValues[2]
+                when (unit.lowercase()) {
+                    "g" -> value * 1024L
+                    "m" -> value
+                    "k" -> (value + 1023L) / 1024L
+                    else -> null
+                }
+            }.maxOrNull()
+            ?.let { Math.min(Math.max(it, 1L), Long.MAX_VALUE).toInt() }
+
+    private companion object {
+        // Accepts -Xmx<digits><g|G|m|M|k|K> end-to-end. Anything else (no unit, bare -Xmx with no
+        // value, or whitespace inside) is "not a heap flag" and falls through to null.
+        private val XMX_PATTERN = Regex("""-Xmx(\d+)([gGmMkK])""")
     }
 
     private fun buildEscalationReport(
