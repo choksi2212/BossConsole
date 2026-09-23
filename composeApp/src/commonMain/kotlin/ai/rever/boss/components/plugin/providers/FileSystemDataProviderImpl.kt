@@ -211,6 +211,14 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                     )
                 }
 
+                // The walk MUST operate on the SAME resolved path the containment check used.
+                // The check above resolves `home/link/../<sibling>` through both lexical `..`
+                // resolution and symlink resolution; the walk operating on the original input
+                // would let the OS re-resolve through the link and reach a path the check never
+                // saw. Use toRealPath() to keep the two paths byte-identical; fall back to the
+                // canonical path when toRealPath() throws (file missing), which is still in scope
+                // because the check above already admitted it.
+                //
                 // Recursive deletion must NEVER follow directory symlinks. A permitted directory
                 // can contain a symlink to an external directory, and Files.walk without
                 // NOFOLLOW_LINKS would traverse that link and remove entries outside the
@@ -221,9 +229,11 @@ class FileSystemDataProviderImpl : FileSystemDataProvider {
                 // A non-existent target must report success: the pre-fix delete used
                 // File.deleteRecursively(), which returned true for a missing path, and that
                 // contract is what plugins and the #1118 boundary test depend on. The existence
-                // check is on the canonical path so a deleted-and-recreated entry cannot be
+                // check is on the resolved path so a deleted-and-recreated entry cannot be
                 // treated as the original target.
-                val target = file.toPath()
+                val target =
+                    runCatching { canonicalFile.toPath().toRealPath() }
+                        .getOrElse { canonicalFile.toPath() }
                 val deleted =
                     when {
                         !Files.exists(target, LinkOption.NOFOLLOW_LINKS) -> {

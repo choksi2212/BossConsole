@@ -259,4 +259,58 @@ class FileSystemDataProviderDeleteTest {
             "the file the symlink pointed at must remain; #1118 must not erase link targets",
         )
     }
+
+    @Test
+    fun `deleting a path that traverses a link with parent-dot is refused even when the OS resolves it out of home`() {
+        // Pins the review finding on the #1118 PR: a request like `home/link/../<sibling>` has
+        // an OS-resolved target that lives outside home (the link points to `outside`, so
+        // `outside/..` is `outside`'s parent, not `home`), but the lexically-normalized form
+        // cancels `link/..` back to home and LOOKS in scope. The containment check and the
+        // walk have to resolve paths the same way, or the walk escapes even when the check
+        // sees a benign-looking path.
+        //
+        // Shape: a temp home, a symlink `home/link -> outside`, a canary in a sibling of
+        // `outside` (so `home/link/../<sibling>` OS-resolves to that canary), and a request
+        // to delete it. The canary must remain and the call must be refused.
+        val outside = Files.createDirectory(homeDir.parent.resolve("fsd-provider-linkdot-${System.nanoTime()}"))
+        // The canary lives in `outside`'s parent, which is exactly where `home/link/..` lands.
+        val canaryName = "fsd-linkdot-canary-${System.nanoTime()}"
+        val siblingCanary = Files.createFile(outside.parent.resolve(canaryName))
+        try {
+            val linkResult =
+                runCatching {
+                    Files.createSymbolicLink(homeDir.resolve("link"), outside)
+                }
+            assumeNoException("Symbolic links unavailable on this platform", linkResult.exceptionOrNull())
+            // The traversal path: `home/link/../<sibling>` - the OS walks `link` (the symlink),
+            // then `..` from the symlink's TARGET (NOT from `home`), landing at `outside`'s
+            // parent, then at `<sibling>`. Without the fix the walk used the unnormalized
+            // input and reached this canary file.
+            val traversalPath =
+                homeDir
+                    .resolve("link")
+                    .resolve("..")
+                    .resolve(siblingCanary.fileName)
+
+            val result = runBlocking { provider.delete(traversalPath.toString()) }
+
+            assertTrue(
+                result.isFailure,
+                "link-then-dotdot traversal that escapes home must be refused; got $result",
+            )
+            val failure = result.exceptionOrNull()
+            assertTrue(failure is SecurityException, "expected SecurityException, got $failure")
+            assertTrue(
+                Files.exists(siblingCanary),
+                "canary at $siblingCanary must NOT be erased when the link-then-dotdot traversal is refused",
+            )
+        } finally {
+            // The canary lives in homeDir.parent, outside the redirected test home, so the
+            // per-task redirect does not clean it up - delete it explicitly here.
+            Files.deleteIfExists(siblingCanary)
+            Files.walk(outside).use { paths ->
+                paths.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
+            }
+        }
+    }
 }
