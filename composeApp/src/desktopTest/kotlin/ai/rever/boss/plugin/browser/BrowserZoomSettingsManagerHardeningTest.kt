@@ -63,7 +63,7 @@ class BrowserZoomSettingsManagerHardeningTest {
         val live = File(tmp, "browser-zoom-settings.json")
         live.writeText("{ this is not valid json")
 
-        moveCorruptSettingsAside(live) { 1726000000000L }
+        moveCorruptSettingsAside(live, now = { 1726000000000L })
 
         // The corrupt bytes no longer sit at the live name; an aside copy survives for diagnosis.
         assertFalse(live.exists(), "the corrupt file must not remain at the live path")
@@ -76,7 +76,7 @@ class BrowserZoomSettingsManagerHardeningTest {
     @Test
     fun `an absent file is a no-op - no aside is created`() {
         val absent = File(tmp, "never-existed.json")
-        moveCorruptSettingsAside(absent) { 1726000000000L }
+        moveCorruptSettingsAside(absent, now = { 1726000000000L })
         assertEquals(0, tmp.listFiles()!!.size, "the directory must stay empty - no aside for an absent file")
     }
 
@@ -91,9 +91,9 @@ class BrowserZoomSettingsManagerHardeningTest {
     fun `two corrupt cycles in the same millisecond keep two distinct asides`() {
         val live = File(tmp, "browser-zoom-settings.json")
         live.writeText("garbage one")
-        moveCorruptSettingsAside(live) { 1L }
+        moveCorruptSettingsAside(live, now = { 1L })
         live.writeText("garbage two")
-        moveCorruptSettingsAside(live) { 1L }
+        moveCorruptSettingsAside(live, now = { 1L })
 
         val asides = tmp.listFiles()!!.filter { it.name.contains(".corrupt.") }
         assertEquals(2, asides.size, "two distinct corrupt cycles must keep two diagnosable asides")
@@ -194,7 +194,7 @@ class BrowserZoomSettingsManagerHardeningTest {
         )
         val asides = tmp.listFiles()!!.filter { it.name.startsWith("browser-zoom-settings.json.corrupt.") }
         assertEquals(1, asides.size, "exactly one aside for the one corrupt load")
-        assertEquals("default", BrowserZoomSettingsManager.getZoomForDomain("after-load.example"))
+        assertEquals(1.0, BrowserZoomSettingsManager.getZoomForDomain("after-load.example"))
     }
 
     // --- read-modify-write race: concurrent mutators must not lose updates ------------------
@@ -267,7 +267,9 @@ class BrowserZoomSettingsManagerHardeningTest {
         // POSIX permissions on the saved file match the atomic-write helper's
         // owner-only contract; we check this on POSIX and skip silently on
         // Windows where the bit is meaningless.
-        val perms = runCatching { Files.getPosixFilePermissions(BrowserZoomSettingsManager.settingsFile.toPath()) }.getOrNull()
+        val perms = runCatching {
+            Files.getPosixFilePermissions(BrowserZoomSettingsManager.settingsFile.toPath())
+        }.getOrNull()
         if (perms != null) {
             assertEquals(
                 setOf(
