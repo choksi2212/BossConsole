@@ -1,9 +1,9 @@
 ﻿#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-Regression tests for the boss.bat :urlencode subroutine (#1057).
+Regression tests for the boss.bat :urlencode and :detect_and_route subroutines (#1057, #1059).
 
-The subroutine used to interpolate the raw CLI argument into a
+The :urlencode subroutine used to interpolate the raw CLI argument into a
 single-quoted PowerShell string literal:
 
     powershell -NoProfile -Command "[System.Uri]::EscapeDataString('%str%')"
@@ -13,10 +13,15 @@ followed it. The fix routes the value through the environment instead:
 
     powershell -NoProfile -Command "[System.Uri]::EscapeDataString([Environment]::GetEnvironmentVariable('str'))"
 
-This harness exercises the fixed subroutine the way boss.bat calls it,
-including the paren-balanced injection payload that fired on the old code.
-It runs under pwsh on any OS (the script-tests job exports BOSS_TEST_PWSH),
-and falls back to asserting the source shape when cmd.exe is unavailable.
+:detect_and_route opens its own parse scope (#1059); a literal ! in any
+argument must survive on the auto-detect path the same way it does on the
+verb paths.
+
+This harness exercises the fixed subroutines the way boss.bat calls them,
+including the paren-balanced injection payload that fired on the old code
+and a literal-! probe for the auto-detect path. It runs under pwsh on any
+OS (the script-tests job exports BOSS_TEST_PWSH), and falls back to
+asserting the source shape when cmd.exe is unavailable.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -43,6 +48,16 @@ Assert-True ($bat -match [regex]::Escape("EscapeDataString([Environment]::GetEnv
 
 Assert-True (-not ($bat -match [regex]::Escape("EscapeDataString('%str%')"))) `
     'the :urlencode shim no longer interpolates %str% into the PowerShell string literal'
+
+# :detect_and_route must open DisableDelayedExpansion too (#1059): the
+# function does not read !var!, and EnableDelayedExpansion here would
+# re-create the literal-!-eating defect on the auto-detect path that the
+# top-level DisableDelayedExpansion just fixed.
+$detectScopeRegex = [regex]'(?ms):detect_and_route\s*\r?\n(?:REM[^\r\n]*\r?\n)*setlocal (Disable|Enable)DelayedExpansion'
+$detectScopeMatch = $detectScopeRegex.Match($bat)
+Assert-True ($detectScopeMatch.Success) ':detect_and_route is followed by a setlocal scope line'
+Assert-True ($detectScopeMatch.Groups[1].Value -eq 'Disable') `
+    ':detect_and_route opens DisableDelayedExpansion (EnableDelayedExpansion would eat ! in the auto-detect path)'
 
 # --- Live behavior checks (need cmd.exe; skipped elsewhere) --------------
 
@@ -123,6 +138,55 @@ Assert-True ($plain -like "a'b!c*%20e") "mixed quote/bang/space argument survive
 } finally {
     Remove-Item $probe -ErrorAction SilentlyContinue
     Remove-Item $marker -ErrorAction SilentlyContinue
+}
+
+# --- :detect_and_route probe (#1059) --------------------------------------
+
+# Inline the CURRENT :detect_and_route from boss.bat. The function reaches
+# :detect_url and :detect_domain by goto from inside, so the inlined block
+# runs to end-of-file. The argument passed in ("xxxxx!yyyyy") contains a
+# literal ! but no http(s)://, no TLD match and no existing file/folder,
+# so :detect_and_route falls through to the "Could not detect type" branch
+# which echoes the argument verbatim. With EnableDelayedExpansion on (the
+# pre-#1059 default), the ! would be eaten at `set "arg=%~1"` and the echo
+# would print "Error: Could not determine type for: xxxxyyyyy"; with
+# DisableDelayedExpansion the ! survives and the probe passes.
+$detectStartIdx = -1
+for ($i = 0; $i -lt $lines.Count; $i++) {
+    if ($lines[$i] -eq ':detect_and_route') { $detectStartIdx = $i; break }
+}
+Assert-True ($detectStartIdx -ge 0) ':detect_and_route subroutine exists in boss.bat'
+$detectBlock = ($lines[$detectStartIdx..($lines.Count - 1)] -join "`r`n")
+
+$detectProbe = Join-Path $env:TEMP ("boss-detect-probe-" + [guid]::NewGuid().ToString('N') + '.cmd')
+$detectBody = @"
+@echo off
+REM Match the real boss.bat top scope: DisableDelayedExpansion so a literal
+REM ! in the call argument survives intact. :detect_and_route opens its own
+REM DisableDelayedExpansion block at :227 (the same scope the shipped script
+REM uses), so any future switch back to EnableDelayedExpansion there would
+REM re-eat the ! and this probe would fail.
+setlocal DisableDelayedExpansion
+call :detect_and_route "xxxxx!yyyyy"
+echo ROUTE_EXIT=%ERRORLEVEL%
+goto :detect_done
+$detectBlock
+:detect_done
+endlocal
+"@
+Set-Content -Path $detectProbe -Value $detectBody -Encoding Ascii
+
+try {
+    $detectOutput = & cmd.exe /c $detectProbe 2>&1 | ForEach-Object { "$_" }
+    $errLine = $detectOutput | Where-Object { $_ -like 'Error: Could not determine type for: *' } | Select-Object -First 1
+    if ($null -eq $errLine) {
+        Write-Error 'ASSERTION FAILED: No "Error: Could not determine type" line captured (probe did not reach the no-match branch)'
+        exit 1
+    }
+    Assert-True ($errLine -like 'Error: Could not determine type for: xxxxx!yyyyy') `
+        "literal ! survives the auto-detect path (got: $errLine)"
+} finally {
+    Remove-Item $detectProbe -ErrorAction SilentlyContinue
 }
 
 Write-Output 'ALL URLencode tests passed'
