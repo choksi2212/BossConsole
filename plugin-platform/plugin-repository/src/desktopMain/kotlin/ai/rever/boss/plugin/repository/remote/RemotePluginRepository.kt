@@ -459,6 +459,10 @@ class RemotePluginRepository(
                                 // here leaves no part file behind.
                                 val stagedHash = FileHashing.sha256(staged)
                                 if (!stagedHash.equals(downloadInfo.sha256, ignoreCase = true)) {
+                                    // Hard-fail, not a fall-back: DownloadException extends Exception,
+                                    // not IOException/IllegalStateException/SecurityException/
+                                    // IllegalArgumentException, so cacheOrNull cannot swallow it and
+                                    // the caller never reaches the fresh-download path below.
                                     throw DownloadException(
                                         "SHA-256 mismatch between cached and staged bytes. " +
                                             "Expected: ${downloadInfo.sha256}, Got: $stagedHash",

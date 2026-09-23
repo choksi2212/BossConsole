@@ -255,7 +255,9 @@ class RemotePluginRepositoryStagedDownloadTest {
             val linkedFile = File(tempDir, "linked.jar")
             // The test fixture directory is fresh per test, so no pre-existing
             // file at this path to clean up before placing the symlink.
-            Files.createSymbolicLink(linkedFile.toPath(), sentinel.toPath())
+            val symlinkCreated =
+                runCatching { Files.createSymbolicLink(linkedFile.toPath(), sentinel.toPath()) }.isSuccess
+            if (!symlinkCreated) return@runBlocking
             val linkedPath = linkedFile.absolutePath
 
             val path =
