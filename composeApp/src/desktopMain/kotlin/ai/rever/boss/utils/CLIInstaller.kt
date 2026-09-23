@@ -1,17 +1,17 @@
 package ai.rever.boss.utils
 
-import ai.rever.boss.utils.logging.BossLogger
-import ai.rever.boss.utils.logging.LogCategory
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermission
 import com.sun.jna.Memory
 import com.sun.jna.Native
 import com.sun.jna.Pointer
 import com.sun.jna.platform.win32.User32
 import com.sun.jna.platform.win32.WinDef
-import java.io.File
-import java.nio.file.Files
-import java.nio.file.attribute.PosixFilePermission
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import ai.rever.boss.utils.logging.BossLogger
+import ai.rever.boss.utils.logging.LogCategory
 
 actual object CLIInstaller {
     private val logger = BossLogger.forComponent("CLIInstaller")
@@ -595,7 +595,7 @@ actual object CLIInstaller {
             mem.setString(0, sectionName)
             user32.SendMessageTimeout(
                 WinDef.HWND(Pointer.createConstant(0xFFFFL)),
-                WinDef.UINT(WM_SETTINGCHANGE.toLong()),
+                WM_SETTINGCHANGE,
                 WinDef.WPARAM(0L),
                 WinDef.LPARAM(Pointer.nativeValue(mem)),
                 SMTO_ABORTIFHUNG,
