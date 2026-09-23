@@ -1,7 +1,6 @@
 package ai.rever.boss.mastery.orchestrator
 
 import ai.rever.boss.mastery.MasteryProgress as KProgress
-import ai.rever.boss.mastery.orchestrator.toProto
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
