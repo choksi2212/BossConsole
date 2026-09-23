@@ -12,6 +12,7 @@ import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.api.McpToolResult
 import ai.rever.boss.plugin.api.TabRegistry
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -96,17 +97,76 @@ class ApplyTemplateToolTest {
         }
 
     @Test
-    fun `an unknown template is refused with the discovery pointer`() =
+    fun `an unknown template is escalated to ASK before the discovery pointer`() =
         runBlocking {
+            // The escalation is the behaviour we want: an unknown template id rates HIGH
+            // (fail closed - cannot classify what would run), so a saved ALLOW on
+            // apply_template cannot silently approve a HIGH-risk template. The test core
+            // wires no approver, so the call fails before the tool's own refusal text
+            // runs; that is the mutation check - the assertion would have been the
+            // "Unknown templateId" / "list_workspaces" pointer if the escalation was
+            // missing or did not see the unknown template.
             val result = invoke(argsFor("workspace-no-such-template", projectDir()))
             assertTrue(result.isError)
             assertTrue(
+                result.text.contains("rejected by operator") ||
+                    result.text.contains("approval") ||
+                    result.text.contains("withheld"),
+                "the call must surface the ASK outcome, not the tool's own discovery pointer: ${result.text}",
+            )
+            assertFalse(
                 result.text.contains("Unknown templateId"),
-                "names the problem: ${result.text}",
+                "without the escalation the tool's discovery text would have run first - " +
+                    "its absence is the regression signal",
+            )
+        }
+
+    @Test
+    fun `a saved ALLOW on apply_template is escalated to ASK for a HIGH template (#1136)`() =
+        runTest {
+            // fluck-boss's regression pin: a persisted ALLOW on apply_template must
+            // NOT silently approve a HIGH template (Claude Code launches
+            // --dangerously-skip-permissions). Without the escalation, this would
+            // auto-allow; with the escalation, ASK fires before the tool runs.
+            val core = createTestCore()
+            val args = argsFor(PredefinedWorkspaces.CLAUDE_CODE_ID, projectDir())
+            val outcome = core.invoke("apply_template", args)
+            assertTrue(outcome.isError, "ASK with no approver must deny: ${outcome.text}")
+            assertTrue(
+                outcome.text.contains("rejected by operator") ||
+                    outcome.text.contains("approval") ||
+                    outcome.text.contains("withheld"),
+                "the escalation must surface before the tool's own refusers run: ${outcome.text}",
+            )
+            assertFalse(
+                outcome.text.contains("saved") || outcome.text.contains("materialised"),
+                "the tool must not run when a HIGH template is escalated to ASK",
+            )
+        }
+
+    @Test
+    fun `a saved ALLOW on apply_template is honored for a LOW template (#1136)`() =
+        runTest {
+            // The matching half of the escalation pin: a LOW template (Browser Only
+            // runs no startup commands) must stay on the persisted ALLOW - the
+            // escalation is scoped to HIGH-risk templates so the operator's saved
+            // rule on common templates is not silenced. Browser Only is refused by
+            // apply_template for an unrelated reason (no placeholders to substitute),
+            // but the reason surfaces through the tool's own check, not the approval
+            // gate.
+            val core = createTestCore()
+            val args = argsFor(PredefinedWorkspaces.BROWSER_ONLY_ID, projectDir())
+            val outcome = core.invoke("apply_template", args)
+            assertTrue(outcome.isError, "Browser Only has no placeholders - the tool's own refusal runs")
+            assertFalse(
+                outcome.text.contains("rejected by operator") ||
+                    outcome.text.contains("approval") ||
+                    outcome.text.contains("withheld"),
+                "a LOW template must NOT be escalated to ASK: ${outcome.text}",
             )
             assertTrue(
-                result.text.contains("list_workspaces"),
-                "points the agent at discovery: ${result.text}",
+                outcome.text.contains("open_workspace"),
+                "the tool's own no-placeholders pointer must surface: ${outcome.text}",
             )
         }
 
@@ -132,7 +192,11 @@ class ApplyTemplateToolTest {
     @Test
     fun `a missing project path argument is refused`() =
         runBlocking {
-            val result = invoke("""{"templateId":"${PredefinedWorkspaces.CLAUDE_CODE_ID}"}""")
+            // Use a MEDIUM template (launches an agent CLI but no permission skipping) so the
+            // apply_template escalation does NOT fire on this test - that escalation is
+            // covered by the dedicated tests below. A HIGH template here would route through
+            // ASK before reaching the tool's own "projectPath is required" check.
+            val result = invoke("""{"templateId":"${PredefinedWorkspaces.CODEX_ID}"}""")
             assertTrue(result.isError)
             assertTrue(result.text.contains("projectPath is required"))
         }
