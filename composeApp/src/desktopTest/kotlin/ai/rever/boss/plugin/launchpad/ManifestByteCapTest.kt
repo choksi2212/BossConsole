@@ -66,7 +66,7 @@ class ManifestByteCapTest {
             assertContains(
                 source,
                 "PluginManifestReader.readManifestContent",
-                "Expected $relativePath to call " +
+                message = "Expected $relativePath to call " +
                     "PluginManifestReader.readManifestContent for its META-INF/boss-plugin/plugin.json read; " +
                     "an unbounded getInputStream(...).readText() reopens a heap-exhaustion vector " +
                     "against a zip-bomb plugin.json.",
