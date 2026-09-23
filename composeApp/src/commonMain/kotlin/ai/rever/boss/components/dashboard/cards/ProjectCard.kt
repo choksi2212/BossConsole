@@ -197,7 +197,13 @@ internal fun formatRelativeTime(
     val calendarLabel =
         when (today.toEpochDay() - thatDay.toEpochDay()) {
             1L -> "Yesterday"
-            else -> SimpleDateFormat("MMM d").format(Date(timestamp))
+            // SimpleDateFormat formats in the host default zone unless told otherwise -
+            // honour the same zone the bucket decision used, otherwise a project opened
+            // 26 hours ago crosses midnight in UTC and labels as "Today" / "Yesterday"
+            // differently depending on where the test machine sits.
+            else -> SimpleDateFormat("MMM d").apply {
+                timeZone = java.util.TimeZone.getTimeZone(zone)
+            }.format(Date(timestamp))
         }
 
     return when {
