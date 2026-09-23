@@ -341,28 +341,31 @@ class RepairEngine(
      */
     private fun tunedJvmArgs(report: ProcessFailureReport): List<String> {
         val currentArgs = report.currentJvmArgsList.toList()
-        val currentMb = parseXmxMb(currentArgs)
         // No parseable heap flag: we don't know what the user has, so leave the args alone
         // (returning the user's current args means the restart never lowers the heap).
-        if (currentMb == null) return currentArgs
+        val currentMb = parseXmxMb(currentArgs) ?: return currentArgs
 
         val grownMb =
             (currentMb.toLong() * tunedGrowthNumerator / tunedGrowthDenominator)
                 .coerceAtMost(maxTunedHeapMb.toLong())
                 .toInt()
-        // Already at or above the cap, or the growth rounds back to the same value: nothing
-        // to do, restart the process with the args it already had.
-        if (grownMb <= currentMb) return currentArgs
-
         // Below the floor: bump up to the floor (rare - only when the configured heap is
         // genuinely tiny, e.g. a 256m plugin that OOMs).
-        val finalMb = maxOf(grownMb, minTunedHeapMb)
-
-        val newXmx = "-Xmx${finalMb}m"
-        val hasExistingXmx = currentArgs.any { XMX_PATTERN.matchEntire(it) != null }
+        val newXmx = "-Xmx${maxOf(grownMb, minTunedHeapMb)}m"
         val swapped =
             currentArgs.map { arg -> if (XMX_PATTERN.matchEntire(arg) != null) newXmx else arg }
-        return if (hasExistingXmx) swapped else swapped + newXmx
+        return when {
+            // No growth possible (already at/over the cap, or growth rounds back to the same
+            // value): restart the process with the args it already had.
+            grownMb <= currentMb -> currentArgs
+
+            // parseXmxMb found the -Xmx we read currentMb from, so an existing entry is the
+            // common case; the else is defensive against a future refactor that decouples
+            // the parser from this swap.
+            currentArgs.any { XMX_PATTERN.matchEntire(it) != null } -> swapped
+
+            else -> swapped + newXmx
+        }
     }
 
     /**

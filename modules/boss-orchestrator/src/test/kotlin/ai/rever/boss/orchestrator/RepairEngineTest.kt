@@ -372,7 +372,8 @@ class RepairEngineTest {
                     }
                 // Feed the result back so the next restart grows the previous heap.
                 report =
-                    report.toBuilder()
+                    report
+                        .toBuilder()
                         .clearCurrentJvmArgs()
                         .addAllCurrentJvmArgs(args)
                         .build()
