@@ -8,6 +8,7 @@ import ai.rever.boss.components.workspaces.WorkspaceFileManagerCommon
 import ai.rever.boss.components.workspaces.workspaceManager
 import ai.rever.boss.mcp.sandbox.DefaultMcpRiskEvaluator
 import ai.rever.boss.mcp.sandbox.McpRiskLevel
+import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.api.McpToolResult
 import ai.rever.boss.plugin.api.TabRegistry
 import kotlinx.coroutines.runBlocking
@@ -193,14 +194,16 @@ class ApplyTemplateToolTest {
         // schema and the tool's contract was broken. Parsing the schema here forces it to be a
         // real object - a regression to a primitive value fails this test.
         val schema =
-            WorkspaceMcpToolProvider.tools()
+            WorkspaceMcpToolProvider
+                .tools()
                 .first { it.name == "apply_template" }
                 .inputSchema
         val parsed = Json.parseToJsonElement(schema).jsonObject
         assertEquals("object", parsed["type"]?.jsonPrimitive?.content, "schema.type is object")
 
-        val properties = parsed["properties"]?.jsonObject
-            ?: error("schema.properties is not an object: $parsed")
+        val properties =
+            parsed["properties"]?.jsonObject
+                ?: error("schema.properties is not an object: $parsed")
         for (name in listOf("templateId", "projectPath", "windowId")) {
             assertTrue(
                 properties.containsKey(name),
@@ -238,12 +241,13 @@ class ApplyTemplateToolTest {
     @Test
     fun `risk is MEDIUM for agent CLI templates without permission skipping`() {
         val evaluator = DefaultMcpRiskEvaluator()
-        for (templateId in
+        val templateIds =
             listOf(
                 PredefinedWorkspaces.CODEX_ID,
                 PredefinedWorkspaces.GEMINI_ID,
                 PredefinedWorkspaces.OPENCODE_ID,
-            )) {
+            )
+        for (templateId in templateIds) {
             val args =
                 McpToolArgs(
                     mapOf("templateId" to templateId),

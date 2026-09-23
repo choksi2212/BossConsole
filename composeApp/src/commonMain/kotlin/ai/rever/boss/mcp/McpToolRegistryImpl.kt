@@ -759,22 +759,7 @@ internal class McpToolRegistryCore(
         // its name says (#804), so it gets the mutating default - ASK under the factory
         // config - rather than being auto-allowed for avoiding the catalog's name patterns.
         var policy = policyEngine.policyFor(toolName, tool.providerId, tool.definition.readOnly)
-        // apply_template's risk is computed per-call from the named template - a persisted
-        // ALLOW on the tool name covers LOW and MEDIUM templates but must NOT silently approve a
-        // HIGH one (Claude Code / Code Review launch `claude --dangerously-skip-permissions`).
-        // Force ASK whenever the resolved runtime risk crosses the line so a "Trust This Plugin"
-        // or saved rule on `apply_template` cannot upgrade itself into a permission-skipping
-        // agent invocation without the operator seeing the prompt. The escalation is scoped to
-        // apply_template (and its alias) - every other tool's risk is fixed and resolved at
-        // policyFor time, so re-checking them here would be a wider rule change than this PR.
-        if (policy == McpPolicyAction.ALLOW &&
-            toolName.removePrefix(McpToolRegistryImpl.CLIENT_TOOL_PREFIX) in DefaultMcpRiskEvaluator.APPLY_TEMPLATE_TOOLS
-        ) {
-            val runtimeAssessment = riskEvaluator.evaluateRisk(toolName, args)
-            if (runtimeAssessment.level >= McpRiskLevel.HIGH) {
-                policy = McpPolicyAction.ASK
-            }
-        }
+        policy = escalatePolicyForApplyTemplateIfHighRisk(toolName, args, policy)
         val startTime = System.nanoTime()
         var disposition = McpApprovalDisposition.AUTO_ALLOWED
         var result: McpToolResult? = null
@@ -809,23 +794,65 @@ internal class McpToolRegistryCore(
                 }
             throw cancelled
         } finally {
-            withContext(NonCancellable + Dispatchers.IO) {
-                ledger.record(
-                    toolName = toolName,
-                    providerId = tool.providerId,
-                    policyApplied = policy,
-                    approvalDisposition = disposition,
-                    durationMs = (System.nanoTime() - startTime) / 1_000_000L,
-                    isError = result?.isError ?: true,
-                    rawArgs = McpArgumentSanitizer.parseArguments(args.raw),
-                    errorSnippet =
-                        when {
-                            result == null -> "Execution cancelled by caller"
-                            result?.isError == true -> result?.text
-                            else -> null
-                        },
-                )
-            }
+            recordInvocation(
+                toolName = toolName,
+                providerId = tool.providerId,
+                policyApplied = policy,
+                disposition = disposition,
+                startTime = startTime,
+                result = result,
+                rawArgs = McpArgumentSanitizer.parseArguments(args.raw),
+            )
+        }
+    }
+
+    /**
+     * apply_template's risk is computed per-call from the named template - a persisted ALLOW on the
+     * tool name covers LOW and MEDIUM templates but must NOT silently approve a HIGH one (Claude
+     * Code / Code Review launch `claude --dangerously-skip-permissions`). Force ASK whenever the
+     * resolved runtime risk crosses the line so a "Trust This Plugin" or saved rule on
+     * `apply_template` cannot upgrade itself into a permission-skipping agent invocation without
+     * the operator seeing the prompt. The escalation is scoped to apply_template (and its alias) -
+     * every other tool's risk is fixed and resolved at policyFor time, so re-checking them here
+     * would be a wider rule change than this PR.
+     */
+    private fun escalatePolicyForApplyTemplateIfHighRisk(
+        toolName: String,
+        args: McpToolArgs,
+        policy: McpPolicyAction,
+    ): McpPolicyAction {
+        if (policy != McpPolicyAction.ALLOW) return policy
+        val bareName = toolName.removePrefix(McpToolRegistryImpl.CLIENT_TOOL_PREFIX)
+        if (bareName !in DefaultMcpRiskEvaluator.APPLY_TEMPLATE_TOOLS) return policy
+        val runtimeAssessment = riskEvaluator.evaluateRisk(toolName, args)
+        return if (runtimeAssessment.level >= McpRiskLevel.HIGH) McpPolicyAction.ASK else policy
+    }
+
+    private suspend fun recordInvocation(
+        toolName: String,
+        providerId: String,
+        policyApplied: McpPolicyAction,
+        disposition: McpApprovalDisposition,
+        startTime: Long,
+        result: McpToolResult?,
+        rawArgs: Map<String, Any?>,
+    ) {
+        withContext(NonCancellable + Dispatchers.IO) {
+            ledger.record(
+                toolName = toolName,
+                providerId = providerId,
+                policyApplied = policyApplied,
+                approvalDisposition = disposition,
+                durationMs = (System.nanoTime() - startTime) / 1_000_000L,
+                isError = result?.isError ?: true,
+                rawArgs = rawArgs,
+                errorSnippet =
+                    when {
+                        result == null -> "Execution cancelled by caller"
+                        result.isError -> result.text
+                        else -> null
+                    },
+            )
         }
     }
 

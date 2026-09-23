@@ -3,6 +3,7 @@ package ai.rever.boss.mcp.sandbox
 import ai.rever.boss.components.workspaces.PanelConfig
 import ai.rever.boss.components.workspaces.PredefinedWorkspaces
 import ai.rever.boss.plugin.api.McpToolArgs
+import ai.rever.boss.plugin.workspace.LayoutWorkspace
 import ai.rever.boss.plugin.workspace.SplitConfig
 
 /**
@@ -150,32 +151,49 @@ class DefaultMcpRiskEvaluator : McpRiskEvaluator {
         args: McpToolArgs,
     ): McpRiskAssessment {
         val templateId = args.string("templateId")
-        if (templateId.isNullOrBlank()) {
-            return McpRiskAssessment(
-                level = McpRiskLevel.HIGH,
-                reason = "Template materialisation '$toolName' has no templateId - failing closed",
-            )
-        }
         val template = PredefinedWorkspaces.allWorkspaces.firstOrNull { it.id == templateId }
-        if (template == null) {
-            return McpRiskAssessment(
-                level = McpRiskLevel.HIGH,
-                reason = "Template '$templateId' is not one of the eight shipped layouts",
-            )
-        }
-        val commands = extractInitialCommands(template.layout)
-        if (commands.isEmpty()) {
-            return McpRiskAssessment(
-                level = McpRiskLevel.LOW,
-                reason = "Template '${template.name}' runs no startup commands",
-            )
-        }
-        val commandsText = commands.joinToString(" | ")
+        val commands = template?.layout?.let { extractInitialCommands(it) } ?: emptyList()
+
         return when {
-            commands.any { it.containsDANGEROUSLY_SKIP_PERMISSIONS() } -> {
+            templateId.isNullOrBlank() -> {
                 McpRiskAssessment(
                     level = McpRiskLevel.HIGH,
-                    reason = "Template '${template.name}' launches an agent with permission skipping. Commands: $commandsText",
+                    reason = "Template materialisation '$toolName' has no templateId - failing closed",
+                )
+            }
+
+            template == null -> {
+                McpRiskAssessment(
+                    level = McpRiskLevel.HIGH,
+                    reason = "Template '$templateId' is not one of the eight shipped layouts",
+                )
+            }
+
+            commands.isEmpty() -> {
+                McpRiskAssessment(
+                    level = McpRiskLevel.LOW,
+                    reason = "Template '${template.name}' runs no startup commands",
+                )
+            }
+
+            else -> {
+                riskFromCommands(template, commands)
+            }
+        }
+    }
+
+    private fun riskFromCommands(
+        template: LayoutWorkspace,
+        commands: List<String>,
+    ): McpRiskAssessment {
+        val commandsText = commands.joinToString(" | ")
+        return when {
+            commands.any { it.containsDangerouslySkipPermissions() } -> {
+                McpRiskAssessment(
+                    level = McpRiskLevel.HIGH,
+                    reason =
+                        "Template '${template.name}' launches an agent with permission skipping. " +
+                            "Commands: $commandsText",
                 )
             }
 
@@ -216,11 +234,15 @@ class DefaultMcpRiskEvaluator : McpRiskEvaluator {
         visit: (PanelConfig) -> Unit,
     ) {
         when (split) {
-            is SplitConfig.SinglePanel -> visit(split.panel)
+            is SplitConfig.SinglePanel -> {
+                visit(split.panel)
+            }
+
             is SplitConfig.VerticalSplit -> {
                 walkPanels(split.left, visit)
                 walkPanels(split.right, visit)
             }
+
             is SplitConfig.HorizontalSplit -> {
                 walkPanels(split.top, visit)
                 walkPanels(split.bottom, visit)
@@ -228,8 +250,9 @@ class DefaultMcpRiskEvaluator : McpRiskEvaluator {
         }
     }
 
-    private fun String.containsDANGEROUSLY_SKIP_PERMISSIONS(): Boolean =
-        this.contains("--dangerously-skip-permissions", ignoreCase = true)
+    private fun String.containsDangerouslySkipPermissions(): Boolean {
+        return this.contains("--dangerously-skip-permissions", ignoreCase = true)
+    }
 
     /**
      * A command that starts an agent CLI - Claude, Codex, Gemini or OpenCode. Wording heuristic
