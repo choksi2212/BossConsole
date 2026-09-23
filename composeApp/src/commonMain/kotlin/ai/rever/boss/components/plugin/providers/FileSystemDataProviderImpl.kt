@@ -16,6 +16,7 @@ import java.awt.datatransfer.StringSelection
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.Path
 import ai.rever.boss.components.plugin.panels.left_top.scanDirectoryWithDepth as platformScanDirectoryWithDepth
 
 /**
@@ -46,16 +47,20 @@ internal fun deleteUserPath(
 
         // The containment check AND the walk must agree byte-for-byte on what path
         // they are operating on. Both have to resolve symlinks BEFORE lexical `..`
-        // resolution - POSIX does this naturally, Windows' `File.canonicalFile`
-        // cancels `link/..` lexically first and so resolves `home/link/../<sibling>`
-        // to `home/<sibling>` instead of `<sibling-of-link-target>`. `toRealPath()`
-        // is the one call that follows symlinks first on both platforms, so the
-        // check and the walk see the same OS-resolved path. Fall back to
-        // canonicalFile when toRealPath() throws (file missing), which is still in
-        // scope because the check above already admitted it.
+        // resolution, so a request like `home/link/../<sibling>` (with `link` pointing
+        // outside home) is seen as `<sibling-of-link-target>` and refused, not as
+        // `home/<sibling>` and admitted. `Path.toRealPath()` happens to do this on
+        // POSIX (the OS walks the link before applying `..`), but on Windows the
+        // path parser applies `..` lexically FIRST and only then opens the file -
+        // so a `home/link/../canary` where `link -> outside` would resolve to
+        // `home/canary` (a real file the OS can open), the containment check would
+        // admit it as in-scope, and the walk would erase it. Walk the components
+        // ourselves so the order is right on both platforms, and fall back to
+        // `toRealPath()` if the path doesn't exist (the containment check has
+        // nothing to refuse on a missing file).
         val canonicalFile =
-            runCatching { filePath.toRealPath() }
-                .getOrElse { file.canonicalFile.toPath() }
+            runCatching { resolveSymlinksFirst(filePath) }
+                .getOrElse { runCatching { filePath.toRealPath() }.getOrElse { file.canonicalFile.toPath() } }
         val canonicalHome = homeDirectory.canonicalFile.toPath()
         if (canonicalFile == canonicalHome) {
             throw SecurityException("Access denied: refusing to delete the user home directory")
@@ -77,6 +82,53 @@ internal fun deleteUserPath(
 
         check(deleted) { "Failed to delete (file may not exist or is locked): $file" }
     }
+
+/**
+ * Resolve a path by walking each component and following any symlink BEFORE applying `..` or
+ * appending the next component. Mirrors POSIX `realpath(3)` and the behaviour `toRealPath()`
+ * gives on POSIX; on Windows the OS path parser cancels `link/..` lexically first, which is
+ * the wrong order for a containment check, so we do the walk by hand.
+ *
+ * A missing component stops the walk and leaves the path as-is - the caller (the containment
+ * check) decides whether to admit it.
+ */
+private fun resolveSymlinksFirst(path: Path): Path {
+    val absolute = path.toAbsolutePath()
+    val root = absolute.root ?: return absolute
+    var resolved = root
+    for (i in 0 until absolute.nameCount) {
+        resolved = stepSymlinkAware(resolved, absolute.getName(i).toString())
+    }
+    return resolved
+}
+
+private fun stepSymlinkAware(
+    resolved: Path,
+    component: String,
+): Path {
+    val candidate = resolved.resolve(component)
+    val followed = followIfSymlink(resolved, candidate)
+    return when {
+        component == "" || component == "." -> resolved
+        component == ".." -> resolved.parent ?: resolved
+        else -> followed
+    }
+}
+
+private fun followIfSymlink(
+    from: Path,
+    candidate: Path,
+): Path {
+    if (!Files.exists(candidate) || !Files.isSymbolicLink(candidate)) {
+        return candidate
+    }
+    val target = Files.readSymbolicLink(candidate)
+    return if (target.isAbsolute) {
+        target.toAbsolutePath().normalize()
+    } else {
+        from.resolve(target)
+    }
+}
 
 /**
  * Implementation of FileSystemDataProvider that wraps platform-specific file operations.

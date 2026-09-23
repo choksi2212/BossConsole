@@ -1,6 +1,7 @@
 package ai.rever.boss.components.plugin.providers
 
 import org.junit.jupiter.api.Assumptions.assumeFalse
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
 import java.nio.file.Files
 import kotlin.io.path.createTempDirectory
@@ -53,7 +54,10 @@ class FileSystemDataProviderDeleteTest {
             val outside = File(root, "outside").apply { mkdirs() }
             val canary = File(outside, "keep.txt").apply { writeText("keep") }
             val link = File(target, "external")
-            if (runCatching { Files.createSymbolicLink(link.toPath(), outside.toPath()) }.isFailure) return
+            assumeTrue(
+                runCatching { Files.createSymbolicLink(link.toPath(), outside.toPath()) }.isSuccess,
+                "symlink creation unavailable on this platform",
+            )
 
             assertTrue(deleteUserPath(target, home).isSuccess)
             assertFalse(target.exists())
@@ -107,7 +111,10 @@ class FileSystemDataProviderDeleteTest {
             // survival under a reverted fix is the regression signal.
             val lexicalDecoy = File(home, canaryName).apply { writeText("decoy") }
             val link = File(home, "link")
-            if (runCatching { Files.createSymbolicLink(link.toPath(), outside.toPath()) }.isFailure) return
+            assumeTrue(
+                runCatching { Files.createSymbolicLink(link.toPath(), outside.toPath()) }.isSuccess,
+                "symlink creation unavailable on this platform",
+            )
 
             // The traversal path: `home/link/../<canary>` - on POSIX the OS walks `link`
             // (the symlink) then `..` from the symlink's TARGET (NOT from `home`), landing
@@ -140,12 +147,14 @@ class FileSystemDataProviderDeleteTest {
             // refuses the call and the walk never runs.
             assertTrue(
                 lexicalDecoy.exists(),
-                "decoy at $lexicalDecoy must NOT be erased: a Windows lexical-cancellation walk would reach it without the fix",
+                "decoy at $lexicalDecoy must NOT be erased " +
+                    "(Windows lexical-cancellation walk would reach it without the fix)",
             )
             assertEquals(
                 "decoy",
                 lexicalDecoy.readText(),
-                "decoy at $lexicalDecoy must keep its contents: a Windows lexical-cancellation walk would delete it without the fix",
+                "decoy at $lexicalDecoy must keep its contents " +
+                    "(Windows lexical-cancellation walk would delete it without the fix)",
             )
         } finally {
             root.deleteRecursively()
@@ -170,7 +179,10 @@ class FileSystemDataProviderDeleteTest {
             val canaryName = "fsd-linkdot-canary"
             val siblingCanary = File(root, canaryName).apply { writeText("keep") }
             val link = File(home, "link")
-            if (runCatching { Files.createSymbolicLink(link.toPath(), outside.toPath()) }.isFailure) return
+            assumeTrue(
+                runCatching { Files.createSymbolicLink(link.toPath(), outside.toPath()) }.isSuccess,
+                "symlink creation unavailable on this platform",
+            )
 
             val traversalPath = File(home, "link/../$canaryName")
 
@@ -210,12 +222,16 @@ class FileSystemDataProviderDeleteTest {
             // question from the "in-scope vs out-of-scope" question.
             val targetDir = File(root, "target-tree").apply { mkdirs() }
             val targetCanary = File(targetDir, "would-be-deleted.txt").apply { writeText("untouched") }
-            val targetNested = File(targetDir, "nested/file.txt").apply {
-                parentFile.mkdirs()
-                writeText("also-untouched")
-            }
+            val targetNested =
+                File(targetDir, "nested/file.txt").apply {
+                    parentFile.mkdirs()
+                    writeText("also-untouched")
+                }
             val link = File(home, "link-to-target")
-            if (runCatching { Files.createSymbolicLink(link.toPath(), targetDir.toPath()) }.isFailure) return
+            assumeTrue(
+                runCatching { Files.createSymbolicLink(link.toPath(), targetDir.toPath()) }.isSuccess,
+                "symlink creation unavailable on this platform",
+            )
 
             assertTrue(deleteUserPath(link, home).isSuccess, "deleting a symlink at the root must succeed")
 
