@@ -30,7 +30,18 @@ internal fun deleteUserPath(
     homeDirectory: File,
 ): Result<Unit> =
     runCatching {
-        val canonicalFile = file.canonicalFile.toPath()
+        // The containment check AND the walk must agree byte-for-byte on what path
+        // they are operating on. Both have to resolve symlinks BEFORE lexical `..`
+        // resolution - POSIX does this naturally, Windows' `File.canonicalFile`
+        // cancels `link/..` lexically first and so resolves `home/link/../<sibling>`
+        // to `home/<sibling>` instead of `<sibling-of-link-target>`. `toRealPath()`
+        // is the one call that follows symlinks first on both platforms, so the
+        // check and the walk see the same OS-resolved path. Fall back to
+        // canonicalFile when toRealPath() throws (file missing), which is still in
+        // scope because the check above already admitted it.
+        val canonicalFile =
+            runCatching { file.toPath().toRealPath() }
+                .getOrElse { file.canonicalFile.toPath() }
         val canonicalHome = homeDirectory.canonicalFile.toPath()
         if (canonicalFile == canonicalHome) {
             throw SecurityException("Access denied: refusing to delete the user home directory")
@@ -39,16 +50,7 @@ internal fun deleteUserPath(
             throw SecurityException("Access denied: file path outside user directory")
         }
 
-        // The walk MUST operate on the SAME resolved path the containment check used.
-        // The check above resolves `home/link/../<sibling>` through both lexical `..`
-        // resolution and symlink resolution; the walk operating on the original input
-        // would let the OS re-resolve through the link and reach a path the check never
-        // saw. Use toRealPath() to keep the two paths byte-identical; fall back to the
-        // canonical path when toRealPath() throws (file missing), which is still in scope
-        // because the check above already admitted it.
-        val target =
-            runCatching { canonicalFile.toRealPath() }
-                .getOrElse { canonicalFile }
+        val target = canonicalFile
         val deleted =
             if (Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
                 Files.walk(target).use { paths ->
