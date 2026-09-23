@@ -59,6 +59,19 @@ Assert-True ($detectScopeMatch.Success) ':detect_and_route is followed by a setl
 Assert-True ($detectScopeMatch.Groups[1].Value -eq 'Disable') `
     ':detect_and_route opens DisableDelayedExpansion (EnableDelayedExpansion would eat ! in the auto-detect path)'
 
+# :urlencode must guard an EscapeDataString($null) (#1136): the fix casts
+# [Environment]::GetEnvironmentVariable to [string] (so a missing var
+# reads as '', not $null) and guards an empty value before the call.
+# These are source-shape checks - no cmd.exe needed - so they run on
+# every CI matrix row instead of being skipped on Ubuntu.
+$urlencodeCmdLines = @($bat -split "`r?`n" | Select-String -Pattern 'for /f.*EscapeDataString')
+Assert-True ($urlencodeCmdLines.Count -gt 0) ':urlencode still contains the powershell EscapeDataString call'
+$urlencodeCmd = $urlencodeCmdLines[0].ToString()
+Assert-True ($urlencodeCmd -match '\[string\]') `
+    ':urlencode casts [Environment]::GetEnvironmentVariable to [string] so a missing var reads as empty, not $null'
+Assert-True ($urlencodeCmd -match "if\s*\(\s*-not\s+\`$v\s*\)\s*\{\s*''\s*\}") `
+    ':urlencode guards an empty value before calling [System.Uri]::EscapeDataString'
+
 # --- Live behavior checks (need cmd.exe; skipped elsewhere) --------------
 
 if ($env:OS -ne 'Windows_NT' -or -not (Get-Command cmd.exe -ErrorAction SilentlyContinue)) {
@@ -206,7 +219,13 @@ Set-Content -Path $fileProbe -Value 'probe' -Encoding Ascii
 $folderProbe = Join-Path $env:TEMP ("boss-detect-folder-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $folderProbe | Out-Null
 
-$detectWithEcho = $detectBlock -replace 'start "" "boss://', 'echo boss://'
+# Strip both the leading `start "" "boss://` and the trailing `"` so the
+# probe prints just the URL. The trailing `"` is the closing quote of the
+# `start "" "URL"` line and would otherwise leave a stray quote that
+# `Length -gt 0` would still consider "non-empty" - the bug we are
+# catching. The capture group eats everything up to the next `"`, so
+# the closing quote is consumed in the same replacement.
+$detectWithEcho = [regex]::Replace($detectBlock, 'start\s+""\s+"boss://([^"]*)"', 'echo boss://$1', [System.Text.RegularExpressions.RegexOptions]::Multiline)
 
 $detectFileProbe = Join-Path $env:TEMP ("boss-detect-file-probe-" + [guid]::NewGuid().ToString('N') + '.cmd')
 $detectFileBody = @"
@@ -228,6 +247,8 @@ try {
     if ($null -ne $fileLine) {
         $fileUrl = ($fileLine -replace '^boss://file\?path=', '')
         Assert-True ($fileUrl.Length -gt 0) "`boss ./file.txt` opens boss://file?path= with a non-empty path (got: '$fileUrl')"
+        Assert-True ([System.Uri]::UnescapeDataString($fileUrl) -eq $fileProbe) `
+            "boss://file?path= round-trips through [Uri]::UnescapeDataString back to the probe path: got '$fileUrl', expected '$fileProbe'"
     }
 } finally {
     Remove-Item $detectFileProbe -ErrorAction SilentlyContinue
@@ -254,23 +275,47 @@ try {
     if ($null -ne $folderLine) {
         $folderUrl = ($folderLine -replace '^boss://folder\?path=', '')
         Assert-True ($folderUrl.Length -gt 0) "`boss %TEMP%` opens boss://folder?path= with a non-empty path (got: '$folderUrl')"
+        Assert-True ([System.Uri]::UnescapeDataString($folderUrl) -eq $folderProbe) `
+            "boss://folder?path= round-trips through [Uri]::UnescapeDataString back to the probe path: got '$folderUrl', expected '$folderProbe'"
     }
 } finally {
     Remove-Item $detectFolderProbe -ErrorAction SilentlyContinue
     Remove-Item $folderProbe -Recurse -ErrorAction SilentlyContinue
 }
 
-# --- :urlencode EscapeDataString guard (#1136) --------------------------
-# :urlencode used to call EscapeDataString with whatever GetEnvironmentVariable
-# returned. With a missing var that is $null, which throws ArgumentNullException
-# on every input. The fix casts the result to [string] (so a missing var
-# reads as '') and guards an empty value, so the call never sees $null.
-$urlencodeCmdLines = @($lines | Select-String -Pattern 'for /f.*EscapeDataString')
-Assert-True ($urlencodeCmdLines.Count -gt 0) ':urlencode still contains the powershell EscapeDataString call'
-$urlencodeCmd = $urlencodeCmdLines[0].ToString()
-Assert-True ($urlencodeCmd -match '\[string\]') `
-    ':urlencode casts [Environment]::GetEnvironmentVariable to [string] so a missing var reads as empty, not $null'
-Assert-True ($urlencodeCmd -match "if\s*\(\s*-not\s+\`$v\s*\)\s*\{\s*''\s*\}") `
-    ':urlencode guards an empty value before calling [System.Uri]::EscapeDataString'
+# --- :detect_and_route mutation check (#1136) ----------------------------
+# Run the same probe with the OLD parenthesized set/call (the bug we fixed
+# in #1136) to confirm the assertions above would have caught the bug.
+# In the OLD code `%fullpath%` was read inside the parens at parse time,
+# before the `set` ran, so `echo boss://file?path=%fullpath%` printed an
+# empty path - which the round-trip above now rejects.
+$oldBlockFile = @"
+if exist "%~f1\*" (
+    set "fullpath=%~f1"
+    echo boss://file?path=%fullpath%
+)
+"@
+$oldFileProbe = Join-Path $env:TEMP ("boss-detect-file-mutation-" + [guid]::NewGuid().ToString('N') + '.cmd')
+$oldFileBody = @"
+@echo off
+setlocal DisableDelayedExpansion
+$oldBlockFile
+endlocal
+"@
+Set-Content -Path $oldFileProbe -Value $oldFileBody -Encoding Ascii
+try {
+    $oldFileOutput = & cmd.exe /c $oldFileProbe 2>&1 | ForEach-Object { "$_" }
+    $oldFileLine = $oldFileOutput | Where-Object { $_ -like 'boss://file?path=*' } | Select-Object -First 1
+    if ($null -ne $oldFileLine) {
+        $oldFileUrl = ($oldFileLine -replace '^boss://file\?path=', '')
+        # The OLD block's mutation check: the URL path is empty, so the
+        # round-trip assertion above would have caught it. Assert that here
+        # so a future refactor that weakens the test is also caught.
+        Assert-True ([System.Uri]::UnescapeDataString($oldFileUrl) -ne $fileProbe) `
+            "mutation check: OLD parenthesized block produces an empty URL path (got: '$oldFileUrl')"
+    }
+} finally {
+    Remove-Item $oldFileProbe -ErrorAction SilentlyContinue
+}
 
 Write-Output 'ALL URLencode tests passed'
