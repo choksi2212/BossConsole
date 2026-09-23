@@ -43,7 +43,7 @@ function Assert-True {
 
 $bat = Get-Content $batPath -Raw
 
-Assert-True ($bat -match [regex]::Escape("EscapeDataString([Environment]::GetEnvironmentVariable('str'))")) `
+Assert-True ($bat -match [regex]::Escape("[Environment]::GetEnvironmentVariable('str')")) `
     'the :urlencode shim reads the value from the environment, not from the command line'
 
 Assert-True (-not ($bat -match [regex]::Escape("EscapeDataString('%str%')"))) `
@@ -188,5 +188,89 @@ try {
 } finally {
     Remove-Item $detectProbe -ErrorAction SilentlyContinue
 }
+
+# --- :detect_and_route file/folder probes (#1136) ------------------------
+# The file/folder branches used to read %fullpath%/%ENCODED% inside an
+# if (...) (...) else (...) block, so both expanded at parse time before
+# the set/call that filled them. The fix is to goto out of the block the
+# way :detect_url and :detect_domain already do, so the URL is built with
+# the actual full path. Each probe exercises one branch: `boss ./file.txt`
+# must reach boss://file?path=<real path> and `boss %TEMP%` must reach
+# boss://folder?path=<real path>. Both inline the CURRENT :detect_and_route
+# with `start` rewritten to `echo`, so the probe captures the URL without
+# launching anything.
+
+$fileProbe = Join-Path $env:TEMP ("boss-detect-file-" + [guid]::NewGuid().ToString('N') + '.txt')
+Set-Content -Path $fileProbe -Value 'probe' -Encoding Ascii
+
+$folderProbe = Join-Path $env:TEMP ("boss-detect-folder-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $folderProbe | Out-Null
+
+$detectWithEcho = $detectBlock -replace 'start "" "boss://', 'echo boss://'
+
+$detectFileProbe = Join-Path $env:TEMP ("boss-detect-file-probe-" + [guid]::NewGuid().ToString('N') + '.cmd')
+$detectFileBody = @"
+@echo off
+setlocal DisableDelayedExpansion
+call :detect_and_route "$fileProbe"
+goto :detect_file_done
+$detectWithEcho
+$block
+:detect_file_done
+endlocal
+"@
+Set-Content -Path $detectFileProbe -Value $detectFileBody -Encoding Ascii
+
+try {
+    $detectFileOutput = & cmd.exe /c $detectFileProbe 2>&1 | ForEach-Object { "$_" }
+    $fileLine = $detectFileOutput | Where-Object { $_ -like 'boss://file?path=*' } | Select-Object -First 1
+    Assert-True ($null -ne $fileLine) '`boss ./file.txt` routes to boss://file?path= (not the pre-#1136 empty-path bug)'
+    if ($null -ne $fileLine) {
+        $fileUrl = ($fileLine -replace '^boss://file\?path=', '')
+        Assert-True ($fileUrl.Length -gt 0) "`boss ./file.txt` opens boss://file?path= with a non-empty path (got: '$fileUrl')"
+    }
+} finally {
+    Remove-Item $detectFileProbe -ErrorAction SilentlyContinue
+    Remove-Item $fileProbe -ErrorAction SilentlyContinue
+}
+
+$detectFolderProbe = Join-Path $env:TEMP ("boss-detect-folder-probe-" + [guid]::NewGuid().ToString('N') + '.cmd')
+$detectFolderBody = @"
+@echo off
+setlocal DisableDelayedExpansion
+call :detect_and_route "$folderProbe"
+goto :detect_folder_done
+$detectWithEcho
+$block
+:detect_folder_done
+endlocal
+"@
+Set-Content -Path $detectFolderProbe -Value $detectFolderBody -Encoding Ascii
+
+try {
+    $detectFolderOutput = & cmd.exe /c $detectFolderProbe 2>&1 | ForEach-Object { "$_" }
+    $folderLine = $detectFolderOutput | Where-Object { $_ -like 'boss://folder?path=*' } | Select-Object -First 1
+    Assert-True ($null -ne $folderLine) '`boss %TEMP%` routes to boss://folder?path= (not the pre-#1136 empty-path bug)'
+    if ($null -ne $folderLine) {
+        $folderUrl = ($folderLine -replace '^boss://folder\?path=', '')
+        Assert-True ($folderUrl.Length -gt 0) "`boss %TEMP%` opens boss://folder?path= with a non-empty path (got: '$folderUrl')"
+    }
+} finally {
+    Remove-Item $detectFolderProbe -ErrorAction SilentlyContinue
+    Remove-Item $folderProbe -Recurse -ErrorAction SilentlyContinue
+}
+
+# --- :urlencode EscapeDataString guard (#1136) --------------------------
+# :urlencode used to call EscapeDataString with whatever GetEnvironmentVariable
+# returned. With a missing var that is $null, which throws ArgumentNullException
+# on every input. The fix casts the result to [string] (so a missing var
+# reads as '') and guards an empty value, so the call never sees $null.
+$urlencodeCmdLines = @($lines | Select-String -Pattern 'for /f.*EscapeDataString')
+Assert-True ($urlencodeCmdLines.Count -gt 0) ':urlencode still contains the powershell EscapeDataString call'
+$urlencodeCmd = $urlencodeCmdLines[0].ToString()
+Assert-True ($urlencodeCmd -match '\[string\]') `
+    ':urlencode casts [Environment]::GetEnvironmentVariable to [string] so a missing var reads as empty, not $null'
+Assert-True ($urlencodeCmd -match "if\s*\(\s*-not\s+\`$v\s*\)\s*\{\s*''\s*\}") `
+    ':urlencode guards an empty value before calling [System.Uri]::EscapeDataString'
 
 Write-Output 'ALL URLencode tests passed'
