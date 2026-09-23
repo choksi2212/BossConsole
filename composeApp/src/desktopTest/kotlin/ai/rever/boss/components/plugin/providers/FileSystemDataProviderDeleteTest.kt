@@ -73,18 +73,28 @@ class FileSystemDataProviderDeleteTest {
         // sees a benign-looking path.
         //
         // Shape: a temp root, a `home` directory under it, a symlink `home/link -> outside`
-        // (also under root), and a canary in a sibling of `outside` (so `home/link/../<canary>`
-        // OS-resolves to that canary on POSIX).
+        // (also under root), a canary in a sibling of `outside` (so `home/link/../<canary>`
+        // OS-resolves to that canary on POSIX), AND a real file at the lexically-resolved
+        // path (`home/canary`).
         //
-        // The safety property the test pins is the same on every platform: the canary
-        // outside home survives. The exact failure mode differs:
+        // The home/canary file is the mutation check: on Windows the pre-fix code lexically
+        // resolves `home/link/../canary` to `home/canary` (a real file with this in place),
+        // the containment check admits it as in-scope, and the walk deletes it. The fix
+        // makes the containment check resolve the symlink first, see the escape, refuse the
+        // call, and the file - and every other thing outside home - is left intact. The
+        // POSIX side has always refused (symlink-first-then-lexical gives the same OS-resolved
+        // path either way), so the assertion `home/canary survives` would be the one that
+        // turns red when the fix is reverted on Windows.
+        //
+        // The exact failure mode differs:
         //   - POSIX: the OS walks `link` first, so `link/..` lands at `outside`'s parent
         //     (`root`), the containment check sees an escape, and the call refuses with
         //     SecurityException.
         //   - Windows: `..` is resolved lexically BEFORE the link is followed, so the
-        //     traversal path canonicalizes to `home/canary` (which doesn't exist on disk).
-        //     The containment check sees something inside home and admits it; the walk then
-        //     fails because the file is absent. Either way the canary is untouched.
+        //     traversal path canonicalizes to `home/canary`. Without the fix the containment
+        //     check sees something inside home and admits it; the walk then erases the
+        //     `home/canary` decoy. With the fix the containment check sees the escape and
+        //     refuses; the walk never runs.
         val root = createTempDirectory("filesystem-provider-linkdot").toFile()
         try {
             val home = File(root, "home").apply { mkdirs() }
@@ -93,6 +103,9 @@ class FileSystemDataProviderDeleteTest {
             // The canary lives in `outside`'s parent, which is exactly where `home/link/..`
             // OS-lands on POSIX.
             val siblingCanary = File(root, canaryName).apply { writeText("keep") }
+            // Decoy: a real file at the path Windows' lexical cancellation produces. Its
+            // survival under a reverted fix is the regression signal.
+            val lexicalDecoy = File(home, canaryName).apply { writeText("decoy") }
             val link = File(home, "link")
             if (runCatching { Files.createSymbolicLink(link.toPath(), outside.toPath()) }.isFailure) return
 
@@ -120,6 +133,19 @@ class FileSystemDataProviderDeleteTest {
             assertTrue(
                 outside.isDirectory,
                 "the outside directory must remain intact after a link-then-dotdot traversal",
+            )
+            // Safety property 3 (mutation check): the decoy at the lexically-resolved path
+            // survives too. Without the fix on Windows the walk reaches `home/canary` and
+            // erases it - this assertion turns red. With the fix the containment check
+            // refuses the call and the walk never runs.
+            assertTrue(
+                lexicalDecoy.exists(),
+                "decoy at $lexicalDecoy must NOT be erased: a Windows lexical-cancellation walk would reach it without the fix",
+            )
+            assertEquals(
+                "decoy",
+                lexicalDecoy.readText(),
+                "decoy at $lexicalDecoy must keep its contents: a Windows lexical-cancellation walk would delete it without the fix",
             )
         } finally {
             root.deleteRecursively()
@@ -159,6 +185,67 @@ class FileSystemDataProviderDeleteTest {
                 "keep",
                 siblingCanary.readText(),
                 "canary at $siblingCanary must NOT be erased when the link-then-dotdot traversal is refused",
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `delete unlinks a symlink at the walk root without following it`() {
+        // Regression guard for the `toRealPath()`-follows-symlinks trap: passing a
+        // symlink to a directory as the delete target must remove the link itself and
+        // leave the target tree intact. The containment check resolves through the
+        // link, so without a separate `Files.isSymbolicLink` guard the walk would
+        // erase the target's contents instead of unlinking the link.
+        //
+        // The target directory lives OUTSIDE home so that, even if a bug let the
+        // walk follow the link, the deletion would not also have to worry about
+        // crossing the containment boundary - the test fails on the simpler claim
+        // "the link is gone, the target's contents are not".
+        val root = createTempDirectory("filesystem-provider-symlinkroot").toFile()
+        try {
+            val home = File(root, "home").apply { mkdirs() }
+            // Target sits OUTSIDE home so the test isolates the "follow vs unlink"
+            // question from the "in-scope vs out-of-scope" question.
+            val targetDir = File(root, "target-tree").apply { mkdirs() }
+            val targetCanary = File(targetDir, "would-be-deleted.txt").apply { writeText("untouched") }
+            val targetNested = File(targetDir, "nested/file.txt").apply {
+                parentFile.mkdirs()
+                writeText("also-untouched")
+            }
+            val link = File(home, "link-to-target")
+            if (runCatching { Files.createSymbolicLink(link.toPath(), targetDir.toPath()) }.isFailure) return
+
+            assertTrue(deleteUserPath(link, home).isSuccess, "deleting a symlink at the root must succeed")
+
+            assertFalse(link.exists(), "the symlink itself must be removed")
+            assertFalse(
+                Files.isSymbolicLink(link.toPath()),
+                "no link should remain at $link after the delete",
+            )
+            // The target tree survives intact: the walk must not have followed the link.
+            assertTrue(
+                targetDir.isDirectory,
+                "the symlink target directory must NOT be deleted by an unlink-only operation",
+            )
+            assertTrue(
+                targetCanary.exists(),
+                "files inside the symlink target must NOT be erased by an unlink-only operation",
+            )
+            assertEquals(
+                "untouched",
+                targetCanary.readText(),
+                "the canary inside the symlink target must keep its contents",
+            )
+            assertTrue(
+                targetNested.exists(),
+                "nested files inside the symlink target must NOT be erased by an unlink-only operation",
+            )
+            assertEquals(
+                "also-untouched",
+                targetNested.readText(),
+                "nested files inside the symlink target must keep their contents",
             )
         } finally {
             root.deleteRecursively()

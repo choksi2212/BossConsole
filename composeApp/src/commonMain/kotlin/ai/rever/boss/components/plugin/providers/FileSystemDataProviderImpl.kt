@@ -30,6 +30,20 @@ internal fun deleteUserPath(
     homeDirectory: File,
 ): Result<Unit> =
     runCatching {
+        // A symlink at the walk root is deleted as a link, never followed.
+        // `toRealPath()` (used below for the containment check) resolves symlinks,
+        // so without this guard a `delete home/link` call would `Files.walk` the
+        // symlink's TARGET and erase that tree. The user asked to unlink the link,
+        // and that is all the user asked for.
+        val filePath = file.toPath()
+        if (Files.isSymbolicLink(filePath)) {
+            check(homeDirectory.toPath() != filePath) {
+                "Access denied: refusing to delete the user home directory"
+            }
+            Files.deleteIfExists(filePath)
+            return@runCatching
+        }
+
         // The containment check AND the walk must agree byte-for-byte on what path
         // they are operating on. Both have to resolve symlinks BEFORE lexical `..`
         // resolution - POSIX does this naturally, Windows' `File.canonicalFile`
@@ -40,7 +54,7 @@ internal fun deleteUserPath(
         // canonicalFile when toRealPath() throws (file missing), which is still in
         // scope because the check above already admitted it.
         val canonicalFile =
-            runCatching { file.toPath().toRealPath() }
+            runCatching { filePath.toRealPath() }
                 .getOrElse { file.canonicalFile.toPath() }
         val canonicalHome = homeDirectory.canonicalFile.toPath()
         if (canonicalFile == canonicalHome) {
