@@ -252,6 +252,7 @@ object BrowserZoomSettingsManager {
 internal fun moveCorruptSettingsAside(
     file: File,
     now: () -> Long = { System.currentTimeMillis() },
+    renameFn: (File, File) -> Boolean = File::renameTo,
 ) {
     // Deliberately quiet: the caller already logged the decode failure; this
     // is the recovery step, and its own failure must not mask the original.
@@ -261,7 +262,7 @@ internal fun moveCorruptSettingsAside(
         // but the UUID random component is what guarantees no two quarantines
         // land on the same aside name.
         val aside = File(file.absolutePath + ".corrupt." + now() + "." + UUID.randomUUID().toString())
-        if (!file.renameTo(aside)) {
+        if (!renameFn(file, aside)) {
             // renameTo fails on Windows when the destination already exists
             // and in other platform-specific cases; the live file would
             // otherwise still be where the next launch tries to read it.

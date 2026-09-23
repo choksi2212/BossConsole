@@ -6,6 +6,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -105,27 +106,26 @@ class BrowserZoomSettingsManagerHardeningTest {
      * file (a locked target on Windows, a path that has already vanished,
      * or any other platform-specific refusal), the helper must leave a
      * signal that the recovery step did not actually move anything. The
-     * test arranges the failure by making the live path a directory: the
-     * JVM refuses to rename a file onto a path occupied by a directory, so
-     * renameTo returns false. The live file must STILL be there after the
-     * helper runs (the helper cannot remove it), and no aside should be
-     * created at the would-be target.
+     * test injects a rename function that always returns false, which is
+     * the same shape a real platform refusal takes - the JVM can't be
+     * made to reliably refuse `File.renameTo` cross-platform without a
+     * target collision, and the UUID aside name the helper now uses would
+     * defeat that collision in any case. The live file must STILL be
+     * there after the helper runs (the helper cannot remove it), and no
+     * aside should be created.
      */
     @Test
     fun `a rename failure leaves the source in place and does not create an aside`() {
         val live = File(tmp, "browser-zoom-settings.json")
         live.writeText("{ broken")
-        // Block renameTo by occupying the target path with a directory.
-        val blocker = File(tmp, "browser-zoom-settings.json.corrupt.1.dir-blocker")
-        blocker.mkdirs()
+        val renaming = AtomicBoolean(false)
 
-        moveCorruptSettingsAside(live) { 1L }
+        moveCorruptSettingsAside(live, now = { 1L }, renameFn = { _, _ -> renaming.set(true); false })
 
+        assertTrue(renaming.get(), "the injected rename function must have been called")
         assertTrue(live.exists(), "renameTo failure must leave the live file in place")
-        assertTrue(blocker.exists(), "the blocker must not be disturbed")
         // No aside file is created when the rename does not happen.
-        assertEquals(emptyList(), tmp.listFiles()!!.filter { it.name.contains(".corrupt.") && !it.name.endsWith("-dir-blocker") })
-        blocker.delete()
+        assertEquals(emptyList(), tmp.listFiles()!!.filter { it.name.contains(".corrupt.") })
     }
 
     // --- real save/load roundtrip through the manager ----------------------------------------
@@ -156,10 +156,12 @@ class BrowserZoomSettingsManagerHardeningTest {
         // wrote must come back out. The simplest way to verify that without
         // resetting the manager's in-memory state is to rebuild the JSON
         // decode path the same way loadSettings does.
-        val reloaded = kotlinx.serialization.json.Json {
-            prettyPrint = true
-            ignoreUnknownKeys = true
-        }.decodeFromString<BrowserZoomSettingsData>(onDisk)
+        val json =
+            kotlinx.serialization.json.Json {
+                prettyPrint = true
+                ignoreUnknownKeys = true
+            }
+        val reloaded = json.decodeFromString<BrowserZoomSettingsData>(onDisk)
         assertEquals(1.25, reloaded.domainSettings["example.com"]?.zoomLevel)
     }
 
@@ -260,7 +262,10 @@ class BrowserZoomSettingsManagerHardeningTest {
         // Windows where the bit is meaningless.
         val perms = runCatching { Files.getPosixFilePermissions(BrowserZoomSettingsManager.settingsFile.toPath()) }.getOrNull()
         if (perms != null) {
-            assertEquals(setOf(java.nio.file.attribute.PosixFilePermission.OWNER_READ, java.nio.file.attribute.PosixFilePermission.OWNER_WRITE), perms)
+            assertEquals(
+                setOf(java.nio.file.attribute.PosixFilePermission.OWNER_READ, java.nio.file.attribute.PosixFilePermission.OWNER_WRITE),
+                perms,
+            )
         }
     }
 }
