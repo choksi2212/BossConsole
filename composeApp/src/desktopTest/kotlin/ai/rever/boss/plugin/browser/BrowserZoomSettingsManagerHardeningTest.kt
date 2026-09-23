@@ -1,6 +1,9 @@
 package ai.rever.boss.plugin.browser
 
+import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CyclicBarrier
@@ -265,18 +268,178 @@ class BrowserZoomSettingsManagerHardeningTest {
         assertTrue(onDisk.contains("second.example"), "second mutator's domain must be in the saved file")
 
         // POSIX permissions on the saved file match the atomic-write helper's
-        // owner-only contract; we check this on POSIX and skip silently on
-        // Windows where the bit is meaningless.
+        // owner-only contract; use assumeTrue so a platform where the call
+        // fails (Windows, FAT, anything that does not support POSIX bits)
+        // shows as SKIPPED rather than silently passing the assertion.
         val settingsPath = BrowserZoomSettingsManager.settingsFile.toPath()
-        val perms = runCatching { Files.getPosixFilePermissions(settingsPath) }.getOrNull()
-        if (perms != null) {
-            assertEquals(
-                setOf(
-                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
-                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
-                ),
-                perms,
-            )
+        val permsResult = runCatching { Files.getPosixFilePermissions(settingsPath) }
+        assumeTrue(
+            permsResult.isSuccess,
+            "POSIX permissions are not supported on this platform - skipping the bit check",
+        )
+        assertEquals(
+            setOf(
+                java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+            ),
+            permsResult.getOrThrow(),
+        )
+    }
+
+    // --- #1051 review: read I/O errors must NOT quarantine (#1051) -----------------------
+
+    /**
+     * A transient read failure (file locked by AV or sync, a permission
+     * hiccup) used to be caught by the broad `Exception` block and routed
+     * through the quarantine path. The fix splits I/O from decode errors:
+     * an [IOException] keeps the file where it is, loads defaults in
+     * memory, and gates saves - the file might still hold a valid value
+     * that the read just could not reach. Without the fix, an AV-locked
+     * valid file would be moved aside and the next save would write
+     * defaults over the live path, silently destroying the user's
+     * per-domain zoom levels.
+     */
+    @Test
+    fun `a read IOException on a valid file keeps the file and loads defaults in memory (#1051)`() {
+        val live = BrowserZoomSettingsManager.settingsFile
+        // Write a valid JSON the manager would happily decode on a real read.
+        live.writeText(
+            """
+            {
+              "domainSettings": {
+                "preserved.example": { "domain": "preserved.example", "zoomLevel": 1.5 }
+              },
+              "defaultZoomLevel": 1.0
+            }
+            """.trimIndent(),
+        )
+
+        // Force the read to throw a real IOException. The seam is the new
+        // readText parameter on loadSettings; production callers do not
+        // pass it.
+        BrowserZoomSettingsManager.loadSettings(readText = {
+            throw IOException("simulated AV lock")
+        })
+
+        // The file is still where it was - we did NOT quarantine.
+        assertTrue(live.exists(), "a transient I/O error must leave the file in place")
+        assertEquals(
+            emptyList(),
+            tmp.listFiles()!!.filter { it.name.contains(".corrupt.") },
+            "no aside may be created for an I/O error - only for real decode failures",
+        )
+
+        // In-memory state is the defaults; the next save must not be
+        // allowed to overwrite the file we just failed to read.
+        assertEquals(1.0, BrowserZoomSettingsManager.getZoomForDomain("preserved.example"))
+    }
+
+    /**
+     * Companion to the I/O-error test: after a failed read, both save
+     * entry points must refuse to write the in-memory defaults over the
+     * still-present live file. Without the gate, the user's zoom levels
+     * get destroyed on the next call site that mutates and saves.
+     */
+    @Test
+    fun `save refuses to overwrite a live file after a read IOException (#1051)`() {
+        val live = BrowserZoomSettingsManager.settingsFile
+        val originalBytes =
+            """
+            {
+              "domainSettings": {
+                "preserved.example": { "domain": "preserved.example", "zoomLevel": 1.5 }
+              },
+              "defaultZoomLevel": 1.0
+            }
+            """.trimIndent()
+        live.writeText(originalBytes)
+
+        // Force a read failure so canSaveSafely flips to false.
+        BrowserZoomSettingsManager.loadSettings(readText = {
+            throw IOException("simulated AV lock")
+        })
+
+        // Mutate so the in-memory state is no longer empty; both save entry
+        // points would otherwise happily write defaults that lose the user's
+        // zoom levels.
+        BrowserZoomSettingsManager.setZoomForDomain("defaults-only.example", 1.25)
+        BrowserZoomSettingsManager.saveSettingsSync()
+        runBlocking { BrowserZoomSettingsManager.saveSettings() }
+
+        // The live file still carries the bytes the user had on disk. The
+        // gate held: nothing on disk was overwritten.
+        assertEquals(
+            originalBytes.trimIndent(),
+            live.readText().trim(),
+            "the live file must not be overwritten while a previous read failed",
+        )
+    }
+
+    /**
+     * The save gate must lift on the next successful load. Without this
+     * the manager would be permanently read-only after a single AV lock
+     * - the very condition a follow-up launch might trigger.
+     */
+    @Test
+    fun `the save gate lifts after a subsequent successful load (#1051)`() {
+        val live = BrowserZoomSettingsManager.settingsFile
+        live.writeText(
+            """
+            {
+              "domainSettings": {
+                "first.example": { "domain": "first.example", "zoomLevel": 1.5 }
+              },
+              "defaultZoomLevel": 1.0
+            }
+            """.trimIndent(),
+        )
+
+        // First load fails: gate is closed.
+        BrowserZoomSettingsManager.loadSettings(readText = { throw IOException("flaky") })
+        BrowserZoomSettingsManager.setZoomForDomain("pending.example", 1.25)
+        BrowserZoomSettingsManager.saveSettingsSync()
+        assertEquals(
+            true,
+            live.readText().contains("first.example"),
+            "save must still be refused after the first failed load",
+        )
+
+        // Second load succeeds: gate re-opens, the next save lands.
+        BrowserZoomSettingsManager.loadSettings()
+        BrowserZoomSettingsManager.saveSettingsSync()
+        val onDisk = live.readText()
+        assertTrue(
+            onDisk.contains("first.example"),
+            "the saved file must carry the value the second load recovered: $onDisk",
+        )
+        assertTrue(
+            onDisk.contains("pending.example"),
+            "the saved file must carry the post-recovery mutator's domain: $onDisk",
+        )
+    }
+
+    // --- #1051 review: cap the corrupt asides so they cannot fill the directory -----------
+
+    /**
+     * Repeated corruption must not be allowed to fill the user's settings
+     * directory. The cap keeps the newest [maxAsides] and deletes older
+     * ones on each quarantine, so the most recent failure stays
+     * diagnosable while older ones are recycled.
+     */
+    @Test
+    fun `corrupt asides are capped so repeated corruption cannot fill the directory (#1051)`() {
+        val live = File(tmp, "browser-zoom-settings.json")
+        repeat(5) { i ->
+            live.writeText("garbage #$i")
+            moveCorruptSettingsAside(live, now = { 1_726_000_000_000L + i })
         }
+        val asides = tmp.listFiles()!!.filter { it.name.contains(".corrupt.") }
+        assertEquals(3, asides.size, "the cap is 3 - older asides are deleted")
+        // The newest three are the survivors; their content matches the
+        // last three quarantines.
+        assertEquals(
+            setOf("garbage #2", "garbage #3", "garbage #4"),
+            asides.map { it.readText() }.toSet(),
+        )
     }
 }

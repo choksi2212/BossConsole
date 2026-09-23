@@ -7,9 +7,11 @@ import ai.rever.boss.utils.logging.LogCategory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.IOException
 import java.util.UUID
 
 /**
@@ -67,6 +69,17 @@ object BrowserZoomSettingsManager {
     @Volatile
     private var settings = BrowserZoomSettingsData()
 
+    /**
+     * `true` iff writing the live settings file is safe. False ONLY when the
+     * last [loadSettings] attempt hit an [IOException] reading a file that
+     * exists - in that case the file might still hold a valid value we never
+     * read, so overwriting it with the in-memory defaults would silently
+     * destroy the user's zoom levels. A successful decode OR a quarantine
+     * (the file is moved aside) clears this; the I/O-failed state clears on
+     * the next [loadSettings] that succeeds (#1051 review).
+     */
+    private var canSaveSafely = true
+
     init {
         loadSettings()
     }
@@ -122,21 +135,92 @@ object BrowserZoomSettingsManager {
 
     /**
      * Load settings from disk.
+     *
+     * Quarantine ONLY on a real decode failure ([SerializationException]
+     * or [IllegalArgumentException] from the JSON decoder). For an I/O
+     * failure on a present file, keep the file where it is, load defaults in
+     * memory, and refuse subsequent saves - the file might still hold a
+     * valid value that an AV lock or a sync hiccup just kept us from reading,
+     * and overwriting it with defaults would silently destroy the user's
+     * zoom levels. The save gate lifts on the next load that succeeds
+     * (the follow-up review on #1051).
+     *
+     * The in-memory `settings` and `canSaveSafely` are written under [saveLock]
+     * so a concurrent save cannot serialize a half-updated state or race the
+     * reload (#1051 review).
+     *
+     * [readText] is a seam for tests to inject a throwing read; production
+     * callers do not pass it (the default reads [settingsFile]).
      */
-    internal fun loadSettings() {
-        try {
-            if (settingsFile.exists()) {
-                val content = settingsFile.readText()
-                settings = json.decodeFromString<BrowserZoomSettingsData>(content)
+    internal fun loadSettings(readText: () -> String = { settingsFile.readText() }) {
+        if (!settingsFile.exists()) {
+            // No file to load - defaults stand, the live path is empty, saves
+            // are safe.
+            synchronized(saveLock) {
+                settings = BrowserZoomSettingsData()
+                canSaveSafely = true
             }
-        } catch (e: Exception) {
-            // Self-heal instead of silent data loss (#925): a corrupt file is
-            // renamed aside so the fault is diagnosable AND does not re-fail
-            // every launch, and the previous per-domain zoom levels are lost
-            // only when no backup survives - not on any decode hiccup.
-            logger.warn(LogCategory.BROWSER, "Error loading zoom settings", error = e)
+            return
+        }
+
+        val content =
+            try {
+                readText()
+            } catch (e: IOException) {
+                // Transient read failure: file might still be valid. Keep it
+                // where it is, take defaults in memory, and gate saves until
+                // a load succeeds. Log and move on - the next load attempt
+                // (often the very next launch) gets a clean chance to read
+                // the bytes we just could not.
+                logger.warn(
+                    LogCategory.BROWSER,
+                    "I/O error reading zoom settings - keeping file, using defaults in memory",
+                    error = e,
+                )
+                synchronized(saveLock) {
+                    settings = BrowserZoomSettingsData()
+                    canSaveSafely = false
+                }
+                return
+            }
+
+        try {
+            val decoded = json.decodeFromString<BrowserZoomSettingsData>(content)
+            synchronized(saveLock) {
+                settings = decoded
+                canSaveSafely = true
+            }
+        } catch (e: SerializationException) {
+            // Real decode failure: the bytes are not what the schema expects.
+            // Self-heal instead of silent data loss (#925, #1051): the
+            // corrupt file is renamed aside so the fault is diagnosable AND
+            // does not re-fail every launch, and the previous per-domain
+            // zoom levels are lost only when no backup survives - not on any
+            // decode hiccup. The live path is now empty, so saves are safe.
+            logger.warn(
+                LogCategory.BROWSER,
+                "Zoom settings file is corrupt - quarantining",
+                error = e,
+            )
             moveCorruptSettingsAside(settingsFile)
-            settings = BrowserZoomSettingsData()
+            synchronized(saveLock) {
+                settings = BrowserZoomSettingsData()
+                canSaveSafely = true
+            }
+        } catch (e: IllegalArgumentException) {
+            // kotlinx.serialization throws IllegalArgumentException for some
+            // decode failures (notably structural ones the schema check
+            // rejects). Same recovery as a SerializationException.
+            logger.warn(
+                LogCategory.BROWSER,
+                "Zoom settings file is structurally invalid - quarantining",
+                error = e,
+            )
+            moveCorruptSettingsAside(settingsFile)
+            synchronized(saveLock) {
+                settings = BrowserZoomSettingsData()
+                canSaveSafely = true
+            }
         }
     }
 
@@ -148,6 +232,14 @@ object BrowserZoomSettingsManager {
             try {
                 settingsFile.parentFile?.mkdirs()
                 synchronized(saveLock) {
+                    if (!canSaveSafely) {
+                        logger.warn(
+                            LogCategory.BROWSER,
+                            "Refusing to save zoom settings - last read hit an I/O error " +
+                                "and the live file may still hold a valid value",
+                        )
+                        return@synchronized
+                    }
                     settingsFile.atomicWriteText(json.encodeToString(settings))
                 }
             } catch (e: Exception) {
@@ -163,6 +255,14 @@ object BrowserZoomSettingsManager {
         try {
             settingsFile.parentFile?.mkdirs()
             synchronized(saveLock) {
+                if (!canSaveSafely) {
+                    logger.warn(
+                        LogCategory.BROWSER,
+                        "Refusing to save zoom settings - last read hit an I/O error " +
+                            "and the live file may still hold a valid value",
+                    )
+                    return@synchronized
+                }
                 settingsFile.atomicWriteText(json.encodeToString(settings))
             }
         } catch (e: Exception) {
@@ -235,7 +335,7 @@ object BrowserZoomSettingsManager {
  * re-read and re-fail the same bytes. Pure file operation - unit-testable
  * standalone.
  *
- * Two refinements over the original helper (#1051):
+ * Three refinements over the original helper (#1051, #1051 review):
  *
  * - **The aside name is collision-proof.** A `System.currentTimeMillis()`
  *   timestamp only has millisecond resolution, so two quarantines in the
@@ -248,11 +348,16 @@ object BrowserZoomSettingsManager {
  *   will try to read) and silently in many other failure modes; a silent
  *   no-op here is exactly the failure mode that re-fails the same decode
  *   on the next launch.
+ * - **Asides are capped at [maxAsides] so repeated corruption cannot fill
+ *   the user's settings directory.** The oldest beyond the cap are
+ *   deleted; the newest stays so the most recent failure stays diagnosable.
  */
 internal fun moveCorruptSettingsAside(
     file: File,
     now: () -> Long = { System.currentTimeMillis() },
     renameFn: (File, File) -> Boolean = File::renameTo,
+    maxAsides: Int = 3,
+    listFiles: (File) -> Array<out File>? = { it.listFiles() },
 ) {
     // Deliberately quiet: the caller already logged the decode failure; this
     // is the recovery step, and its own failure must not mask the original.
@@ -271,6 +376,20 @@ internal fun moveCorruptSettingsAside(
                 "Could not rename corrupt settings aside",
                 mapOf("file" to file.absolutePath, "aside" to aside.absolutePath),
             )
+            return@runCatching
+        }
+        // Cap: keep the newest [maxAsides] - delete older ones so repeated
+        // corruption cannot fill the user's settings directory. The newest
+        // (just-created) aside is the most diagnostic for whatever the user
+        // saw last.
+        val parent = file.parentFile ?: return@runCatching
+        val asides =
+            listFiles(parent)
+                ?.filter { it.name.startsWith(file.name + ".corrupt.") }
+                ?.sortedByDescending { it.lastModified() }
+                ?: return@runCatching
+        for (old in asides.drop(maxAsides)) {
+            old.delete()
         }
     }
 }
