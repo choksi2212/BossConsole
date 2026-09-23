@@ -374,21 +374,6 @@ object PredefinedWorkspaces {
                             ),
                     ),
             ),
-            // Browser only: a single browser panel on the BOSS home page.
-            // Was the Windows default until the default became "ask" everywhere
-            // (see WorkspaceSettings.ASK_WORKSPACE_ID); still the one predefined
-            // workspace that stands without a project, which is what lets it be
-            // applied on a fresh start at all.
-            //
-            // Appended rather than prepended: this list is the order of the Settings
-            // picker, the workspace menu and the home screen's cards, and it is not
-            // worth reshuffling what everyone sees.
-            //
-            // "Browser Only", not "Browser": WorkspaceManager identifies predefined
-            // workspaces by NAME (WorkspaceManager.kt:63 drops a saved workspace whose
-            // name collides, and WorkspaceButton decides renameable/deletable the same
-            // way), so a short generic name would silently swallow a user's own
-            // hand-rolled single-browser layout.
             // Project Studio: the student's course-project home. Research on the left
             // (course page / papers), the plan as a scratch editor beside it, the build
             // terminal below, and the final demo as a Jupyter notebook - one Space a
@@ -477,6 +462,21 @@ object PredefinedWorkspaces {
                             ),
                     ),
             ),
+            // Browser only: a single browser panel on the BOSS home page.
+            // Was the Windows default until the default became "ask" everywhere
+            // (see WorkspaceSettings.ASK_WORKSPACE_ID); still the one predefined
+            // workspace that stands without a project, which is what lets it be
+            // applied on a fresh start at all.
+            //
+            // Appended rather than prepended: this list is the order of the Settings
+            // picker, the workspace menu and the home screen's cards, and it is not
+            // worth reshuffling what everyone sees.
+            //
+            // "Browser Only", not "Browser": WorkspaceManager identifies predefined
+            // workspaces by NAME (WorkspaceManager.kt:63 drops a saved workspace whose
+            // name collides, and WorkspaceButton decides renameable/deletable the same
+            // way), so a short generic name would silently swallow a user's own
+            // hand-rolled single-browser layout.
             LayoutWorkspace(
                 id = BROWSER_ONLY_ID,
                 name = "Browser Only",

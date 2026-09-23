@@ -108,11 +108,20 @@ suspend fun applyWorkspace(
         }
 
     // No preserved state, apply workspace from scratch.
-    // Wait (bounded) for the plugin-provided tab types this workspace needs —
+    // Wait (bounded) for the plugin-provided tab types this workspace needs -
     // at startup the workspace flow emits before the dynamic plugins that own
     // browser/terminal/editor have registered their factories, and addTab
     // drops any tab whose type has no factory yet.
-    val requiredTabTypes = collectRequiredTabTypeIds(workspace.layout)
+    val requiredTabTypes =
+        collectRequiredTabTypeIds(workspace.layout).filterNot {
+            // The jupyter notebook is the only shipped tab type with a restore-side fallback
+            // (createTabFromWorkspaceConfig rebuilds it as an editor tab when the plugin is
+            // absent). Including it in the wait made every apply block for the full
+            // PLUGIN_REGISTRATION_TIMEOUT_MS on a machine without the optional jupyter-notebook
+            // plugin - 15s per apply, every cold start, with nothing to show for it. Drop it
+            // here so the wait only fires for types that will actually be added.
+            it == JupyterTabInfo.TYPE_ID && !splitViewState.tabRegistry.isRegistered(it)
+        }.toSet()
 
     // Ahead of the wait, not after it: this layout is about to build a browser tab, and the wait
     // below is dead time the engine boot can have for free. Without it a first install pays the
@@ -233,12 +242,19 @@ private suspend fun applyWorkspaceNode(
     splitViewState: SplitViewState,
     currentPanelId: String,
     projectPath: String,
+    skipFirstTab: Boolean = false,
 ) {
     when (node) {
         is SinglePanel -> {
-            // Add tabs to current panel
+            // Add tabs to current panel. When [skipFirstTab] is true, the caller has already moved
+            // the first tab of this SinglePanel into the new panel via splitPanel - mirror the
+            // SinglePanel branch's drop(1) the recursive case was missing, and which silently
+            // duplicated the moved tab in any template whose right/bottom side was itself a split
+            // (Project Studio's bottom-left picked up Build twice, with Agent then appended
+            // underneath).
             val tabsComponent = splitViewState.getPanelTabsComponent(currentPanelId)
-            node.panel.tabs.forEach { tabConfig ->
+            val tabsToAdd = if (skipFirstTab) node.panel.tabs.drop(1) else node.panel.tabs
+            tabsToAdd.forEach { tabConfig ->
                 createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)?.let { tabsComponent?.addTab(it) }
             }
             // One call per panel restores the whole pinning state, and it is clamped inside setPinnedCount:
@@ -296,8 +312,11 @@ private suspend fun applyWorkspaceNode(
                     }
 
                     else -> {
-                        // Recursively apply right workspace config
-                        applyWorkspaceNode(rightNode, splitViewState, rightPanelId, projectPath)
+                        // Recursively apply right workspace config. The first tab of rightNode's
+                        // own leftmost SinglePanel was just moved by splitPanel above - skip it
+                        // the way the SinglePanel branch's drop(1) does, or it lands a second
+                        // time in the right pane.
+                        applyWorkspaceNode(rightNode, splitViewState, rightPanelId, projectPath, skipFirstTab = true)
                     }
                 }
             }
@@ -325,7 +344,7 @@ private suspend fun applyWorkspaceNode(
             }
 
             // Then create horizontal split for bottom side
-            // Resolve the first tab up front (see the VerticalSplit note) — never create an
+            // Resolve the first tab up front (see the VerticalSplit note) - never create an
             // empty split panel for an unsupported first tab.
             val firstBottomTabInfo = getFirstTab(node.bottom)?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
             if (firstBottomTabInfo != null) {
@@ -351,8 +370,12 @@ private suspend fun applyWorkspaceNode(
                     }
 
                     else -> {
-                        // Recursively apply bottom workspace config
-                        applyWorkspaceNode(bottomNode, splitViewState, bottomPanelId, projectPath)
+                        // Recursively apply bottom workspace config. The first tab of bottomNode's
+                        // own leftmost SinglePanel was just moved by splitPanel above - skip it
+                        // the way the SinglePanel branch's drop(1) does, or it lands a second
+                        // time in the bottom pane (this is what made Build show up twice in
+                        // Project Studio).
+                        applyWorkspaceNode(bottomNode, splitViewState, bottomPanelId, projectPath, skipFirstTab = true)
                     }
                 }
             }
