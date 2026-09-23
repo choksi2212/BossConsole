@@ -4,9 +4,11 @@ Thank you for contributing! BOSS is a Kotlin Multiplatform + Compose Multiplatfo
 
 ## Before you open a PR
 
-### 1. Fork setup: enable Actions
+PRs in this repo target `dev`. Open the PR against the `dev` branch (not `main`); the PR template's "rebased on latest main" wording is a stale holdover and should be ignored until the template itself is updated.
 
-Forks on GitHub ship with **Actions disabled by default**. If your fork's Actions tab shows an "enable workflows" button, click it *before* opening a PR - otherwise your PR will show **zero CI runs**, and no run means no merge, regardless of the diff. (If you already opened the PR, enable Actions and then close/reopen the PR or push a commit to trigger the build.)
+### 1. Fork setup
+
+Forks on GitHub ship with **Actions disabled by default**, but that does not matter for a BOSS PR. The CI runs against the PR in this repository, not against the fork - GitHub Actions for a forked PR always uses the target repo's workflows, and those workflows run regardless of whether the fork has Actions enabled. (First-time contributors occasionally see a "waiting for status" message while the run is still queued; that clears once the first run lands.)
 
 ### 2. Use JDK 17
 
@@ -59,7 +61,9 @@ If your change crosses a service boundary, read the module's own docs and `AGENT
 
 ## Filing issues
 
-Good issues carry: the file and line, the exact code that misbehaves, a reproduction or evidence, and - for security-sensitive reports - the exploit path (what can reach the vulnerable code). If you found the bug via an audit tool or agent, say so; the repo is AI-agent-friendly and judges the finding, not the finder.
+Good issues carry: the file and line, the exact code that misbehaves, a reproduction or evidence. If you found the bug via an audit tool or agent, say so; the repo is AI-agent-friendly and judges the finding, not the finder.
+
+**Security-sensitive reports do not go here.** `.github/SECURITY.md` says (and this guide defers to it): file vulnerabilities by emailing `security@risalabs.ai`, never as a public GitHub issue. The SECURITY policy is the single source of truth for how security issues are reported and what counts as in-scope.
 
 ## Need help?
 
