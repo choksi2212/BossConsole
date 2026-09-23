@@ -250,9 +250,8 @@ class DefaultMcpRiskEvaluator : McpRiskEvaluator {
         }
     }
 
-    private fun String.containsDangerouslySkipPermissions(): Boolean {
-        return this.contains("--dangerously-skip-permissions", ignoreCase = true)
-    }
+    private fun String.containsDangerouslySkipPermissions(): Boolean =
+        this.contains("--dangerously-skip-permissions", ignoreCase = true)
 
     /**
      * A command that starts an agent CLI - Claude, Codex, Gemini or OpenCode. Wording heuristic

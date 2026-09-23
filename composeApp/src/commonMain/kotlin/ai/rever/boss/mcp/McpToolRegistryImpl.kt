@@ -821,9 +821,8 @@ internal class McpToolRegistryCore(
         args: McpToolArgs,
         policy: McpPolicyAction,
     ): McpPolicyAction {
-        if (policy != McpPolicyAction.ALLOW) return policy
         val bareName = toolName.removePrefix(McpToolRegistryImpl.CLIENT_TOOL_PREFIX)
-        if (bareName !in DefaultMcpRiskEvaluator.APPLY_TEMPLATE_TOOLS) return policy
+        if (policy != McpPolicyAction.ALLOW || bareName !in DefaultMcpRiskEvaluator.APPLY_TEMPLATE_TOOLS) return policy
         val runtimeAssessment = riskEvaluator.evaluateRisk(toolName, args)
         return if (runtimeAssessment.level >= McpRiskLevel.HIGH) McpPolicyAction.ASK else policy
     }
