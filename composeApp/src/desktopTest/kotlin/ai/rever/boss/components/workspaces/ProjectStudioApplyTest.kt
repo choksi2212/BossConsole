@@ -104,7 +104,11 @@ class ProjectStudioApplyTest {
         val top = (root as SplitNode.HorizontalSplit).top
         assertTrue(top is SplitNode.VerticalSplit, "top half must be a vertical split; got ${top::class.simpleName}")
         val bottom = root.bottom
-        assertTrue(bottom is SplitNode.VerticalSplit, "bottom half must be a vertical split; got ${bottom::class.simpleName}")
+        val bottomKind = "${bottom::class.simpleName}"
+        assertTrue(
+            bottom is SplitNode.VerticalSplit,
+            "bottom half must be a vertical split; got $bottomKind",
+        )
 
         val topLeft = (top as SplitNode.VerticalSplit).left
         val topRight = top.right
@@ -229,12 +233,21 @@ class ProjectStudioApplyTest {
         // than nothing - so the workspace is not silently broken by the absent plugin.
         val bottomRight = bottomRightLeaf(state.rootNode)
         assertNotNull(bottomRight, "bottom-right leaf must exist")
-        val titles = bottomRight!!.tabsComponent.tabsState.value.tabs.map { it.title }
+        val titles =
+            bottomRight!!
+                .tabsComponent
+                .tabsState.value
+                .tabs
+                .map { it.title }
         assertEquals(listOf("Demo notebook"), titles, "missing jupyter falls back to an editor tab")
     }
 
     private fun tabTitles(panel: SplitNode.Panel): List<String> =
-        panel.tabsComponent.tabsState.value.tabs.map { it.title }
+        panel
+            .tabsComponent
+            .tabsState.value
+            .tabs
+            .map { it.title }
 
     private fun bottomRightLeaf(root: SplitNode): SplitNode.Panel? =
         when (root) {

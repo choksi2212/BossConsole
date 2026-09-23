@@ -113,15 +113,16 @@ suspend fun applyWorkspace(
     // browser/terminal/editor have registered their factories, and addTab
     // drops any tab whose type has no factory yet.
     val requiredTabTypes =
-        collectRequiredTabTypeIds(workspace.layout).filterNot {
-            // The jupyter notebook is the only shipped tab type with a restore-side fallback
-            // (createTabFromWorkspaceConfig rebuilds it as an editor tab when the plugin is
-            // absent). Including it in the wait made every apply block for the full
-            // PLUGIN_REGISTRATION_TIMEOUT_MS on a machine without the optional jupyter-notebook
-            // plugin - 15s per apply, every cold start, with nothing to show for it. Drop it
-            // here so the wait only fires for types that will actually be added.
-            it == JupyterTabInfo.TYPE_ID && !splitViewState.tabRegistry.isRegistered(it)
-        }.toSet()
+        collectRequiredTabTypeIds(workspace.layout)
+            .filterNot {
+                // The jupyter notebook is the only shipped tab type with a restore-side fallback
+                // (createTabFromWorkspaceConfig rebuilds it as an editor tab when the plugin is
+                // absent). Including it in the wait made every apply block for the full
+                // PLUGIN_REGISTRATION_TIMEOUT_MS on a machine without the optional jupyter-notebook
+                // plugin - 15s per apply, every cold start, with nothing to show for it. Drop it
+                // here so the wait only fires for types that will actually be added.
+                it == JupyterTabInfo.TYPE_ID && !splitViewState.tabRegistry.isRegistered(it)
+            }.toSet()
 
     // Ahead of the wait, not after it: this layout is about to build a browser tab, and the wait
     // below is dead time the engine boot can have for free. Without it a first install pays the
@@ -245,141 +246,163 @@ private suspend fun applyWorkspaceNode(
     skipFirstTab: Boolean = false,
 ) {
     when (node) {
-        is SinglePanel -> {
-            // Add tabs to current panel. When [skipFirstTab] is true, the caller has already moved
-            // the first tab of this SinglePanel into the new panel via splitPanel - mirror the
-            // SinglePanel branch's drop(1) the recursive case was missing, and which silently
-            // duplicated the moved tab in any template whose right/bottom side was itself a split
-            // (Project Studio's bottom-left picked up Build twice, with Agent then appended
-            // underneath).
-            val tabsComponent = splitViewState.getPanelTabsComponent(currentPanelId)
-            val tabsToAdd = if (skipFirstTab) node.panel.tabs.drop(1) else node.panel.tabs
-            tabsToAdd.forEach { tabConfig ->
-                createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)?.let { tabsComponent?.addTab(it) }
-            }
-            // One call per panel restores the whole pinning state, and it is clamped inside setPinnedCount:
-            // a tab whose type no longer resolves comes back as null above, so fewer tabs can land
-            // than were saved with this count.
-            tabsComponent?.setPinnedCount(node.panel.pinnedCount)
-        }
+        is SinglePanel ->
+            applySinglePanel(
+                panel = node,
+                splitViewState = splitViewState,
+                panelId = currentPanelId,
+                projectPath = projectPath,
+                skipFirstTab = skipFirstTab,
+            )
 
-        is VerticalSplit -> {
-            // First process left side in current panel
-            when (val leftNode = node.left) {
-                is SinglePanel -> {
-                    // Add tabs to current panel
-                    val tabsComponent = splitViewState.getPanelTabsComponent(currentPanelId)
-                    leftNode.panel.tabs.forEach { tabConfig ->
-                        createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)?.let { tabsComponent?.addTab(it) }
-                    }
-                    // One call per panel restores the whole pinning state, and it is clamped inside setPinnedCount:
-                    // a tab whose type no longer resolves comes back as null above, so fewer tabs can land
-                    // than were saved with this count.
-                    tabsComponent?.setPinnedCount(leftNode.panel.pinnedCount)
-                }
+        is VerticalSplit ->
+            applySplit(
+                firstSide = node.left,
+                secondSide = node.right,
+                splitViewState = splitViewState,
+                currentPanelId = currentPanelId,
+                projectPath = projectPath,
+                orientation = SplitOrientation.VERTICAL,
+            )
 
-                else -> {
-                    // Recursively apply left workspace config
-                    applyWorkspaceNode(leftNode, splitViewState, currentPanelId, projectPath)
-                }
-            }
+        is HorizontalSplit ->
+            applySplit(
+                firstSide = node.top,
+                secondSide = node.bottom,
+                splitViewState = splitViewState,
+                currentPanelId = currentPanelId,
+                projectPath = projectPath,
+                orientation = SplitOrientation.HORIZONTAL,
+            )
+    }
+}
 
-            // Then create vertical split for right side
-            // Resolve the first tab up front; if it doesn't map to a supported tab type
-            // (e.g. a legacy panel-host entry in a recovered workspace), skip the split
-            // instead of creating an empty "ghost" panel via splitPanel(tabToMove = null).
-            val firstRightTabInfo = getFirstTab(node.right)?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
-            if (firstRightTabInfo != null) {
-                val rightPanelId =
-                    splitViewState.splitPanel(
-                        panelId = currentPanelId,
-                        orientation = SplitOrientation.VERTICAL,
-                        tabToMove = firstRightTabInfo,
-                    )
+/**
+ * Add a [SinglePanel]'s tabs to the pane at [panelId], then restore the pinned count.
+ *
+ * `skipFirstTab = true` drops the first tab of `panel.tabs` because the caller has already moved
+ * it into this pane via `splitPanel` (mirrors the recursive case's behaviour - omitting that
+ * mirror silently duplicated the moved tab in any template whose right/bottom side was itself a
+ * split, which is what made Build show up twice in Project Studio's bottom-left).
+ *
+ * `setPinnedCount` is the only place pinning is restored, and it is clamped internally: a tab
+ * whose type no longer resolves comes back as null above, so fewer tabs can land than were
+ * saved with this count.
+ */
+private suspend fun applySinglePanel(
+    panel: SinglePanel,
+    splitViewState: SplitViewState,
+    panelId: String,
+    projectPath: String,
+    skipFirstTab: Boolean,
+) {
+    val tabsComponent = splitViewState.getPanelTabsComponent(panelId)
+    val tabsToAdd = if (skipFirstTab) panel.panel.tabs.drop(1) else panel.panel.tabs
+    tabsToAdd.forEach { tabConfig ->
+        createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)
+            ?.let { tabsComponent?.addTab(it) }
+    }
+    tabsComponent?.setPinnedCount(panel.panel.pinnedCount)
+}
 
-                // Add remaining tabs or process splits for right side
-                when (val rightNode = node.right) {
-                    is SinglePanel -> {
-                        // Add remaining tabs
-                        val tabsComponent = splitViewState.getPanelTabsComponent(rightPanelId)
-                        rightNode.panel.tabs.drop(1).forEach { tabConfig ->
-                            createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)?.let { tabsComponent?.addTab(it) }
-                        }
-                        // One call per panel restores the whole pinning state, and it is clamped inside setPinnedCount:
-                        // a tab whose type no longer resolves comes back as null above, so fewer tabs can land
-                        // than were saved with this count.
-                        tabsComponent?.setPinnedCount(rightNode.panel.pinnedCount)
-                    }
+/**
+ * Apply a split: populate the first side in the current pane, then split to a new pane for the
+ * second side and populate that.
+ *
+ * Resolves the second side's first tab up front so a legacy/unsupported tab type refuses the
+ * split cleanly - `splitPanel(tabToMove = null)` would otherwise create an empty "ghost" pane.
+ * The split orientation is the only difference between vertical and horizontal; the recursion
+ * shape is identical.
+ */
+private suspend fun applySplit(
+    firstSide: SplitConfig,
+    secondSide: SplitConfig,
+    splitViewState: SplitViewState,
+    currentPanelId: String,
+    projectPath: String,
+    orientation: SplitOrientation,
+) {
+    applySplitFirstSide(
+        node = firstSide,
+        splitViewState = splitViewState,
+        panelId = currentPanelId,
+        projectPath = projectPath,
+    )
 
-                    else -> {
-                        // Recursively apply right workspace config. The first tab of rightNode's
-                        // own leftmost SinglePanel was just moved by splitPanel above - skip it
-                        // the way the SinglePanel branch's drop(1) does, or it lands a second
-                        // time in the right pane.
-                        applyWorkspaceNode(rightNode, splitViewState, rightPanelId, projectPath, skipFirstTab = true)
-                    }
-                }
-            }
-        }
+    val firstSecondTab =
+        getFirstTab(secondSide)
+            ?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
+    if (firstSecondTab == null) return
 
-        is HorizontalSplit -> {
-            // First process top side in current panel
-            when (val topNode = node.top) {
-                is SinglePanel -> {
-                    // Add tabs to current panel
-                    val tabsComponent = splitViewState.getPanelTabsComponent(currentPanelId)
-                    topNode.panel.tabs.forEach { tabConfig ->
-                        createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)?.let { tabsComponent?.addTab(it) }
-                    }
-                    // One call per panel restores the whole pinning state, and it is clamped inside setPinnedCount:
-                    // a tab whose type no longer resolves comes back as null above, so fewer tabs can land
-                    // than were saved with this count.
-                    tabsComponent?.setPinnedCount(topNode.panel.pinnedCount)
-                }
+    val newPanelId =
+        splitViewState.splitPanel(
+            panelId = currentPanelId,
+            orientation = orientation,
+            tabToMove = firstSecondTab,
+        )
 
-                else -> {
-                    // Recursively apply top workspace config
-                    applyWorkspaceNode(topNode, splitViewState, currentPanelId, projectPath)
-                }
-            }
+    applySplitSecondSide(
+        node = secondSide,
+        splitViewState = splitViewState,
+        newPanelId = newPanelId,
+        projectPath = projectPath,
+    )
+}
 
-            // Then create horizontal split for bottom side
-            // Resolve the first tab up front (see the VerticalSplit note) - never create an
-            // empty split panel for an unsupported first tab.
-            val firstBottomTabInfo = getFirstTab(node.bottom)?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
-            if (firstBottomTabInfo != null) {
-                val bottomPanelId =
-                    splitViewState.splitPanel(
-                        panelId = currentPanelId,
-                        orientation = SplitOrientation.HORIZONTAL,
-                        tabToMove = firstBottomTabInfo,
-                    )
+/** Process the side that lives in the current panel: add its tabs, or recurse if it is itself a split. */
+private suspend fun applySplitFirstSide(
+    node: SplitConfig,
+    splitViewState: SplitViewState,
+    panelId: String,
+    projectPath: String,
+) {
+    when (node) {
+        is SinglePanel ->
+            applySinglePanel(
+                panel = node,
+                splitViewState = splitViewState,
+                panelId = panelId,
+                projectPath = projectPath,
+                skipFirstTab = false,
+            )
+        else ->
+            applyWorkspaceNode(
+                node = node,
+                splitViewState = splitViewState,
+                currentPanelId = panelId,
+                projectPath = projectPath,
+            )
+    }
+}
 
-                // Add remaining tabs or process splits for bottom side
-                when (val bottomNode = node.bottom) {
-                    is SinglePanel -> {
-                        // Add remaining tabs
-                        val tabsComponent = splitViewState.getPanelTabsComponent(bottomPanelId)
-                        bottomNode.panel.tabs.drop(1).forEach { tabConfig ->
-                            createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)?.let { tabsComponent?.addTab(it) }
-                        }
-                        // One call per panel restores the whole pinning state, and it is clamped inside setPinnedCount:
-                        // a tab whose type no longer resolves comes back as null above, so fewer tabs can land
-                        // than were saved with this count.
-                        tabsComponent?.setPinnedCount(bottomNode.panel.pinnedCount)
-                    }
-
-                    else -> {
-                        // Recursively apply bottom workspace config. The first tab of bottomNode's
-                        // own leftmost SinglePanel was just moved by splitPanel above - skip it
-                        // the way the SinglePanel branch's drop(1) does, or it lands a second
-                        // time in the bottom pane (this is what made Build show up twice in
-                        // Project Studio).
-                        applyWorkspaceNode(bottomNode, splitViewState, bottomPanelId, projectPath, skipFirstTab = true)
-                    }
-                }
-            }
-        }
+/**
+ * Process the side that was just split off into a new pane: drop the moved tab (the splitPanel
+ * above already added it) and add the rest. Recurses with `skipFirstTab = true` when this side
+ * is itself a split, for the same reason as the SinglePanel branch's `drop(1)`.
+ */
+private suspend fun applySplitSecondSide(
+    node: SplitConfig,
+    splitViewState: SplitViewState,
+    newPanelId: String,
+    projectPath: String,
+) {
+    when (node) {
+        is SinglePanel ->
+            applySinglePanel(
+                panel = node,
+                splitViewState = splitViewState,
+                panelId = newPanelId,
+                projectPath = projectPath,
+                skipFirstTab = true,
+            )
+        else ->
+            applyWorkspaceNode(
+                node = node,
+                splitViewState = splitViewState,
+                currentPanelId = newPanelId,
+                projectPath = projectPath,
+                skipFirstTab = true,
+            )
     }
 }
 
