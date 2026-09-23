@@ -430,11 +430,42 @@ class RemotePluginRepository(
                             cacheOrNull("purge") { downloadCache.removeCachedJar(pluginId, downloadInfo.version) }
                         },
                     )
+                    // Copy into a sibling `.part` rather than truncating
+                    // targetPath in place: a copy or promotion failure must
+                    // leave the previously installed JAR and its `.sig`
+                    // sidecar untouched. The staged bytes are rehashed and
+                    // compared to downloadInfo.sha256 before promotion,
+                    // mirroring the fresh-download path - the cache file can
+                    // be replaced between the lookup-time hash check above
+                    // and this copy, so the bytes we are about to promote
+                    // are not necessarily the bytes we signed for. A cache
+                    // copy that returns false falls through to the
+                    // fresh-download path, matching the pre-fix behaviour
+                    // where a cache write failure transparently retried over
+                    // the network.
                     val copied =
                         cacheOrNull("copy") {
                             val target = File(targetPath)
                             withStagedTarget(target) { staged ->
                                 copyCachedJar(cachedFile, staged)
+                                // Re-verify the staged bytes match what
+                                // getCachedJar verified moments ago. A cache
+                                // file that changes between the lookup-time
+                                // hash check and this copy has different
+                                // bytes in staging now than what we just
+                                // signed for; refuse before any of them reach
+                                // the live JAR. withStagedTarget deletes the
+                                // sibling in its finally block, so a throw
+                                // here leaves no part file behind.
+                                val stagedHash = FileHashing.sha256(staged)
+                                if (!stagedHash.equals(downloadInfo.sha256, ignoreCase = true)) {
+                                    throw DownloadException(
+                                        "SHA-256 mismatch between cached and staged bytes. " +
+                                            "Expected: ${downloadInfo.sha256}, Got: $stagedHash",
+                                        pluginId,
+                                        id,
+                                    )
+                                }
                                 promoteStagedTarget(staged, target)
                             }
                             true
