@@ -341,4 +341,81 @@ class RemotePluginRepositoryStagedDownloadTest {
             assertTrue(result.isFailure)
             assertEquals(null, repo.getDownloadProgress(pluginId))
         }
+
+    @Test
+    fun `cache hit with SHA-256 mismatch between cached and staged bytes leaves live jar untouched`() =
+        runBlocking {
+            // Cache file is valid at lookup (its hash matches downloadInfo.sha256),
+            // but the bytes that actually arrive in the staged file are NOT those
+            // bytes - simulating a cache file that was replaced between the
+            // lookup-time hash check and the copy. The pre-fix code promoted the
+            // staged bytes without re-checking, so a tampered cache landed at the
+            // live JAR. The fix rehashes the staged bytes and refuses to promote
+            // on a mismatch.
+            val seed = File(tempDir, "seed.jar").apply { writeBytes(goodBytes) }
+            cache.cacheJar(pluginId, "1.0.0", seed)
+
+            val previous = "previously installed live jar bytes"
+            val previousSidecar = "previously-written-signature"
+            writeLive(target("cache-tampered.jar"), previous, previousSidecar)
+
+            val sig = signAnchor("1.0.0")
+            val tampered = "tampered cache bytes that hash to something else".toByteArray()
+            val corrupting =
+                RemotePluginRepository(
+                    downloadCache = cache,
+                    storeVerifier = verifier,
+                    downloadInfoProvider = { _, _ -> downloadInfo("1.0.0", sig) },
+                    // Simulate the cache file being replaced between the
+                    // getCachedJar hash check and this copy: overwrite the
+                    // source first, then copy. The staged file ends up
+                    // holding the tampered bytes whose hash differs from
+                    // downloadInfo.sha256.
+                    copyCachedJar = { source, target ->
+                        source.writeBytes(tampered)
+                        source.copyTo(target, overwrite = true)
+                    },
+                )
+
+            val result =
+                corrupting.downloadPlugin(pluginId, "1.0.0", target("cache-tampered.jar"))
+
+            // The mismatch is a security failure, surfaced as a DownloadException.
+            assertIs<DownloadException>(result.exceptionOrNull())
+            // The previously installed JAR and its sidecar are intact.
+            assertEquals(previous, File(target("cache-tampered.jar")).readText())
+            assertEquals(previousSidecar, PluginSignatureSidecar.read(target("cache-tampered.jar")))
+            // No staging residue was promoted into the live path.
+            assertTrue(partSiblings(target("cache-tampered.jar")).isEmpty())
+        }
+
+    @Test
+    fun `truncated fresh download leaves live jar untouched`() =
+        runBlocking {
+            // Server advertises the full Content-Length but closes the response
+            // body partway through, so the streamed bytes are fewer than the
+            // staged file is supposed to hold. The pre-fix code promoted the
+            // truncated bytes regardless; the fix hashes the staged bytes and
+            // refuses to promote on a mismatch. (Distinct from the empty-body
+            // test above: that one was honest about the size, this one lies.)
+            serverUrl =
+                startServer { exchange ->
+                    exchange.sendResponseHeaders(200, goodBytes.size.toLong())
+                    val truncatedLength = goodBytes.size / 2
+                    exchange.responseBody.use { it.write(goodBytes, 0, truncatedLength) }
+                }
+            val previous = "previously installed live jar bytes"
+            val previousSidecar = "previously-written-signature"
+            writeLive(target("truncated.jar"), previous, previousSidecar)
+
+            val sig = signAnchor("1.0.0")
+            val result =
+                repositoryReturning(downloadInfo("1.0.0", sig))
+                    .downloadPlugin(pluginId, "1.0.0", target("truncated.jar"))
+
+            assertIs<DownloadException>(result.exceptionOrNull())
+            assertEquals(previous, File(target("truncated.jar")).readText())
+            assertEquals(previousSidecar, PluginSignatureSidecar.read(target("truncated.jar")))
+            assertTrue(partSiblings(target("truncated.jar")).isEmpty())
+        }
 }
