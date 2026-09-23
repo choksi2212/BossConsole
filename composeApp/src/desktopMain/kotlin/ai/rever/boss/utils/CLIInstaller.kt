@@ -2,17 +2,28 @@ package ai.rever.boss.utils
 
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import com.sun.jna.Memory
+import com.sun.jna.Native
+import com.sun.jna.Pointer
+import com.sun.jna.platform.win32.User32
+import com.sun.jna.platform.win32.WinDef
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermission
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 actual object CLIInstaller {
     private val logger = BossLogger.forComponent("CLIInstaller")
 
     private val isWindows = System.getProperty("os.name").lowercase().contains("windows")
     private val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
+
+    /** `WM_SETTINGCHANGE` (0x001A). */
+    private const val WM_SETTINGCHANGE = 0x001A
+
+    /** `SMTO_ABORTIFHUNG` (0x0002). */
+    private const val SMTO_ABORTIFHUNG = 0x0002
 
     private val homeDir = System.getProperty("user.home")
 
@@ -350,25 +361,44 @@ actual object CLIInstaller {
      *
      * Reads the **user-scope** PATH via `reg query HKCU\Environment /v Path` (so it is
      * never the combined system+user PATH), appends [binPath] if it is not already
-     * present, and writes back with `reg add` instead of `setx`. `setx` silently
-     * truncates values longer than 1024 characters, which corrupts a user's PATH on
-     * a long-PATH machine and drops the BOSS entry; `reg add` has no such limit and
-     * preserves `REG_EXPAND_SZ` semantics so `%USERPROFILE%`-style references continue
-     * to expand.
+     * present, and writes back with `reg add` instead of `setx`. `setx` had two
+     * bugs this replaces:
+     *  1. Silent truncation at 1024 characters, which drops the BOSS bin entry on
+     *     long-PATH machines.
+     *  2. Re-writing the value as `REG_SZ`, which freezes `%USERPROFILE%\bin`-style
+     *     references as literal strings - portable paths stop expanding on the
+     *     next logon. `reg add /t REG_EXPAND_SZ` keeps the type, so portable
+     *     references continue to resolve.
+     * `reg add` has no 1024-char limit and preserves `REG_EXPAND_SZ` semantics,
+     * which is why the read uses `reg query` (returns raw bytes, never expanded)
+     * rather than a .NET API that would substitute `%USERPROFILE%` and round-trip
+     * back as a frozen literal.
      */
     @Suppress("ReturnCount") // Read PATH, already-present, write-success, failure.
     private fun updateWindowsPath(binPath: String): Boolean {
         return try {
-            val currentPath = readUserPath() ?: return false
+            // readUserPath coalesces "absent" and "present-but-empty" both to "",
+            // so the merge below produces the right value for a fresh profile AND
+            // a user who cleared their PATH - in both cases binDir becomes the
+            // first entry. The previous implementation treated absent as a hard
+            // failure and silently skipped the write.
+            val currentPath = readUserPath()
 
-            // Check if already in user PATH
             val existingEntries = currentPath.split(';').filter { it.isNotBlank() }
             if (existingEntries.any { it.equals(binPath, ignoreCase = true) }) {
                 return true
             }
 
             val merged = mergeUserPath(currentPath, binPath)
-            writeUserPath(merged)
+            val written = writeUserPath(merged)
+            if (written) {
+                // reg.exe does not broadcast WM_SETTINGCHANGE - that used to be a
+                // side effect of the .NET `Environment.SetEnvironmentVariable` call
+                // we replaced. Without it, apps already running (and the shell's
+                // own cached environment block) keep the old PATH until logoff.
+                broadcastEnvironmentChange()
+            }
+            written
         } catch (e: Exception) {
             logger.warn(LogCategory.SYSTEM, "Failed to update Windows PATH", error = e)
             false
@@ -379,13 +409,22 @@ actual object CLIInstaller {
      * Read the user-scope PATH value from HKCU\Environment.
      *
      * Reads the user scope only - never the merged process PATH, which would
-     * duplicate system entries into user scope. Returns null if the registry key
-     * is absent (a fresh user profile) so the caller can decide rather than
-     * silently writing an empty value back. A present-but-empty value returns
-     * an empty string: that is a real PATH the user has cleared, and BOSS should
-     * still be appended to it.
+     * duplicate system entries into user scope. Coalesces all three outcomes to
+     * a `String`:
+     *  - value present: returns the raw value (`reg query` does NOT expand
+     *    `%USERPROFILE%`, so portable references stay portable);
+     *  - present-but-empty value: returns `""` (a real PATH the user has
+     *    cleared, which the caller appends to);
+     *  - value absent (fresh user profile): returns `""` so the caller creates
+     *    the initial value rather than reporting a failure.
+     *
+     * Stdout and stderr are drained on background threads concurrently with
+     * `waitFor` - a long PATH that overflows the OS pipe buffer before the
+     * process closes its stdout would otherwise deadlock. Two drains because
+     * `redirectErrorStream(true)` would lose the diagnostic that surfaces in
+     * `reg.exe`'s stderr.
      */
-    private fun readUserPath(): String? {
+    private fun readUserPath(): String {
         val process =
             ProcessBuilder(
                 "reg",
@@ -394,10 +433,37 @@ actual object CLIInstaller {
                 "/v",
                 "Path",
             ).start()
-        val output = process.inputStream.bufferedReader().use { it.readText() }
-        val exit = process.waitFor()
-        if (exit != 0) return null
-        return parseRegPathOutput(output.trimEnd())
+
+        // Concurrent drain - FutureTask gives us a typed result and the same
+        // pattern BoundedCommand uses for plugin metrics. Each thread owns
+        // its stream end and the wait can complete as soon as the process exits.
+        val stdoutDrain =
+            java.util.concurrent.FutureTask {
+                process.inputStream.bufferedReader().use { it.readText() }
+            }
+        val stderrDrain =
+            java.util.concurrent.FutureTask {
+                process.errorStream.bufferedReader().use { it.readText() }
+            }
+        Thread(stdoutDrain, "reg-query-stdout").apply { isDaemon = true }.start()
+        Thread(stderrDrain, "reg-query-stderr").apply { isDaemon = true }.start()
+
+        process.waitFor()
+        val stdout = stdoutDrain.get()
+        val stderr = stderrDrain.get()
+
+        if (process.exitValue() != 0 && stderr.isNotBlank()) {
+            logger.debug(
+                LogCategory.SYSTEM,
+                "reg query exited non-zero",
+                mapOf("exit" to process.exitValue(), "stderr" to stderr.trim()),
+            )
+        }
+
+        // parseRegPathOutput: null on absent (no match for the key/value line),
+        // "" on present-but-empty, value otherwise. Coalesce null to "" so the
+        // caller's "absent" and "empty" paths both produce an initial PATH.
+        return parseRegPathOutput(stdout.trimEnd()).orEmpty()
     }
 
     /**
@@ -426,6 +492,47 @@ actual object CLIInstaller {
         return process.exitValue() == 0
     }
 
+    /**
+     * Broadcast `WM_SETTINGCHANGE` to all top-level windows so running apps pick
+     * up the new user PATH without waiting for logoff. Sends the message via
+     * `SendMessageTimeoutW` with `SMTO_ABORTIFHUNG` and a 5s timeout, matching
+     * what `Microsoft.VisualBasic.Interaction` shells out to.
+     *
+     * Bound through JNA rather than `rundll32 user32.dll,...` because the user32
+     * path needs the literal string `"Environment"` as the `lParam` (a pointer
+     * into the broadcast message's read-only memory), and `rundll32` would have
+     * to be told that string from another channel. JNA is already on the
+     * composeApp classpath for the macOS Launch Services binding.
+     */
+    private fun broadcastEnvironmentChange() {
+        try {
+            val user32 = User32.INSTANCE
+            // WM_SETTINGCHANGE's lParam is a pointer to a wide-char section name
+            // ("Environment"). The string only needs to live for the duration of
+            // the SendMessageTimeoutW call, so a JNA Memory block is enough; it
+            // is freed when the broadcast returns or the GC clears it.
+            val sectionName = "Environment"
+            val mem =
+                Memory(
+                    (sectionName.length + 1L) * Native.WCHAR_SIZE,
+                )
+            mem.setString(0, sectionName)
+            user32.SendMessageTimeout(
+                WinDef.HWND(Pointer.createConstant(0xFFFFL)),
+                WinDef.UINT(WM_SETTINGCHANGE.toLong()),
+                WinDef.WPARAM(0L),
+                WinDef.LPARAM(Pointer.nativeValue(mem)),
+                WinDef.UINT(SMTO_ABORTIFHUNG.toLong()),
+                5000,
+                null,
+            )
+        } catch (t: Throwable) {
+            // The broadcast is best-effort - the registry value is already
+            // updated and will be picked up at the next logon or process spawn.
+            logger.debug(LogCategory.SYSTEM, "WM_SETTINGCHANGE broadcast failed", error = t)
+        }
+    }
+
     private data class ShellConfigResult(
         val success: Boolean,
         val configPath: String?,
@@ -441,9 +548,17 @@ actual object CLIInstaller {
  * 2. If [binDir] is already present (case-insensitive match against any trimmed
  *    `;`-separated entry), the input is returned unchanged so a re-run is a no-op
  *    rather than a duplication.
- * 3. Otherwise the entry is appended. A trailing semicolon is preserved when the
- *    input already ends with one; otherwise `;binDir;` is appended so the merged
- *    string is well-formed `REG_EXPAND_SZ`.
+ * 3. Otherwise the entry is appended. A trailing semicolon in [currentUserScopePath]
+ *    is preserved as-is; otherwise `;binDir;` is appended so the merged string is
+ *    well-formed `REG_EXPAND_SZ`.
+ *
+ * **Byte-faithful on every entry the user already had.** Only [binDir] is
+ * trimmed; the existing entries are passed through verbatim, including any
+ * trailing backslashes, drive letters with or without a trailing `\` and any
+ * internal whitespace the user actually wrote. The duplicate check trims a
+ * temporary copy of each entry for comparison - the comparison is purely a
+ * read, it never reaches the output. The PATH editor touches only what the
+ * install asked for.
  *
  * Pure on purpose so this is the only function the unit tests need to cover - the
  * real `reg.exe` calls are exercised by hand or by an integration test, not here.
