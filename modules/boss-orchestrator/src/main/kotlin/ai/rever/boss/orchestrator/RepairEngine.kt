@@ -63,6 +63,22 @@ class RepairEngine(
      */
     private val minTunedHeapMb = 512
 
+    /**
+     * Ceiling for the heap a tuned restart applies. Beyond this we stop growing and give up
+     * the restart - a 1g process that OOMs twice should land on 2g, not on the JVM's addressable
+     * ceiling or on the box's swap budget. 8g covers every realistic plugin out to a typical
+     * desktop-class workflow; raise if a real case demands more.
+     */
+    private val maxTunedHeapMb = 8 * 1024
+
+    /**
+     * Growth applied to the heap on each tuned restart. The 3/2 multiplier leaves the next
+     * restart visibly different from the previous one (1g -> 1.5g -> 2.25g) without the
+     * doubling that would skip past the cap and bounce off it.
+     */
+    private val tunedGrowthNumerator = 3
+    private val tunedGrowthDenominator = 2
+
     /** Manifest source file paths come from the diagnosed process, so they are confined. */
     private val sourceRoots =
         if (projectRoot == null) AllowedRoots.none() else AllowedRoots.of(File(projectRoot))
@@ -141,7 +157,7 @@ class RepairEngine(
 
             RepairStrategy.REPAIR_STRATEGY_RESTART_TUNED -> {
                 try {
-                    val tunedArgs = listOf("-Xmx${tunedHeapMb(report)}m")
+                    val tunedArgs = tunedJvmArgs(report)
                     onRequestRestart(processId, tunedArgs)
                     logger.info("Tuned restart requested for process: {} with {}", processId, tunedArgs)
                     RepairOutcome.Restarted(processId, tunedArgs)
@@ -306,17 +322,47 @@ class RepairEngine(
     }
 
     /**
-     * Heap a tuned restart should apply, in MiB. Floors the configured [minTunedHeapMb] against
-     * whatever heap the failing process was started with, so a user with a 2 GB plugin does not
-     * come back from an OOM on a 512 MB one.
+     * JVM args a tuned restart should apply: the [currentArgs] with the `-Xmx` entry
+     * replaced by a 3/2-grown value (capped at [maxTunedHeapMb], floored at [minTunedHeapMb]),
+     * every other flag kept in place.
      *
-     * The current heap comes from `report.currentJvmArgsList`, populated by the kernel from the
-     * live `ProcessConfig.jvmArgs`. An unparseable or absent `-Xmx` is treated as "no floor" so
-     * a malformed report cannot lock the user out of a tuned restart.
+     * Three things that have to be true:
+     *
+     *  - **Repeated OOMs grow the heap.** A 1g process that OOMs must come back at 1.5g,
+     *    not at the same 1g labeled "tuned". The growth is a 3/2 multiplier; once the cap
+     *    is hit, this returns [currentArgs] unchanged so the restart does not loop on the
+     *    same heap.
+     *  - **Missing or unparseable `-Xmx` never lowers the heap.** The current JVM args
+     *    carry no parseable value (or no `-Xmx` at all); we don't know what the user has,
+     *    so we return [currentArgs] rather than picking a fallback that could be smaller
+     *    than what the user actually configured.
+     *  - **Other JVM flags are preserved in order.** `-Xmx` is swapped in place; flags like
+     *    `-Xss`, `-Dfoo=bar`, `--add-opens`, GC settings, etc. stay where the user put them.
      */
-    private fun tunedHeapMb(report: ProcessFailureReport): Int {
-        val currentMb = parseXmxMb(report.currentJvmArgsList) ?: return minTunedHeapMb
-        return maxOf(minTunedHeapMb, currentMb)
+    private fun tunedJvmArgs(report: ProcessFailureReport): List<String> {
+        val currentArgs = report.currentJvmArgsList.toList()
+        val currentMb = parseXmxMb(currentArgs)
+        // No parseable heap flag: we don't know what the user has, so leave the args alone
+        // (returning the user's current args means the restart never lowers the heap).
+        if (currentMb == null) return currentArgs
+
+        val grownMb =
+            (currentMb.toLong() * tunedGrowthNumerator / tunedGrowthDenominator)
+                .coerceAtMost(maxTunedHeapMb.toLong())
+                .toInt()
+        // Already at or above the cap, or the growth rounds back to the same value: nothing
+        // to do, restart the process with the args it already had.
+        if (grownMb <= currentMb) return currentArgs
+
+        // Below the floor: bump up to the floor (rare - only when the configured heap is
+        // genuinely tiny, e.g. a 256m plugin that OOMs).
+        val finalMb = maxOf(grownMb, minTunedHeapMb)
+
+        val newXmx = "-Xmx${finalMb}m"
+        val hasExistingXmx = currentArgs.any { XMX_PATTERN.matchEntire(it) != null }
+        val swapped =
+            currentArgs.map { arg -> if (XMX_PATTERN.matchEntire(arg) != null) newXmx else arg }
+        return if (hasExistingXmx) swapped else swapped + newXmx
     }
 
     /**
