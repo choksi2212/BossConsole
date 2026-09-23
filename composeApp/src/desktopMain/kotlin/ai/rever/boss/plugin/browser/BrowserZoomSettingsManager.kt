@@ -10,6 +10,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.util.UUID
 
 /**
  * Per-domain zoom settings for a website.
@@ -37,16 +38,33 @@ data class BrowserZoomSettingsData(
  * so users can have different zoom levels for different websites.
  */
 object BrowserZoomSettingsManager {
-    /** Serializes the two save entry points against each other (#925). */
+    /**
+     * Serializes the two save entry points against each other AND holds the
+     * read-modify-write mutators ([setZoomForDomain], [clearDomainZoom],
+     * [clearAllSettings]) as a single critical section (#1051): without it,
+     * a save interleaved with a mutator can read state the mutator has not
+     * yet committed, and two concurrent mutators can each read the same
+     * state and overwrite each other's write.
+     */
     private val saveLock = Any()
     private val logger = BossLogger.forComponent("BrowserZoomSettingsManager")
-    private val settingsFile = BossDirectories.resolve("browser-zoom-settings.json")
+
+    /** Overridable so tests exercise the real read/write path without touching `~/.boss`. */
+    internal var settingsFile: File = BossDirectories.resolve("browser-zoom-settings.json")
+
     private val json =
         Json {
             prettyPrint = true
             ignoreUnknownKeys = true
         }
 
+    /**
+     * `@Volatile` so the mutator's write is visible to readers on other
+     * threads without taking [saveLock] (#1051). The lock is what makes
+     * the read-modify-write atomic; the volatile is what guarantees a
+     * later reader does not see stale state through CPU caching.
+     */
+    @Volatile
     private var settings = BrowserZoomSettingsData()
 
     init {
@@ -65,6 +83,12 @@ object BrowserZoomSettingsManager {
     /**
      * Set the zoom level for a domain.
      * If zoomLevel is 1.0 (100%), removes the domain entry.
+     *
+     * The read, the conditional mutation, and the assignment all run under
+     * [saveLock] so a concurrent mutator cannot interleave and overwrite a
+     * change (#1051). The companion [saveSettings] / [saveSettingsSync] take
+     * the same lock around the write, so a save cannot read a half-applied
+     * state either.
      */
     fun setZoomForDomain(
         domain: String,
@@ -72,26 +96,28 @@ object BrowserZoomSettingsManager {
     ) {
         val normalizedDomain = normalizeDomain(domain)
 
-        settings =
-            if (kotlin.math.abs(zoomLevel - 1.0) < 0.001) {
-                // Remove entry if zoom is reset to 100%
-                settings.copy(
-                    domainSettings = settings.domainSettings - normalizedDomain,
-                )
-            } else {
-                // Update or add entry
-                settings.copy(
-                    domainSettings =
-                        settings.domainSettings + (
-                            normalizedDomain to
-                                DomainZoomSettings(
-                                    domain = normalizedDomain,
-                                    zoomLevel = zoomLevel,
-                                    lastUpdated = System.currentTimeMillis(),
-                                )
-                        ),
-                )
-            }
+        synchronized(saveLock) {
+            settings =
+                if (kotlin.math.abs(zoomLevel - 1.0) < 0.001) {
+                    // Remove entry if zoom is reset to 100%
+                    settings.copy(
+                        domainSettings = settings.domainSettings - normalizedDomain,
+                    )
+                } else {
+                    // Update or add entry
+                    settings.copy(
+                        domainSettings =
+                            settings.domainSettings + (
+                                normalizedDomain to
+                                    DomainZoomSettings(
+                                        domain = normalizedDomain,
+                                        zoomLevel = zoomLevel,
+                                        lastUpdated = System.currentTimeMillis(),
+                                    )
+                            ),
+                    )
+                }
+        }
     }
 
     /**
@@ -178,29 +204,50 @@ object BrowserZoomSettingsManager {
     fun getAllDomainSettings(): Map<String, DomainZoomSettings> = settings.domainSettings.toMap()
 
     /**
-     * Clear zoom setting for a specific domain.
+     * Clear zoom setting for a specific domain. R-M-W under [saveLock] so
+     * a concurrent [setZoomForDomain] for the same domain cannot re-introduce
+     * the entry this is removing (#1051).
      */
     fun clearDomainZoom(domain: String) {
         val normalizedDomain = normalizeDomain(domain)
-        settings =
-            settings.copy(
-                domainSettings = settings.domainSettings - normalizedDomain,
-            )
+        synchronized(saveLock) {
+            settings =
+                settings.copy(
+                    domainSettings = settings.domainSettings - normalizedDomain,
+                )
+        }
     }
 
     /**
-     * Clear all domain zoom settings.
+     * Clear all domain zoom settings. R-M-W under [saveLock] (#1051).
      */
     fun clearAllSettings() {
-        settings = BrowserZoomSettingsData()
+        synchronized(saveLock) {
+            settings = BrowserZoomSettingsData()
+        }
     }
 }
 
 /**
- * Renames a corrupt settings file to `<name>.corrupt.<millis>` beside its
- * live path (#925): the fault stays diagnosable, the live name is freed for
- * a fresh write on the next save, and the next launch does not re-read and
- * re-fail the same bytes. Pure file operation - unit-testable standalone.
+ * Renames a corrupt settings file to `<name>.corrupt.<millis>.<uuid>` beside
+ * its live path (#925, #1051): the fault stays diagnosable, the live name is
+ * freed for a fresh write on the next save, and the next launch does not
+ * re-read and re-fail the same bytes. Pure file operation - unit-testable
+ * standalone.
+ *
+ * Two refinements over the original helper (#1051):
+ *
+ * - **The aside name is collision-proof.** A `System.currentTimeMillis()`
+ *   timestamp only has millisecond resolution, so two quarantines in the
+ *   same millisecond rename to the same target - POSIX `rename(2)` then
+ *   replaces the earlier backup, and Win32 `MoveFile` reports
+ *   `ERROR_ALREADY_EXISTS`. A `UUID` random component guarantees distinct
+ *   asides even at sub-millisecond spacing.
+ * - **`File.renameTo`'s return value is checked.** It returns false on
+ *   Windows when the destination exists (the source path the next launch
+ *   will try to read) and silently in many other failure modes; a silent
+ *   no-op here is exactly the failure mode that re-fails the same decode
+ *   on the next launch.
  */
 internal fun moveCorruptSettingsAside(
     file: File,
@@ -209,7 +256,20 @@ internal fun moveCorruptSettingsAside(
     // Deliberately quiet: the caller already logged the decode failure; this
     // is the recovery step, and its own failure must not mask the original.
     runCatching {
-        val aside = File(file.absolutePath + ".corrupt." + now())
-        file.renameTo(aside)
+        // The millisecond timestamp is kept for human diagnosis - a series of
+        // crashes within the same second stays observable in filename order -
+        // but the UUID random component is what guarantees no two quarantines
+        // land on the same aside name.
+        val aside = File(file.absolutePath + ".corrupt." + now() + "." + UUID.randomUUID().toString())
+        if (!file.renameTo(aside)) {
+            // renameTo fails on Windows when the destination already exists
+            // and in other platform-specific cases; the live file would
+            // otherwise still be where the next launch tries to read it.
+            BossLogger.forComponent("BrowserZoomSettingsManager").warn(
+                LogCategory.BROWSER,
+                "Could not rename corrupt settings aside",
+                mapOf("file" to file.absolutePath, "aside" to aside.absolutePath),
+            )
+        }
     }
 }
