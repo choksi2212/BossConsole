@@ -2,6 +2,7 @@ package ai.rever.boss.mcp
 
 import ai.rever.boss.components.bars.horizontal.StatusMessageManager
 import ai.rever.boss.mcp.sandbox.DefaultMcpRiskEvaluator
+import ai.rever.boss.mcp.sandbox.McpRiskLevel
 import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.api.McpToolDefinition
 import ai.rever.boss.plugin.api.McpToolProvider
@@ -753,7 +754,19 @@ internal class McpToolRegistryCore(
         // this invocation: a tool that declared side effects classifies as mutating whatever
         // its name says (#804), so it gets the mutating default - ASK under the factory
         // config - rather than being auto-allowed for avoiding the catalog's name patterns.
-        val policy = policyEngine.policyFor(toolName, tool.providerId, tool.definition.readOnly)
+        var policy = policyEngine.policyFor(toolName, tool.providerId, tool.definition.readOnly)
+        // apply_template's risk is computed per-call from the named template - a persisted
+        // ALLOW on the tool name covers LOW and MEDIUM templates but must NOT silently approve a
+        // HIGH one (Claude Code / Code Review launch `claude --dangerously-skip-permissions`).
+        // Force ASK whenever the resolved runtime risk crosses the line so a "Trust This Plugin"
+        // or saved rule on `apply_template` cannot upgrade itself into a permission-skipping
+        // agent invocation without the operator seeing the prompt.
+        if (policy == McpPolicyAction.ALLOW) {
+            val runtimeAssessment = DefaultMcpRiskEvaluator().evaluateRisk(toolName, args)
+            if (runtimeAssessment.level >= McpRiskLevel.HIGH) {
+                policy = McpPolicyAction.ASK
+            }
+        }
         val startTime = System.nanoTime()
         var disposition = McpApprovalDisposition.AUTO_ALLOWED
         var result: McpToolResult? = null
