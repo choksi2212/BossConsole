@@ -8,6 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.test.assumeFalse
 
 class FileSystemDataProviderDeleteTest {
     @Test
@@ -63,7 +64,7 @@ class FileSystemDataProviderDeleteTest {
     }
 
     @Test
-    fun `delete refuses a path that traverses a link with parent-dot even when the OS would resolve it outside home`() {
+    fun `link-then-dotdot traversal preserves the safety invariant on every platform`() {
         // Pins the review finding on the #1118 PR: a request like `home/link/../<sibling>` has
         // an OS-resolved target that lives outside home (the link points to `outside`, so
         // `outside/..` is `outside`'s parent, not `home`), but the lexically-normalized form
@@ -72,23 +73,79 @@ class FileSystemDataProviderDeleteTest {
         // sees a benign-looking path.
         //
         // Shape: a temp root, a `home` directory under it, a symlink `home/link -> outside`
-        // (also under root), a canary in a sibling of `outside` (so `home/link/../<canary>`
-        // OS-resolves to that canary), and a request to delete it. The canary must remain and
-        // the call must be refused.
+        // (also under root), and a canary in a sibling of `outside` (so `home/link/../<canary>`
+        // OS-resolves to that canary on POSIX).
+        //
+        // The safety property the test pins is the same on every platform: the canary
+        // outside home survives. The exact failure mode differs:
+        //   - POSIX: the OS walks `link` first, so `link/..` lands at `outside`'s parent
+        //     (`root`), the containment check sees an escape, and the call refuses with
+        //     SecurityException.
+        //   - Windows: `..` is resolved lexically BEFORE the link is followed, so the
+        //     traversal path canonicalizes to `home/canary` (which doesn't exist on disk).
+        //     The containment check sees something inside home and admits it; the walk then
+        //     fails because the file is absent. Either way the canary is untouched.
         val root = createTempDirectory("filesystem-provider-linkdot").toFile()
         try {
             val home = File(root, "home").apply { mkdirs() }
             val outside = File(root, "outside").apply { mkdirs() }
             val canaryName = "fsd-linkdot-canary"
-            // The canary lives in `outside`'s parent, which is exactly where `home/link/..` lands.
+            // The canary lives in `outside`'s parent, which is exactly where `home/link/..`
+            // OS-lands on POSIX.
             val siblingCanary = File(root, canaryName).apply { writeText("keep") }
             val link = File(home, "link")
             if (runCatching { Files.createSymbolicLink(link.toPath(), outside.toPath()) }.isFailure) return
 
-            // The traversal path: `home/link/../<canary>` - the OS walks `link` (the symlink),
-            // then `..` from the symlink's TARGET (NOT from `home`), landing at `outside`'s
-            // parent (= `root`), then at `<canary>`. Without the fix the walk used the
-            // unnormalized input and would reach this canary file.
+            // The traversal path: `home/link/../<canary>` - on POSIX the OS walks `link`
+            // (the symlink) then `..` from the symlink's TARGET (NOT from `home`), landing
+            // at `outside`'s parent (= `root`), then at `<canary>`. On Windows the `..` is
+            // resolved lexically first and the path becomes `home/canary` instead.
+            val traversalPath = File(home, "link/../$canaryName")
+
+            // Exercise the API; the specific Result outcome is platform-specific.
+            deleteUserPath(traversalPath, home)
+
+            // Safety property 1: the canary outside home survives untouched.
+            assertTrue(
+                siblingCanary.exists(),
+                "canary at $siblingCanary must NOT be erased by a link-then-dotdot traversal",
+            )
+            assertEquals(
+                "keep",
+                siblingCanary.readText(),
+                "canary at $siblingCanary must NOT be erased by a link-then-dotdot traversal",
+            )
+            // Safety property 2: nothing under `outside` was touched either - that's
+            // where a walk that escaped home would land.
+            assertTrue(
+                outside.isDirectory,
+                "the outside directory must remain intact after a link-then-dotdot traversal",
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `link-then-dotdot traversal is refused on POSIX`() {
+        // The "the walk must refuse with SecurityException" outcome is POSIX-specific:
+        // the OS-resolved `link/..` lands at `outside`'s parent, the containment check
+        // sees the escape and throws. Windows lexically normalizes `link/..` to home
+        // before following the link, so the call takes a different path there - the
+        // safety property test above is the assertion that holds on every platform.
+        assumeFalse(
+            System.getProperty("os.name").lowercase().contains("windows"),
+            "POSIX-only refusal assertion; the safety property test covers Windows",
+        )
+        val root = createTempDirectory("filesystem-provider-linkdot").toFile()
+        try {
+            val home = File(root, "home").apply { mkdirs() }
+            val outside = File(root, "outside").apply { mkdirs() }
+            val canaryName = "fsd-linkdot-canary"
+            val siblingCanary = File(root, canaryName).apply { writeText("keep") }
+            val link = File(home, "link")
+            if (runCatching { Files.createSymbolicLink(link.toPath(), outside.toPath()) }.isFailure) return
+
             val traversalPath = File(home, "link/../$canaryName")
 
             val result = deleteUserPath(traversalPath, home)
