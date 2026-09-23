@@ -304,7 +304,7 @@ private fun KMasteryDef.toProto(): PMasteryDef {
     return b.build()
 }
 
-private fun KProgress.toProto(executionId: String): PProgress {
+internal fun KProgress.toProto(executionId: String): PProgress {
     val b =
         PProgress
             .newBuilder()
