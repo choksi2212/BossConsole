@@ -408,9 +408,24 @@ private fun outcomeToStrategy(outcome: RepairOutcome): RepairStrategy =
                 RepairStrategy.REPAIR_STRATEGY_RESTART
             }
         }
-        is RepairOutcome.StateReset -> RepairStrategy.REPAIR_STRATEGY_RESET_STATE
-        is RepairOutcome.ConfigPatched -> RepairStrategy.REPAIR_STRATEGY_PATCH_CONFIG
-        is RepairOutcome.CodeFixProposed -> RepairStrategy.REPAIR_STRATEGY_PATCH_SOURCE
-        is RepairOutcome.Escalated -> RepairStrategy.REPAIR_STRATEGY_ESCALATE
-        is RepairOutcome.Failed -> RepairStrategy.REPAIR_STRATEGY_ESCALATE
+
+        is RepairOutcome.StateReset -> {
+            RepairStrategy.REPAIR_STRATEGY_RESET_STATE
+        }
+
+        is RepairOutcome.ConfigPatched -> {
+            RepairStrategy.REPAIR_STRATEGY_PATCH_CONFIG
+        }
+
+        is RepairOutcome.CodeFixProposed -> {
+            RepairStrategy.REPAIR_STRATEGY_PATCH_SOURCE
+        }
+
+        is RepairOutcome.Escalated -> {
+            RepairStrategy.REPAIR_STRATEGY_ESCALATE
+        }
+
+        is RepairOutcome.Failed -> {
+            RepairStrategy.REPAIR_STRATEGY_ESCALATE
+        }
     }
