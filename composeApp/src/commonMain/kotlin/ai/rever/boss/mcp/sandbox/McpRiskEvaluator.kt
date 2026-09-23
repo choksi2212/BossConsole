@@ -249,7 +249,14 @@ class DefaultMcpRiskEvaluator : McpRiskEvaluator {
     }
 
     companion object {
-        private val APPLY_TEMPLATE_TOOLS =
+        /**
+         * Tool names the runtime-risk escalation applies to. Currently only
+         * `apply_template` / `workspace_apply_template`: the templates those tools launch can run
+         * `claude --dangerously-skip-permissions` and must not be silently ALLOWed by a saved
+         * rule. Other tools do not trigger the runtime escalation - their classification is
+         * fixed and resolved at policyFor time.
+         */
+        val APPLY_TEMPLATE_TOOLS =
             setOf(
                 "apply_template",
                 "workspace_apply_template",

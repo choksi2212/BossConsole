@@ -2,6 +2,7 @@ package ai.rever.boss.mcp
 
 import ai.rever.boss.components.bars.horizontal.StatusMessageManager
 import ai.rever.boss.mcp.sandbox.DefaultMcpRiskEvaluator
+import ai.rever.boss.mcp.sandbox.McpRiskEvaluator
 import ai.rever.boss.mcp.sandbox.McpRiskLevel
 import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.api.McpToolDefinition
@@ -385,6 +386,9 @@ internal class McpToolRegistryCore(
     val policyEngine: McpPolicyEngine = McpPolicyEngine(),
     val approvalBus: McpApprovalBus = McpApprovalBus(),
     val ledger: McpOperationLedger = McpOperationLedger(),
+    // Configured risk evaluator, not a fresh `DefaultMcpRiskEvaluator()` per call - tests and a
+    // future override rely on the one this core was built with.
+    private val riskEvaluator: McpRiskEvaluator = DefaultMcpRiskEvaluator(),
 ) {
     private val logger = BossLogger.forComponent("McpToolRegistry")
 
@@ -760,9 +764,13 @@ internal class McpToolRegistryCore(
         // HIGH one (Claude Code / Code Review launch `claude --dangerously-skip-permissions`).
         // Force ASK whenever the resolved runtime risk crosses the line so a "Trust This Plugin"
         // or saved rule on `apply_template` cannot upgrade itself into a permission-skipping
-        // agent invocation without the operator seeing the prompt.
-        if (policy == McpPolicyAction.ALLOW) {
-            val runtimeAssessment = DefaultMcpRiskEvaluator().evaluateRisk(toolName, args)
+        // agent invocation without the operator seeing the prompt. The escalation is scoped to
+        // apply_template (and its alias) - every other tool's risk is fixed and resolved at
+        // policyFor time, so re-checking them here would be a wider rule change than this PR.
+        if (policy == McpPolicyAction.ALLOW &&
+            toolName.removePrefix(McpToolRegistryImpl.CLIENT_TOOL_PREFIX) in DefaultMcpRiskEvaluator.APPLY_TEMPLATE_TOOLS
+        ) {
+            val runtimeAssessment = riskEvaluator.evaluateRisk(toolName, args)
             if (runtimeAssessment.level >= McpRiskLevel.HIGH) {
                 policy = McpPolicyAction.ASK
             }
@@ -984,7 +992,7 @@ internal class McpToolRegistryCore(
                             tool.definition.name,
                             tool.providerId,
                             McpArgumentSanitizer.parseArguments(args.raw),
-                            riskAssessment = DefaultMcpRiskEvaluator().evaluateRisk(tool.definition.name, args),
+                            riskAssessment = riskEvaluator.evaluateRisk(tool.definition.name, args),
                             declaredReadOnly = tool.definition.readOnly,
                         )
                 ) {
