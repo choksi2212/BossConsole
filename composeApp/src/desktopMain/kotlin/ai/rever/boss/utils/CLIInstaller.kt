@@ -1,17 +1,17 @@
 package ai.rever.boss.utils
 
-import java.io.File
-import java.nio.file.Files
-import java.nio.file.attribute.PosixFilePermission
 import com.sun.jna.Memory
 import com.sun.jna.Native
 import com.sun.jna.Pointer
 import com.sun.jna.platform.win32.User32
 import com.sun.jna.platform.win32.WinDef
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermission
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 actual object CLIInstaller {
     private val logger = BossLogger.forComponent("CLIInstaller")
@@ -580,6 +580,7 @@ actual object CLIInstaller {
      * would have to be told that string from another channel. JNA is already
      * on the composeApp classpath for the macOS Launch Services binding.
      */
+    @Suppress("TooGenericExceptionCaught") // JNA's User32 surface can raise RuntimeException for any native failure; the broadcast is best-effort.
     private fun broadcastEnvironmentChange() {
         try {
             val user32 = User32.INSTANCE
