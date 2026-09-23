@@ -68,6 +68,54 @@ class FileSystemDataProviderDeleteTest {
     }
 
     @Test
+    fun `delete through a symlink to outside home is refused on every platform`() {
+        // Pins fluck-boss's #1119 follow-up: `home/link/somefile` where `link` points at a
+        // directory outside home. On every platform this path stays an escape after lexical
+        // normalization (Windows does NOT cancel the link via `..` here, because there is no
+        // `..`), so the refusal is expected everywhere and the mutation check is shared.
+        //
+        // With the fix the containment check resolves `home/link` through the symlink first,
+        // sees `outside`, refuses the call, and the target file survives. Revert the fix and
+        // the walk follows the link and erases the target on both POSIX and Windows - this
+        // test's `outsideTarget.exists()` assertion is the one that goes red.
+        val root = createTempDirectory("filesystem-provider-linkaccess").toFile()
+        try {
+            val home = File(root, "home").apply { mkdirs() }
+            val outside = File(root, "outside").apply { mkdirs() }
+            val outsideTarget = File(outside, "kept.txt").apply { writeText("untouched") }
+            val link = File(home, "link-to-outside")
+            assumeTrue(
+                runCatching { Files.createSymbolicLink(link.toPath(), outside.toPath()) }.isSuccess,
+                "symlink creation unavailable on this platform",
+            )
+
+            val result = deleteUserPath(File(home, "link-to-outside/kept.txt"), home)
+
+            assertTrue(
+                result.isFailure,
+                "a delete that traverses a symlink out of home must be refused; got $result",
+            )
+            assertIs<SecurityException>(result.exceptionOrNull())
+            assertTrue(
+                outsideTarget.exists(),
+                "target file at $outsideTarget must survive a refused link-traversal",
+            )
+            assertEquals(
+                "untouched",
+                outsideTarget.readText(),
+                "target file at $outsideTarget must keep its contents after a refused link-traversal",
+            )
+            // The link itself stays put - the refusal is at the containment check, not an
+            // unlink. Removing the link as a side effect would be a separate containment
+            // violation: the link is inside home, but its target is not, and a refused call
+            // should leave the user's filesystem exactly as it found it.
+            assertTrue(link.exists(), "refusing a delete must not remove the link itself")
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `link-then-dotdot traversal preserves the safety invariant on every platform`() {
         // Pins the review finding on the #1118 PR: a request like `home/link/../<sibling>` has
         // an OS-resolved target that lives outside home (the link points to `outside`, so
