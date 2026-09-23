@@ -35,6 +35,7 @@ import ai.rever.boss.components.plugin.PluginUpdateAlreadyInProgressException
 import ai.rever.boss.components.plugin.PluginUpdateBridge
 import ai.rever.boss.components.plugin.openTopOfMindQuickSwitcher
 import ai.rever.boss.components.plugin.providers.GenericDialogHostContent
+import ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl
 import ai.rever.boss.components.plugin.tab_types.fluck.FluckTabInfo
 import ai.rever.boss.components.registery.PanelComponentStoreRegistry
 import ai.rever.boss.components.registery.TabTypeId
@@ -596,6 +597,10 @@ internal fun BossAppDialogs(state: BossAppState) {
                         MenuActionsHandler.triggerCloseTab(windowId)
                     }
 
+                    KeymapActions.BROWSER_PRINT -> {
+                        MenuActionsHandler.triggerPrintBrowser(windowId)
+                    }
+
                     KeymapActions.BROWSER_RELOAD -> {
                         MenuActionsHandler.triggerReloadBrowser(windowId)
                     }
@@ -847,6 +852,32 @@ internal fun BossAppDialogs(state: BossAppState) {
         )
     }
 
+    // The same question for a Space whose terminal tabs carry commands.
+    SpaceLoadPrompt(state)
+
+    // A plugin action that reached BOSS from outside the operator's own `boss`
+    // invocation. Nothing has been dispatched yet: this prompt is the only path
+    // from such a link to the plugin's registered handler.
+    state.pluginActionApprovals.current?.let { pending ->
+        PluginActionApprovalDialog(
+            request = pending,
+            pendingCount = pluginActionBacklog(state.pluginActionApprovals),
+            onDismiss = { state.pluginActionApprovals.consume(pending) },
+            onConfirm = confirm@{
+                // Consume before dispatch; the dialog also calls onDismiss after onConfirm.
+                // A stale callback must never dispatch or dismiss the next request.
+                if (!state.pluginActionApprovals.consume(pending)) return@confirm
+                logger.info(
+                    LogCategory.SYSTEM,
+                    "Operator confirmed an externally requested plugin action",
+                    mapOf("windowId" to windowId, "handlerId" to pending.handlerId, "action" to pending.action),
+                )
+                val handled = DeepLinkActionRegistryImpl.dispatch(pending.handlerId, pending.action, pending.params)
+                if (!handled) StatusMessageManager.showMessage("Plugin action was not handled")
+            },
+        )
+    }
+
     // Interactive approval dialog for governed MCP tools invoked by an AI agent
     state.pendingMcpApproval?.let { approvalRequest ->
         val pendingList by McpToolRegistryImpl.approvalBus.pendingList.collectAsState()
@@ -863,6 +894,9 @@ internal fun BossAppDialogs(state: BossAppState) {
             },
             onDeny = { reason, persistPolicy ->
                 McpToolRegistryImpl.approvalBus.deny(approvalRequest.id, reason, persistPolicy)
+            },
+            onDenyAllPending = {
+                McpToolRegistryImpl.approvalBus.denyAllPending()
             },
         )
     }
@@ -1263,6 +1297,45 @@ internal fun BossAppDialogs(state: BossAppState) {
 
     // Generic dialog host for plugin dialogs
     GenericDialogHostContent()
+}
+
+@Composable
+private fun SpaceLoadPrompt(state: BossAppState) {
+    val logger = state.logger
+    state.pendingSpaceLoad?.let { pending ->
+        SpaceLoadApprovalDialog(
+            request = pending,
+            onDismiss = {
+                if (state.pendingSpaceLoad === pending) state.pendingSpaceLoad = null
+            },
+            onConfirm = confirm@{
+                // Clear before applying; the dialog also calls onDismiss after onConfirm, and a
+                // stale callback must never apply or dismiss a later request.
+                if (state.pendingSpaceLoad !== pending) return@confirm
+                state.pendingSpaceLoad = null
+                logger.info(
+                    LogCategory.WORKSPACE,
+                    "Operator confirmed an externally requested Space load",
+                    mapOf("windowId" to state.windowId, "commands" to pending.commands.size),
+                )
+                state.coroutineScope.launch {
+                    try {
+                        workspaceManager.loadWorkspace(pending.workspace)
+                        applyWorkspace(pending.workspace, state.splitViewState, state.windowProjectState)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        logger.warn(
+                            LogCategory.WORKSPACE,
+                            "Confirmed Space load failed",
+                            mapOf("path" to pending.workspacePath),
+                            error = e,
+                        )
+                    }
+                }
+            },
+        )
+    }
 }
 
 @Composable

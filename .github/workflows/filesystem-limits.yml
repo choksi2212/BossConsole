@@ -1,8 +1,11 @@
 name: Filesystem resource limits
 
 on:
+  # PRs validate dev/develop integration; main pushes validate the merged tree.
+  # Do not add dev here: dev -> main would enqueue the same macOS work twice.
+  # For a branch without a PR, use workflow_dispatch. See docs/ci-validation.md.
   push:
-    branches: [main, develop, dev]
+    branches: [main]
     paths:
       - 'modules/boss-service-filesystem/**'
       - 'modules/boss-ipc/src/main/proto/boss/ipc/v1/services/filesystem.proto'
@@ -15,6 +18,11 @@ on:
       - 'plugin-platform/plugin-api-ipc/**'
       - '.github/workflows/filesystem-limits.yml'
   workflow_dispatch:
+
+# Cancel only obsolete PR validation; never cancel main or manual validation.
+concurrency:
+  group: filesystem-limits-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

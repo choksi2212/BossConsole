@@ -8,6 +8,7 @@ import ai.rever.boss.components.events.FileEventBus
 import ai.rever.boss.components.events.GitTerminalEventBus
 import ai.rever.boss.components.events.NavigationTargetBus
 import ai.rever.boss.components.events.PanelEventBus
+import ai.rever.boss.components.events.PluginActionEventBus
 import ai.rever.boss.components.events.RunEventBus
 import ai.rever.boss.components.events.RunnerTerminalEventBus
 import ai.rever.boss.components.events.TabEventBus
@@ -15,6 +16,8 @@ import ai.rever.boss.components.events.TerminalEventBus
 import ai.rever.boss.components.events.TerminalLinkEventBus
 import ai.rever.boss.components.events.URLEventBus
 import ai.rever.boss.components.events.WorkspaceEventBus
+import ai.rever.boss.components.events.WorkspaceLoadEvent
+import ai.rever.boss.components.events.shouldClaimPluginAction
 import ai.rever.boss.components.plugin.DependentRestartEventBus
 import ai.rever.boss.components.plugin.MissingHandlerPluginEventBus
 import ai.rever.boss.components.plugin.PanelIds
@@ -23,9 +26,13 @@ import ai.rever.boss.components.plugin.claimMissingDependencyForWindow
 import ai.rever.boss.components.plugin.providers.createApplicationEventBus
 import ai.rever.boss.components.plugin.resolveRegisteredPanelId
 import ai.rever.boss.components.window_panel.SplitViewState
+import ai.rever.boss.components.workspaces.LayoutWorkspace
+import ai.rever.boss.components.workspaces.SpaceLoadDisposition
 import ai.rever.boss.components.workspaces.WorkspaceSerializer
 import ai.rever.boss.components.workspaces.applyWorkspace
+import ai.rever.boss.components.workspaces.spaceLoadDisposition
 import ai.rever.boss.components.workspaces.spaceToOpen
+import ai.rever.boss.components.workspaces.terminalCommands
 import ai.rever.boss.components.workspaces.workspaceManager
 import ai.rever.boss.dashboard.DashboardStatsManager
 import ai.rever.boss.git.GitTerminalService
@@ -304,6 +311,47 @@ internal fun BossAppEventBusEffects(state: BossAppState) {
 
         // Note: We DON'T call markReady() here - that happens AFTER Last Session loads
         // just like URL handler, to prevent terminals from being destroyed by clearAllPanels()
+    }
+
+    // A plugin action link that arrived from outside the operator's own `boss`
+    // invocation. Nothing has been dispatched: the prompt in BossAppDialogs is
+    // what reaches the plugin's handler, and only if the operator agrees.
+    LaunchedEffect(windowId) {
+        PluginActionEventBus.confirmEvents.collect { event ->
+            // The bus offers every retained request to every window; this window takes only
+            // the ones routing says are its own. An unclaimed request whose preferred window has
+            // closed falls to whichever window claims it next; once claimed, it lives in this
+            // window's queue and dies with it.
+            val targetWindowOpen = event.sourceWindowId?.let { WindowFocusManager.isWindowOpen(it) } == true
+            if (!shouldClaimPluginAction(event, windowId, targetWindowOpen)) return@collect
+            // One at a time: take another request only once nothing is on screen. A claimed
+            // request dies with this window, so leaving the rest retained means closing it
+            // abandons at most the one prompt actually shown - never the whole registry. See
+            // PluginActionApprovalQueue.canClaim. Silent on purpose: this is re-evaluated every
+            // scan while a dialog is open, and the request is simply still waiting.
+            if (!state.pluginActionApprovals.canClaim) return@collect
+            // Claim before enqueuing, and enqueue without suspending in between, so no other
+            // window can also show this request.
+            if (!PluginActionEventBus.claim(event)) return@collect
+            val request = PendingPluginAction(event.handlerId, event.action, event.params)
+            if (!state.pluginActionApprovals.enqueue(request)) {
+                // Unreachable - canClaim just held, on this thread, with no suspension since.
+                // But claim() has already taken the request off the bus and the forwarding
+                // caller has been told it was queued, so this is the one point in the design
+                // where a request could vanish without a trace. Say so rather than drop it.
+                logger.warn(
+                    LogCategory.SYSTEM,
+                    "A claimed plugin action could not be queued and was lost",
+                    mapOf("windowId" to windowId, "handlerId" to event.handlerId, "action" to event.action),
+                )
+                return@collect
+            }
+            logger.info(
+                LogCategory.SYSTEM,
+                "Holding an externally requested plugin action for confirmation",
+                mapOf("windowId" to windowId, "handlerId" to event.handlerId, "action" to event.action),
+            )
+        }
     }
 
     // A delivered security prompt belongs to exactly one window.
@@ -610,10 +658,7 @@ internal fun BossAppEventBusEffects(state: BossAppState) {
                     if (file.exists() && file.canRead()) {
                         val json = file.readText()
                         val workspace = WorkspaceSerializer.deserialize(json)
-
-                        // Use the same loading pattern as the UI
-                        workspaceManager.loadWorkspace(workspace)
-                        applyWorkspace(workspace, splitViewState, windowProjectState)
+                        loadRequestedSpace(state, event, workspace)
                     }
                 } catch (e: Exception) {
                     logger.warn(
@@ -1190,5 +1235,55 @@ private fun openRegisteredTabType(
         StatusMessageManager.showMessage("Could not open ${info.displayName} here")
     } else {
         tabs.addTab(tabInfo)
+    }
+}
+
+/**
+ * Loads a Space a [WorkspaceLoadEvent] asked for, unless it needs the operator first.
+ *
+ * Applying a Space types its terminal tabs' commands into shells, so a request from outside the
+ * operator's own `boss` invocation that carries any is held for [SpaceLoadPrompt]'s confirmation
+ * rather than applied - the rule `boss://terminal?command=` already follows.
+ */
+private suspend fun loadRequestedSpace(
+    state: BossAppState,
+    event: WorkspaceLoadEvent,
+    workspace: LayoutWorkspace,
+) {
+    val logger = state.logger
+    val commands = workspace.terminalCommands()
+    when (spaceLoadDisposition(commands, event.requiresConfirmation)) {
+        SpaceLoadDisposition.LOAD -> {
+            // Use the same loading pattern as the UI
+            workspaceManager.loadWorkspace(workspace)
+            applyWorkspace(workspace, state.splitViewState, state.windowProjectState)
+        }
+
+        SpaceLoadDisposition.CONFIRM -> {
+            if (state.pendingSpaceLoad == null) {
+                state.pendingSpaceLoad = PendingSpaceLoad(workspace, event.workspacePath, commands)
+                logger.info(
+                    LogCategory.WORKSPACE,
+                    "Holding an externally requested Space load for confirmation",
+                    mapOf("windowId" to state.windowId, "commands" to commands.size),
+                )
+            } else {
+                logger.warn(
+                    LogCategory.WORKSPACE,
+                    "External Space load refused: another is awaiting confirmation",
+                    mapOf("path" to event.workspacePath),
+                )
+                StatusMessageManager.showMessage("Space not loaded: another Space is awaiting confirmation")
+            }
+        }
+
+        SpaceLoadDisposition.REJECT -> {
+            logger.warn(
+                LogCategory.WORKSPACE,
+                "External Space load refused: its terminal commands cannot all be shown for confirmation",
+                mapOf("path" to event.workspacePath, "commands" to commands.size),
+            )
+            StatusMessageManager.showMessage("Space not loaded: its terminal commands cannot be confirmed safely")
+        }
     }
 }

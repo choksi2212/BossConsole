@@ -1,8 +1,11 @@
 name: Authenticated IPC boundaries
 
 on:
+  # PRs validate dev/develop integration; main pushes validate the merged tree.
+  # Do not add dev here: dev -> main would enqueue the same macOS work twice.
+  # For a branch without a PR, use workflow_dispatch. See docs/ci-validation.md.
   push:
-    branches: [main, develop, dev]
+    branches: [main]
     paths:
       - 'modules/boss-ipc/**'
       - 'modules/boss-process-manager/**'
@@ -13,7 +16,7 @@ on:
       - 'composeApp/src/desktopTest/kotlin/ai/rever/boss/kernel/**'
       - '.github/workflows/authenticated-ipc.yml'
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, develop]
     paths:
       - 'modules/boss-ipc/**'
       - 'modules/boss-process-manager/**'

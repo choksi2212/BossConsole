@@ -922,12 +922,42 @@ internal fun encodeMcpTools(tools: List<ai.rever.boss.plugin.api.RegisteredMcpTo
         },
     ).toString()
 
-private fun parseToolSchema(schema: String): kotlinx.serialization.json.JsonElement =
-    try {
-        Json.parseToJsonElement(schema)
-    } catch (_: IllegalArgumentException) {
-        JsonPrimitive(schema)
+private const val MAX_CACHED_TOOL_SCHEMAS = 128
+private const val MAX_CACHED_TOOL_SCHEMA_CHARS = 64 * 1024
+private typealias ToolSchemaCacheEntry = MutableMap.MutableEntry<String, kotlinx.serialization.json.JsonElement>
+
+/**
+ * Bounded because schemas are supplied by reloadable plugins and can change on every registration.
+ * IPC callers can only read the registry and cannot add keys. Schemas over 64 KiB bypass retention,
+ * bounding retained source text to roughly 8 MiB plus parsed-tree overhead.
+ */
+private val schemaCache =
+    object : LinkedHashMap<String, kotlinx.serialization.json.JsonElement>(MAX_CACHED_TOOL_SCHEMAS, 0.75f, true) {
+        override fun removeEldestEntry(eldest: ToolSchemaCacheEntry): Boolean = size > MAX_CACHED_TOOL_SCHEMAS
     }
+
+internal fun clearToolSchemaCache() = synchronized(schemaCache) { schemaCache.clear() }
+
+internal fun parseToolSchema(schema: String): kotlinx.serialization.json.JsonElement {
+    fun parse() =
+        try {
+            Json.parseToJsonElement(schema)
+        } catch (_: IllegalArgumentException) {
+            JsonPrimitive(schema)
+        }
+
+    return if (schema.length > MAX_CACHED_TOOL_SCHEMA_CHARS) {
+        parse()
+    } else {
+        val cached = synchronized(schemaCache) { schemaCache[schema] }
+        cached ?: run {
+            val parsed = parse()
+            synchronized(schemaCache) {
+                schemaCache[schema] ?: parsed.also { schemaCache[schema] = it }
+            }
+        }
+    }
+}
 
 internal fun encodeMcpResult(
     toolName: String,
@@ -981,6 +1011,8 @@ private fun acceptNextClient(
     }
 
 private fun pluginActionResponse(verdict: kotlinx.coroutines.Deferred<Boolean>?): String {
+    // Null is the queued verdict for an external action held for confirmation. Nothing has run,
+    // but the running instance accepted responsibility for asking the operator.
     if (verdict == null) return RESPONSE_OK
     val handled = kotlinx.coroutines.runBlocking { awaitPluginAction(verdict, OPEN_ACTION_TIMEOUT_MS) }
     return when (handled) {
@@ -1471,10 +1503,12 @@ object SingleInstanceManager {
      *   process from the OS.
      * @return true if the running instance acknowledged it. For most links this
      *   still means only "queued" (fire-and-forget, as before); for a
-     *   `boss://plugin?id=…&action=…` link it now means the registered handler
-     *   reported the action handled. An unregistered handler id, a declined
-     *   action, or an unknown outcome at timeout returns false. This is not a
-     *   guarantee that asynchronous work started by a handler has completed.
+     *   `boss://plugin?id=…&action=…` link from [DeepLinkOrigin.OPERATOR_CLI] it
+     *   means the registered handler reported the action handled. For the default
+     *   external origin it means the action was queued for confirmation and has not
+     *   run. A refused action, an unregistered handler on the operator path, or an
+     *   unknown outcome at timeout returns false. This is not a guarantee that
+     *   asynchronous work started by a handler has completed.
      */
     fun sendToExistingInstance(
         url: String,

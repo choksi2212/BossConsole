@@ -1,16 +1,17 @@
 name: Native file boundaries
 
 on:
+  # PRs validate dev/develop integration; main pushes validate the merged tree.
+  # Do not add dev here: dev -> main would enqueue the same macOS work twice.
+  # For a branch without a PR, use workflow_dispatch. See docs/ci-validation.md.
   push:
-    # Match the main build: PR merge trees cover feature branches, and pushes
-    # cover integration branches. Avoid two five-job matrices per PR update.
-    branches: [main, develop, dev]
+    branches: [main]
     paths:
       - 'modules/boss-native-files/**'
       - 'modules/boss-process-manager/**'
       - '.github/workflows/native-file-boundaries.yml'
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, develop]
     paths:
       - 'modules/boss-native-files/**'
       - 'modules/boss-process-manager/**'

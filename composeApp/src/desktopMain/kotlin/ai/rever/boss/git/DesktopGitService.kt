@@ -28,6 +28,7 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.IOException
 import java.io.InputStreamReader
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -176,6 +177,15 @@ actual object GitService {
                     } else {
                         branchName
                     }
+                // The STRIPPED name is what git receives, and it has not been
+                // through the gate above: `origin/-f` is a legal ref as a whole,
+                // but it strips to `-f`, which checkout would read as a FLAG -
+                // `git checkout -f --` discards every uncommitted modification
+                // in the tree, planted by anyone who can push a branch name.
+                // Gate the name that will actually run.
+                if (!isSafeRefName(localName)) {
+                    return@withContext GitError("Refused an unsafe ref: branch")
+                }
                 // `--` terminates the revision list: without it `checkout <name>`
                 // on a name that is also a path checks OUT THE PATH, discarding
                 // that file's uncommitted changes.
@@ -307,28 +317,66 @@ actual object GitService {
                 val repoUrl = parseRemoteUrl(remoteUrl) ?: return@withContext null
 
                 // Construct the PR creation URL based on the platform
-                when {
-                    repoUrl.contains("github.com") -> {
-                        // GitHub: https://github.com/owner/repo/compare/branch?expand=1
-                        "$repoUrl/compare/$branch?expand=1"
-                    }
-
-                    repoUrl.contains("gitlab.com") || repoUrl.contains("gitlab") -> {
-                        // GitLab: https://gitlab.com/owner/repo/-/merge_requests/new?merge_request[source_branch]=branch
-                        "$repoUrl/-/merge_requests/new?merge_request[source_branch]=$branch"
-                    }
-
-                    repoUrl.contains("bitbucket.org") -> {
-                        // Bitbucket: https://bitbucket.org/owner/repo/pull-requests/new?source=branch
-                        "$repoUrl/pull-requests/new?source=$branch"
-                    }
-
-                    else -> {
-                        null
-                    }
-                }
+                buildCreatePRUrl(repoUrl, branch)
             } catch (e: Exception) {
                 logger.warn(LogCategory.SYSTEM, "Error getting PR URL", error = e)
+                null
+            }
+        }
+
+    /**
+     * Percent-encodes [branch] for interpolation into a URL *path*.
+     *
+     * [URLEncoder] already escapes every reserved byte, but it follows query-string
+     * rules and emits `+` for spaces, which a URL path would keep as a literal `+`.
+     * Each `/`-separated segment of the branch is therefore encoded separately and
+     * `+` is rewritten to `%20`, while `/` itself stays the path separator so branch
+     * names like `feature/login` keep their canonical compare URLs.
+     */
+    private fun encodeBranchForPath(branch: String): String =
+        branch.split("/").joinToString("/") { segment ->
+            URLEncoder.encode(segment, Charsets.UTF_8).replace("+", "%20")
+        }
+
+    /**
+     * Builds the PR/compare creation URL for the provider matched by [repoUrl],
+     * percent-encoding [branch] before interpolation.
+     *
+     * Git refnames may legally contain `#`, `&`, `%`, quotes and non-ASCII, all of
+     * which corrupt a URL when interpolated raw: `#` starts the fragment (the
+     * browser then opens the compare page for a truncated branch), `&` spawns
+     * phantom query parameters, and non-ASCII makes the URL invalid. Encoding is
+     * position-aware:
+     * - GitHub places the branch in the URL *path* -> [encodeBranchForPath].
+     * - GitLab and Bitbucket place the branch in the *query string*, where
+     *   application/x-www-form-urlencoded rules apply -> [URLEncoder.encode].
+     *
+     * Returns null when the provider is not recognized.
+     */
+    internal fun buildCreatePRUrl(
+        repoUrl: String,
+        branch: String,
+    ): String? =
+        when {
+            repoUrl.contains("github.com") -> {
+                // GitHub: .../compare/<branch>?expand=1
+                val encodedBranch = encodeBranchForPath(branch)
+                "$repoUrl/compare/$encodedBranch?expand=1"
+            }
+
+            repoUrl.contains("gitlab.com") || repoUrl.contains("gitlab") -> {
+                // GitLab: .../-/merge_requests/new?merge_request[source_branch]=<branch>
+                val encodedBranch = URLEncoder.encode(branch, Charsets.UTF_8)
+                "$repoUrl/-/merge_requests/new?merge_request[source_branch]=$encodedBranch"
+            }
+
+            repoUrl.contains("bitbucket.org") -> {
+                // Bitbucket: .../pull-requests/new?source=<branch>
+                val encodedBranch = URLEncoder.encode(branch, Charsets.UTF_8)
+                "$repoUrl/pull-requests/new?source=$encodedBranch"
+            }
+
+            else -> {
                 null
             }
         }
@@ -486,9 +534,13 @@ actual object GitService {
         // when the panel hands it back as a pathspec (stage/discard/diffFile).
         // Same decoder parseNameStatus uses - without it the two parsers
         // report two spellings for the same file.
+        // Split on the FIRST arrow only (limit = 2): a new path may itself
+        // contain " -> " (plain ASCII, so git never C-quotes it), and an
+        // unlimited split would keep only the chunk between the first two
+        // arrows - a path that resolves to nothing when used as a pathspec.
         val (path, originalPath) =
             if (pathPart.contains(" -> ")) {
-                val parts = pathPart.split(" -> ")
+                val parts = pathPart.split(" -> ", limit = 2)
                 UnifiedDiffParser.cUnquote(parts[1]) to UnifiedDiffParser.cUnquote(parts[0])
             } else {
                 UnifiedDiffParser.cUnquote(pathPart) to null
@@ -518,6 +570,13 @@ actual object GitService {
         )
     }
 
+    /**
+     * Maps one `git status --porcelain=v1` status char to its [GitFileStatusType].
+     * 'T' (typechange: regular file <-> symlink) yields MODIFIED - the same answer
+     * [statusTypeFromCode] gives the identical code in `git diff --name-status`,
+     * so a typechanged path keeps one spelling across both parsers instead of the
+     * porcelain row vanishing from both the staged and the unstaged lists (#1169).
+     */
     internal fun parseStatusChar(c: Char): GitFileStatusType? =
         when (c) {
             'M' -> GitFileStatusType.MODIFIED
@@ -525,6 +584,7 @@ actual object GitService {
             'D' -> GitFileStatusType.DELETED
             'R' -> GitFileStatusType.RENAMED
             'C' -> GitFileStatusType.COPIED
+            'T' -> GitFileStatusType.MODIFIED
             '?' -> GitFileStatusType.UNTRACKED
             '!' -> GitFileStatusType.IGNORED
             'U' -> GitFileStatusType.UNMERGED
@@ -1483,7 +1543,11 @@ actual object GitService {
         return list
     }
 
-    private fun statusTypeFromCode(code: String): GitFileStatusTypeData? =
+    // `git diff --name-status` code -> status type. Kept in lock-step with
+    // [parseStatusChar]: a code one parser models, the other must answer with
+    // the same type (#1169). internal, like the porcelain parsers, so tests
+    // can feed it raw codes and pin that parity.
+    internal fun statusTypeFromCode(code: String): GitFileStatusTypeData? =
         when (code.firstOrNull()) {
             'M' -> GitFileStatusTypeData.MODIFIED
             'A' -> GitFileStatusTypeData.ADDED

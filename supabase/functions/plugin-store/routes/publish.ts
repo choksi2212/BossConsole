@@ -145,8 +145,12 @@ publish.openapi(publishPluginRoute, async (ctx) => {
       return ctx.json({ success: false, error: 'Plugin ID already exists' }, 400)
     }
 
-    // Get author display name - use custom name if provided, otherwise derive from email
-    const authorName = body.authorName || await getUserDisplayName(supabase, user.userId)
+    // The display name is ALWAYS derived from the authenticated user. A
+    // publisher-supplied authorName is free text rendered as "Published by
+    // ..." and returned in store JSON, so honouring it let any publisher
+    // claim "BOSS Team" or an org they do not belong to. The field stays in
+    // the request schema for compatibility but is ignored.
+    const authorName = await getUserDisplayName(supabase, user.userId)
 
     // Create plugin
     const result = await createPlugin(
@@ -759,7 +763,10 @@ publish.openapi(publishFromGitHubRoute, async (ctx) => {
     } else {
       // Create new plugin
       isNewPlugin = true
-      const authorName = manifest.author || await getUserDisplayName(supabase, user.userId)
+      // manifest.author is publisher-controlled text from plugin.json - the
+      // same impersonation vector as a request authorName - so the display
+      // name is derived from the authenticated user, never the manifest.
+      const authorName = await getUserDisplayName(supabase, user.userId)
 
       // Which organisation owns it, and whether they may publish for it at all. The preflight
       // above only established that they can publish SOMEWHERE.
@@ -1078,7 +1085,10 @@ publish.openapi(publishFromGitHubMetadataRoute, async (ctx) => {
       })
     } else {
       isNewPlugin = true
-      const authorName = manifest.author || await getUserDisplayName(supabase, user.userId)
+      // Same rule as the other publish paths: manifest.author is
+      // publisher-controlled text, so the display name is derived from the
+      // authenticated user.
+      const authorName = await getUserDisplayName(supabase, user.userId)
 
       // Which organisation owns it, and whether they may publish for it at all. The preflight
       // above only established that they can publish SOMEWHERE.

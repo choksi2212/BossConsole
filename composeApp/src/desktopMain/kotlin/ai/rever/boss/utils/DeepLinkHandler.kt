@@ -2,6 +2,7 @@ package ai.rever.boss.utils
 
 import ai.rever.boss.cli.CLISecurityValidator
 import ai.rever.boss.components.events.PanelEventBus
+import ai.rever.boss.components.events.PluginActionEventBus
 import ai.rever.boss.components.plugin.PanelIds
 import ai.rever.boss.components.plugin.panels.left_top.ProjectState
 import ai.rever.boss.plugin.api.PanelId
@@ -195,7 +196,11 @@ actual object DeepLinkHandler {
             try {
                 Desktop.getDesktop().setOpenURIHandler { event ->
                     val uri = event.uri.toString()
-                    logger.info(LogCategory.SYSTEM, "Received deep link (macOS)", mapOf("uri" to LogSanitizer.maskUriParams(uri)))
+                    logger.info(
+                        LogCategory.SYSTEM,
+                        "Received deep link (macOS)",
+                        mapOf("uri" to LogSanitizer.describeUri(uri)),
+                    )
 
                     // Handle http/https URLs for default browser functionality
                     if (uri.startsWith("http://") || uri.startsWith("https://")) {
@@ -239,7 +244,7 @@ actual object DeepLinkHandler {
                         logger.info(
                             LogCategory.SYSTEM,
                             "Received deep link (Windows via Desktop)",
-                            mapOf("uri" to LogSanitizer.maskUriParams(uri)),
+                            mapOf("uri" to LogSanitizer.describeUri(uri)),
                         )
 
                         // Handle http/https URLs for default browser functionality
@@ -266,7 +271,7 @@ actual object DeepLinkHandler {
             try {
                 Desktop.getDesktop().setOpenURIHandler { event ->
                     val uri = event.uri.toString()
-                    logger.info(LogCategory.SYSTEM, "Received deep link", mapOf("uri" to LogSanitizer.maskUriParams(uri)))
+                    logger.info(LogCategory.SYSTEM, "Received deep link", mapOf("uri" to LogSanitizer.describeUri(uri)))
 
                     // Handle http/https URLs for default browser functionality
                     if (uri.startsWith("http://") || uri.startsWith("https://")) {
@@ -322,7 +327,7 @@ actual object DeepLinkHandler {
             logger.info(
                 LogCategory.SYSTEM,
                 "Received deep link from command line",
-                mapOf("uri" to LogSanitizer.maskUriParams(link)),
+                mapOf("uri" to LogSanitizer.describeUri(link)),
             )
             // A link in this process's argv is how a registered protocol handler
             // or a file association delivers something somebody asked the OS to
@@ -344,9 +349,10 @@ actual object DeepLinkHandler {
     /**
      * Processes a link whose [origin] the caller can vouch for.
      *
-     * [origin] reaches the handlers that need it (currently `boss://terminal`)
-     * because no later stage can tell an operator's request apart from one some
-     * other program asked the OS to open.
+     * [origin] reaches the handlers that need it - `boss://terminal?command=`,
+     * `boss://workspace` and `boss://plugin?id=…&action=…` - because no later
+     * stage can tell an operator's request apart from one some other program
+     * asked the OS to open.
      *
      * @return a [Deferred] resolving to whether the link was actually acted on,
      *   for the one route that can answer that question today
@@ -363,7 +369,10 @@ actual object DeepLinkHandler {
         logger.info(
             LogCategory.SYSTEM,
             "Processing deep link",
-            mapOf("uri" to LogSanitizer.maskUriParams(uri), "origin" to origin.name),
+            // Every line here that logs a whole link logs its shape only. The query can be another URL
+            // (`boss://url?url=`), a command (`boss://terminal?command=`) or a credential under a name
+            // maskUriParams does not list, and these lines are INFO or WARN.
+            mapOf("uri" to LogSanitizer.describeUri(uri), "origin" to origin.name),
         )
 
         // Routes match the whole host, never a prefix, so an unknown longer host
@@ -378,7 +387,7 @@ actual object DeepLinkHandler {
             logger.warn(
                 LogCategory.SYSTEM,
                 "Deep link host is not routed, passing to the auth/other flow",
-                mapOf("uri" to LogSanitizer.maskUriParams(uri)),
+                mapOf("uri" to LogSanitizer.describeUri(uri)),
             )
             _deepLinkFlow.value = uri
             return null
@@ -407,11 +416,11 @@ actual object DeepLinkHandler {
     ): Deferred<Boolean>? {
         when (host) {
             DeepLinkHost.URL -> handleUrlLink(uri)
-            DeepLinkHost.WORKSPACE -> handleWorkspaceLink(uri)
+            DeepLinkHost.WORKSPACE -> handleWorkspaceLink(uri, origin)
             DeepLinkHost.FILE -> handleFileLink(uri)
             DeepLinkHost.TERMINAL -> handleTerminalLink(uri, origin)
             DeepLinkHost.FOLDER -> handleFolderLink(uri, targetWindowId)
-            DeepLinkHost.PLUGIN -> return handlePluginLink(uri, targetWindowId)
+            DeepLinkHost.PLUGIN -> return handlePluginLink(uri, targetWindowId, origin)
             DeepLinkHost.SPLIT -> handleSplitLink(uri, targetWindowId)
         }
         return null
@@ -563,18 +572,27 @@ actual object DeepLinkHandler {
      * [targetWindowId] is already resolved by [processDeepLink]; the panel event
      * and the action dispatch are emitted on the UI thread.
      *
-     * @return for an action link, a [Deferred] resolving to
+     * [origin] decides whether an action dispatches at all. The `boss://` scheme
+     * is registered with the OS, so an action link is not evidence the operator
+     * asked for anything; see [pluginActionDisposition].
+     *
+     * @return for an action link the operator's own invocation delivered, a
+     *   [Deferred] resolving to
      *   [ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl.dispatch]'s
      *   own verdict (false for an unregistered handler id, a handler that
      *   declines the action, or one that throws — that function never lets an
-     *   exception escape). Null for a panel-open link, which stays fire-and-forget. An action
-     *   without a usable id is rejected with a false verdict.
+     *   exception escape). Null for a panel-open link, which stays fire-and-forget,
+     *   and null for an action held for confirmation: nothing has been dispatched,
+     *   so there is no verdict yet, which is the same "queued" answer
+     *   `boss://terminal` already gives a command it holds. An action without a
+     *   usable id, or one refused outright, is rejected with a false verdict.
      */
     private fun handlePluginLink(
         uri: String,
         targetWindowId: String?,
+        origin: DeepLinkOrigin,
     ): Deferred<Boolean>? {
-        logger.debug(LogCategory.UI, "Handling plugin link")
+        logger.debug(LogCategory.UI, "Handling plugin link", mapOf("origin" to origin.name))
 
         val params = parseQueryParams(uri)
         val panelIdStr = params["id"]?.urlDecode()
@@ -587,30 +605,110 @@ actual object DeepLinkHandler {
         // Action links dispatch to the plugin's DeepLinkActionHandler and do
         // NOT fall through to opening a panel — the two are distinct verbs
         // sharing the `plugin` scheme. Unhandled actions just log (registry
-        // warns); external input, so handlers own validation.
+        // warns); handlers still own validation of the values they accept.
         val action = params["action"]?.urlDecode()
         return if (action != null) {
-            dispatchPluginAction(panelIdStr, action, params)
+            dispatchPluginAction(panelIdStr, action, params, origin, targetWindowId)
         } else {
             openPluginPanel(panelIdStr, targetWindowId)
             null
         }
     }
 
-    /** Runs a `boss://plugin?id=…&action=…` link's action and hands back its real outcome. */
+    /**
+     * Runs a `boss://plugin?id=…&action=…` link's action, holds it for the
+     * operator, or refuses it — see [pluginActionDisposition].
+     *
+     * @return the handler's real outcome for a dispatched action, false for a
+     *   refused one, and null for one held for confirmation (nothing ran, so
+     *   there is no outcome to report yet).
+     */
     private fun dispatchPluginAction(
         handlerId: String,
         action: String,
         params: Map<String, String>,
-    ): Deferred<Boolean> {
+        origin: DeepLinkOrigin,
+        targetWindowId: String?,
+    ): Deferred<Boolean>? {
         val actionParams =
             params
                 .filterKeys { it != "id" && it != "action" }
                 .mapValues { (_, value) -> value.urlDecode() }
-        return scope.async(Dispatchers.Main) {
-            ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl
-                .dispatch(handlerId, action, actionParams)
+        return when (pluginActionDisposition(handlerId, action, actionParams.keys, origin)) {
+            PluginActionDisposition.RUN -> {
+                scope.async(Dispatchers.Main) {
+                    ai.rever.boss.components.plugin.registries.DeepLinkActionRegistryImpl
+                        .dispatch(handlerId, action, actionParams)
+                }
+            }
+
+            PluginActionDisposition.CONFIRM -> {
+                holdPluginActionForConfirmation(handlerId, action, actionParams, targetWindowId)
+            }
+
+            PluginActionDisposition.REJECT -> {
+                logger.warn(
+                    LogCategory.UI,
+                    "Plugin action refused before it could run",
+                    mapOf(
+                        "origin" to origin.name,
+                        "actionLength" to action.length,
+                        "paramKeyCount" to actionParams.size,
+                    ),
+                )
+                CompletableDeferred(false)
+            }
         }
+    }
+
+    /**
+     * Puts an externally delivered action in front of the operator instead of
+     * running it. Returns null — the "queued" answer, because the outcome is not
+     * knowable until they decide, and the single-instance caller's deadline is
+     * far shorter than a person.
+     *
+     * **A null [targetWindowId] holds the action rather than refusing it**, which
+     * is the difference between this and [openPluginPanel]'s early return. The
+     * cold-start path — the OS launching BOSS with a `boss://plugin` link in
+     * `argv`, which `CliBootstrap.dispatchPostLock` processes before
+     * `application {}` has built a window — resolves no window at all, and it is
+     * the *ordinary* way one of these links arrives, not an edge case. Refusing
+     * there meant the operator was never asked about precisely the request this
+     * gate exists to ask about. [PluginActionEventBus] retains it until a window
+     * opens and claims it; nothing runs in the meantime, and nothing can run
+     * without a confirmation, so this holds the security property exactly.
+     *
+     * Retaining before returning is also why [PluginActionEventBus.requestConfirmation]
+     * is not a suspending emit: this function may only answer "queued" for a request
+     * that is genuinely recorded. A full registry is reported as a refusal instead.
+     */
+    private fun holdPluginActionForConfirmation(
+        handlerId: String,
+        action: String,
+        actionParams: Map<String, String>,
+        targetWindowId: String?,
+    ): Deferred<Boolean>? {
+        val retained = PluginActionEventBus.requestConfirmation(handlerId, action, actionParams, targetWindowId)
+        if (!retained) {
+            logger.warn(
+                LogCategory.UI,
+                "External plugin action refused: too many are already awaiting confirmation",
+                mapOf("handlerId" to handlerId),
+            )
+            return CompletableDeferred(false)
+        }
+        logger.info(
+            LogCategory.UI,
+            "Holding an external plugin action for operator confirmation",
+            mapOf(
+                "handlerId" to handlerId,
+                "action" to action,
+                // Distinguishes the cold-start hold from the ordinary one in the log,
+                // because the two differ in when the prompt can possibly appear.
+                "hasWindow" to (targetWindowId != null),
+            ),
+        )
+        return null
     }
 
     /** Opens a `boss://plugin?id=…` link's panel. Fire-and-forget: nothing awaits this today. */
@@ -726,34 +824,52 @@ actual object DeepLinkHandler {
             .getInstance()
             .queueCommand(cliCommand)
 
-        logger.info(LogCategory.BROWSER, "URL command queued", mapOf("url" to url))
+        logger.info(LogCategory.BROWSER, "URL command queued", mapOf("url" to LogSanitizer.describeUri(url)))
     }
 
     /**
      * Handle boss://workspace deep links
      * Examples:
      *   boss://workspace?path=/path/to/workspace.json
+     *
+     * A Space file can carry a terminal tab's `initialCommand`, which is typed into
+     * a shell when the Space is applied - the same thing `boss://terminal?command=`
+     * does. So [origin] travels with the load for the same reason it travels with a
+     * terminal command: a load that did not come from the operator's own `boss`
+     * invocation shows those commands before any of them run.
      */
-    private fun handleWorkspaceLink(uri: String) {
-        logger.debug(LogCategory.WORKSPACE, "Handling workspace link")
+    private fun handleWorkspaceLink(
+        uri: String,
+        origin: DeepLinkOrigin,
+    ) {
+        logger.debug(LogCategory.WORKSPACE, "Handling workspace link", mapOf("origin" to origin.name))
 
-        val params = parseQueryParams(uri)
-        val path = params["path"]?.urlDecode()
-
-        if (path == null) {
+        val cliCommand = workspaceLinkCommand(uri, origin)
+        if (cliCommand == null) {
             logger.warn(LogCategory.WORKSPACE, "Missing 'path' parameter in workspace deep link")
             return
         }
 
         // Queue command via CLI handler
-        val cliCommand =
-            ai.rever.boss.cli.CLICommand
-                .LoadWorkspace(path)
         ai.rever.boss.cli.CLICommandHandler
             .getInstance()
             .queueCommand(cliCommand)
 
-        logger.info(LogCategory.WORKSPACE, "Workspace command queued", mapOf("path" to path))
+        logger.info(
+            LogCategory.WORKSPACE,
+            "Workspace command queued",
+            mapOf("path" to cliCommand.configPath, "origin" to origin.name),
+        )
+    }
+
+    /** The load a `boss://workspace` link asks for, carrying [origin]; null without a `path`. */
+    internal fun workspaceLinkCommand(
+        uri: String,
+        origin: DeepLinkOrigin,
+    ): ai.rever.boss.cli.CLICommand.LoadWorkspace? {
+        val path = parseQueryParams(uri)["path"]?.urlDecode() ?: return null
+        return ai.rever.boss.cli.CLICommand
+            .LoadWorkspace(path, origin)
     }
 
     /**

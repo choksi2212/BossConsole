@@ -126,7 +126,9 @@ site_url = "boss://auth/verify"
 # allow-list entry GoTrue silently drops its redirect_to, and the email template /
 # redirect function can't tell the apps apart. PRODUCTION: add the same URL under
 # Dashboard -> Auth -> URL Configuration -> Redirect URLs.
-additional_redirect_urls = ["boss://auth/verify", "bossterm://auth/verify", "http://127.0.0.1:3000", "https://127.0.0.1:3000"]
+additional_redirect_urls = ["boss://auth/verify", "bossterm://auth/verify", "http://127.0.0.1:3000", "https://127.0.0.1:3000",
+  # live-sessions web page (functions/live-sessions): magic link lands the browser here with tokens in the fragment
+  "https://api.risaboss.com/functions/v1/live-sessions/auth", "https://cli.risaboss.com/auth", "http://127.0.0.1:54321/functions/v1/live-sessions/auth"]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # Path to JWT signing key. DO NOT commit your signing keys file to git.
@@ -404,6 +406,15 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/organisation/deno.json"
 entrypoint = "./functions/organisation/index.ts"
+
+[functions.live-sessions]
+# MUST be false: `/` and `/auth` are header-less browser page loads (the magic link lands on /auth
+# with the session in the URL FRAGMENT, which never reaches the server), and /api/otp is
+# pre-authentication. /api/sessions authenticates itself by forwarding the caller's Bearer JWT to
+# PostgREST, where RLS on terminal_sessions is the whole access model.
+verify_jwt = false
+import_map = "./functions/live-sessions/deno.json"
+entrypoint = "./functions/live-sessions/index.ts"
 
 [functions.boss-ai]
 enabled = true

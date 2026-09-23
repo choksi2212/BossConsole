@@ -1,10 +1,13 @@
 name: 🔨 Build & Test
 
 on:
+  # PRs validate dev/develop integration; main pushes validate the merged tree.
+  # Do not add dev here: dev -> main would enqueue the same macOS work twice.
+  # For a branch without a PR, use workflow_dispatch. See docs/ci-validation.md.
   push:
-    branches: [ main, develop, dev ]
+    branches: [main]
   pull_request:
-    branches: [ main, dev ]
+    branches: [main, dev, develop]
   workflow_dispatch:
 
 # Only superseded PR validation is disposable. Push/manual runs get unique
@@ -421,6 +424,9 @@ jobs:
       - name: Verify BOSS AI admission across PostgreSQL sessions
         timeout-minutes: 2
         run: python3 scripts/test/test-boss-ai-concurrency.py
+      - name: Verify BOSS AI ticket single-spend across PostgreSQL sessions
+        timeout-minutes: 2
+        run: python3 scripts/test/test-boss-ai-ticket-concurrency.py
 
       - name: 🧹 Stop Supabase
         if: always()
