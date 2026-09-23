@@ -68,6 +68,17 @@ internal fun deleteUserPath(
         if (!canonicalFile.startsWith(canonicalHome)) {
             throw SecurityException("Access denied: file path outside user directory")
         }
+        // Belt and braces: also require the OS-canonical view (`toRealPath()`, when the path
+        // exists) to be inside home. `resolveSymlinksFirst` walks the components by hand to
+        // match Windows' lexical `..` before link, but `toRealPath()` agrees with the OS for
+        // POSIX and the canonical-file view for Windows; refusing on EITHER catches a
+        // disagreement - e.g. a symlink we missed, or a case the recursive walk handled
+        // differently. Both views must agree the path is inside home.
+        runCatching { filePath.toRealPath() }.getOrNull()?.let { osResolved ->
+            if (osResolved == canonicalHome || !osResolved.startsWith(canonicalHome)) {
+                throw SecurityException("Access denied: file path outside user directory")
+            }
+        }
 
         val target = canonicalFile
         val deleted =
@@ -84,20 +95,37 @@ internal fun deleteUserPath(
     }
 
 /**
+ * Maximum number of symlink hops to follow before refusing as a cycle. Matches the `realpath(3)`
+ * default on most systems; long enough for ordinary chained links, short enough to bound a cycle.
+ */
+private const val MAX_SYMLINK_HOPS = 40
+
+/**
  * Resolve a path by walking each component and following any symlink BEFORE applying `..` or
  * appending the next component. Mirrors POSIX `realpath(3)` and the behaviour `toRealPath()`
  * gives on POSIX; on Windows the OS path parser cancels `link/..` lexically first, which is
  * the wrong order for a containment check, so we do the walk by hand.
  *
+ * When a component is a symlink, its target is resolved (relative targets against the link's
+ * parent), and the result is then walked the same way - so a relative target like `../outside`
+ * has its `..` applied against the link's parent, NOT left as a literal segment in the
+ * accumulated path. Chained links fall out of the recursion; cycles hit [MAX_SYMLINK_HOPS].
+ *
  * A missing component stops the walk and leaves the path as-is - the caller (the containment
  * check) decides whether to admit it.
  */
-private fun resolveSymlinksFirst(path: Path): Path {
+private fun resolveSymlinksFirst(
+    path: Path,
+    hopsRemaining: Int = MAX_SYMLINK_HOPS,
+): Path {
+    if (hopsRemaining <= 0) {
+        throw SecurityException("Symlink chain exceeded $MAX_SYMLINK_HOPS hops (cycle?)")
+    }
     val absolute = path.toAbsolutePath()
     val root = absolute.root ?: return absolute
     var resolved = root
     for (i in 0 until absolute.nameCount) {
-        resolved = stepSymlinkAware(resolved, absolute.getName(i).toString())
+        resolved = stepSymlinkAware(resolved, absolute.getName(i).toString(), hopsRemaining)
     }
     return resolved
 }
@@ -105,30 +133,37 @@ private fun resolveSymlinksFirst(path: Path): Path {
 private fun stepSymlinkAware(
     resolved: Path,
     component: String,
-): Path {
-    val candidate = resolved.resolve(component)
-    val followed = followIfSymlink(resolved, candidate)
-    return when {
-        component == "" || component == "." -> resolved
-        component == ".." -> resolved.parent ?: resolved
-        else -> followed
-    }
-}
+    hopsRemaining: Int,
+): Path =
+    when {
+        component == "" || component == "." -> {
+            resolved
+        }
 
-private fun followIfSymlink(
-    from: Path,
-    candidate: Path,
-): Path {
-    if (!Files.exists(candidate) || !Files.isSymbolicLink(candidate)) {
-        return candidate
+        component == ".." -> {
+            resolved.parent ?: resolved
+        }
+
+        Files.isSymbolicLink(resolved.resolve(component)) -> {
+            val link = resolved.resolve(component)
+            val target = Files.readSymbolicLink(link)
+            // Resolve the target's OWN components too: a relative target like `../outside`
+            // is resolved against `link.parent`, then re-walked so its `..` is applied
+            // there. An absolute target is re-walked from the root, which catches any
+            // further symlinks and `..` it carries.
+            val linkTarget =
+                if (target.isAbsolute) {
+                    target.toAbsolutePath().normalize()
+                } else {
+                    link.parent.resolve(target).normalize()
+                }
+            resolveSymlinksFirst(linkTarget, hopsRemaining - 1)
+        }
+
+        else -> {
+            resolved.resolve(component)
+        }
     }
-    val target = Files.readSymbolicLink(candidate)
-    return if (target.isAbsolute) {
-        target.toAbsolutePath().normalize()
-    } else {
-        from.resolve(target)
-    }
-}
 
 /**
  * Implementation of FileSystemDataProvider that wraps platform-specific file operations.

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -110,6 +111,128 @@ class FileSystemDataProviderDeleteTest {
             // violation: the link is inside home, but its target is not, and a refused call
             // should leave the user's filesystem exactly as it found it.
             assertTrue(link.exists(), "refusing a delete must not remove the link itself")
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a relative symlink target that escapes home is refused on every platform`() {
+        // Pins fluck-boss's #1119 second review: `home/link -> ../outside` (relative target
+        // with `..`) opens a containment hole in the previous `resolveSymlinksFirst` because
+        // a relative target was returned without re-walking its components. A request for
+        // `home/link/sub` produced `<root>/home/../outside/sub`; the name-by-name containment
+        // check admitted it as inside home and the walk erased `outside/sub`.
+        //
+        // The recursive walk now re-resolves the link's target through the same component
+        // walker, so `../outside` becomes `<root>/outside` and the resulting path is
+        // unambiguously outside home. The test fails on revert on both POSIX and Windows.
+        val root = createTempDirectory("filesystem-provider-relsym").toFile()
+        try {
+            val home = File(root, "home").apply { mkdirs() }
+            val outside = File(root, "outside").apply { mkdirs() }
+            val outsideTarget = File(outside, "sub.txt").apply { writeText("untouched") }
+            val link = File(home, "link")
+            assumeTrue(
+                runCatching { Files.createSymbolicLink(link.toPath(), Path.of("../outside")) }.isSuccess,
+                "symlink creation unavailable on this platform",
+            )
+
+            val result = deleteUserPath(File(home, "link/sub.txt"), home)
+
+            assertTrue(
+                result.isFailure,
+                "a relative symlink that escapes home must be refused; got $result",
+            )
+            assertIs<SecurityException>(result.exceptionOrNull())
+            assertTrue(
+                outsideTarget.exists(),
+                "target at $outsideTarget must survive a refused relative-link traversal",
+            )
+            assertEquals(
+                "untouched",
+                outsideTarget.readText(),
+                "target at $outsideTarget must keep its contents after a refused relative-link traversal",
+            )
+            assertTrue(link.exists(), "refusing a delete must not remove the link itself")
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a chained symlink that escapes home is refused on every platform`() {
+        // Pins fluck-boss's #1119 second review, second case: a link whose target is itself
+        // a link. `home/a -> b`, `home/b -> ../outside` - the previous `resolveSymlinksFirst`
+        // followed `a` to `b` and stopped, leaving the walker pointing at `b` (a link).
+        // The recursive walk now follows `b` too, lands at `outside`, and refuses.
+        val root = createTempDirectory("filesystem-provider-chained").toFile()
+        try {
+            val home = File(root, "home").apply { mkdirs() }
+            val outside = File(root, "outside").apply { mkdirs() }
+            val outsideTarget = File(outside, "sub.txt").apply { writeText("untouched") }
+            val b = File(home, "b")
+            val a = File(home, "a")
+            assumeTrue(
+                runCatching { Files.createSymbolicLink(b.toPath(), Path.of("../outside")) }.isSuccess,
+                "symlink creation unavailable on this platform",
+            )
+            assumeTrue(
+                runCatching { Files.createSymbolicLink(a.toPath(), Path.of("b")) }.isSuccess,
+                "symlink creation unavailable on this platform",
+            )
+
+            val result = deleteUserPath(File(home, "a/sub.txt"), home)
+
+            assertTrue(
+                result.isFailure,
+                "a chained symlink that escapes home must be refused; got $result",
+            )
+            assertIs<SecurityException>(result.exceptionOrNull())
+            assertTrue(
+                outsideTarget.exists(),
+                "target at $outsideTarget must survive a refused chained-link traversal",
+            )
+            assertEquals(
+                "untouched",
+                outsideTarget.readText(),
+                "target at $outsideTarget must keep its contents after a refused chained-link traversal",
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a symlink cycle refuses without hanging`() {
+        // Pins fluck-boss's #1119 second review, third case: `home/a -> b`, `home/b -> a`.
+        // The recursive walk has a hop limit (MAX_SYMLINK_HOPS = 40) so a cycle is detected
+        // and refused as SecurityException, not left to loop forever.
+        val root = createTempDirectory("filesystem-provider-cycle").toFile()
+        try {
+            val home = File(root, "home").apply { mkdirs() }
+            val a = File(home, "a")
+            val b = File(home, "b")
+            assumeTrue(
+                runCatching { Files.createSymbolicLink(a.toPath(), Path.of("b")) }.isSuccess,
+                "symlink creation unavailable on this platform",
+            )
+            assumeTrue(
+                runCatching { Files.createSymbolicLink(b.toPath(), Path.of("a")) }.isSuccess,
+                "symlink creation unavailable on this platform",
+            )
+
+            val result = deleteUserPath(a, home)
+
+            assertTrue(
+                result.isFailure,
+                "a symlink cycle must be refused (not hung); got $result",
+            )
+            assertIs<SecurityException>(result.exceptionOrNull())
+            // Both links are still there - the refusal is at the containment check, not an
+            // unlink of either side.
+            assertTrue(a.exists(), "first cycle link must not be removed by the refused call")
+            assertTrue(b.exists(), "second cycle link must not be removed by the refused call")
         } finally {
             root.deleteRecursively()
         }
