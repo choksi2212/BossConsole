@@ -267,9 +267,7 @@ class BrowserZoomSettingsManagerHardeningTest {
         // POSIX permissions on the saved file match the atomic-write helper's
         // owner-only contract; we check this on POSIX and skip silently on
         // Windows where the bit is meaningless.
-        val perms = runCatching {
-            Files.getPosixFilePermissions(BrowserZoomSettingsManager.settingsFile.toPath())
-        }.getOrNull()
+        val perms = runCatching { Files.getPosixFilePermissions(BrowserZoomSettingsManager.settingsFile.toPath()) }.getOrNull()
         if (perms != null) {
             assertEquals(
                 setOf(
