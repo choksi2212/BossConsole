@@ -1,9 +1,9 @@
 package ai.rever.boss.mastery.orchestrator
 
-import ai.rever.boss.mastery.MasteryProgress as KProgress
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import ai.rever.boss.mastery.MasteryProgress as KProgress
 
 /**
  * Pins the #1144 wire mapping for guarded-edge skips: a [KProgress.NodeSkipped]
