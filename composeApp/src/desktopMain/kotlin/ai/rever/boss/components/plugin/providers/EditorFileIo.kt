@@ -1,6 +1,6 @@
 package ai.rever.boss.components.plugin.providers
 
-import ai.rever.boss.utils.atomicWriteText
+import ai.rever.boss.utils.atomicWriteTextPreserving
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import java.io.File
@@ -58,7 +58,7 @@ internal fun guardedWrite(
     filePath: String,
     content: String,
     reportFailure: (String, String, Throwable) -> Unit = ::logWriteFailure,
-    write: (File, String) -> Unit = { file, text -> file.atomicWriteText(text) },
+    write: (File, String) -> Unit = { file, text -> file.atomicWriteTextPreserving(text) },
 ): Boolean =
     try {
         val file = File(filePath)

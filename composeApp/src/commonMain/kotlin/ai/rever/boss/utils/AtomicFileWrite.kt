@@ -79,3 +79,101 @@ fun File.atomicWriteText(text: String) {
         tmp.delete()
     }
 }
+
+/**
+ * Default mode for a brand-new file under [atomicWriteTextPreserving]: owner
+ * read/write + group/others read (0644). Matches the umask a typical shell
+ * would produce for a `vim newfile.txt`, and keeps the new file visible to
+ * the user's other tools without elevating it to a state-file default.
+ */
+private val NEW_FILE_DEFAULT_PERMISSIONS: Set<PosixFilePermission> =
+    setOf(
+        PosixFilePermission.OWNER_READ,
+        PosixFilePermission.OWNER_WRITE,
+        PosixFilePermission.GROUP_READ,
+        PosixFilePermission.OTHERS_READ,
+    )
+
+/**
+ * Write [text] to this file atomically while preserving the user's POSIX mode
+ * bits. The state-file helper ([atomicWriteText]) pins every target to 0600,
+ * which is right for caches and workspace state but strips the executable
+ * bit from a script and the group read bit from a shared config the moment
+ * a save lands. Editor saves need the original permissions back.
+ *
+ * Behaviour:
+ * - **Existing file**: copies its POSIX permission set onto the temp file
+ *   before the move, so the executable bit (and anything else) survives the
+ *   round trip. Best-effort: a non-POSIX filesystem or a permission read
+ *   that fails leaves whatever the temp file came with, which is fine - the
+ *   alternative is to fail a save because the FS lost the bit, not because
+ *   the save did.
+ * - **New file**: applies [NEW_FILE_DEFAULT_PERMISSIONS] (0644) so the new
+ *   file is readable by the user's other tools and not owner-only by accident.
+ * - **Symlink target**: refuses with [IOException] before any write happens,
+ *   so resolving a symlink never silently rewrites a different inode.
+ * - **Hard-linked target** (POSIX `nlink` > 1): refuses for the same reason -
+ *   any write would split the file across inodes, and the user did not ask
+ *   for that. In-place write has the same outcome, so refusal is the only
+ *   honest answer.
+ *
+ * @throws IOException if the target is a symlink, has hard links > 1, or the
+ *   atomic move failed.
+ */
+fun File.atomicWriteTextPreserving(text: String) {
+    parentFile?.mkdirs()
+    val target = this
+    val targetPath = target.toPath()
+    if (Files.exists(targetPath)) {
+        if (Files.isSymbolicLink(targetPath)) {
+            throw IOException("Refusing to overwrite symlink: $target")
+        }
+        runCatching {
+            val nlink = Files.getAttribute(targetPath, "unix:nlink") as? Long
+            if (nlink != null && nlink > 1) {
+                throw IOException("Refusing to overwrite hard-linked file (nlink=$nlink): $target")
+            }
+        }
+    }
+    val tmp = File.createTempFile("$name.", ".tmp", parentFile)
+    try {
+        applyPermissionsForReplace(tmp, targetPath)
+        tmp.writeText(text)
+        atomicMoveFrom(tmp)
+    } finally {
+        // No-op when the move took it away; cleans up on failure paths.
+        tmp.delete()
+    }
+}
+
+/**
+ * Best-effort permission copy from [existingTarget] (if present) onto [newFile];
+ * otherwise applies [NEW_FILE_DEFAULT_PERMISSIONS] so a new file does not stay at
+ * the JVM's restrictive temp default. Silent on non-POSIX filesystems and on
+ * any individual read or write that fails - the caller would rather see an
+ * I/O failure from the subsequent write than from a permission probe.
+ */
+private fun applyPermissionsForReplace(
+    newFile: File,
+    existingTarget: java.nio.file.Path,
+) {
+    val view =
+        runCatching {
+            Files.getFileAttributeView(newFile.toPath(), PosixFileAttributeView::class.java)
+        }.getOrNull() ?: return
+
+    val perms =
+        if (Files.exists(existingTarget)) {
+            runCatching {
+                val targetView =
+                    Files.getFileAttributeView(existingTarget, PosixFileAttributeView::class.java)
+                targetView?.readAttributes()?.permissions()
+            }.getOrNull()
+        } else {
+            NEW_FILE_DEFAULT_PERMISSIONS
+        } ?: return
+
+    runCatching {
+        Files.setPosixFilePermissions(newFile.toPath(), perms)
+    }
+}
