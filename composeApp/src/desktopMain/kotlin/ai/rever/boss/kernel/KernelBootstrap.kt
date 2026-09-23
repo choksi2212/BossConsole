@@ -596,7 +596,12 @@ class KernelBootstrap(
         // is also the only side that needs to know what heap the failing process had been given
         // so the suggestion does not silently lower the user's configured value. The kernel has
         // both halves: the live [process.config.jvmArgs] and the report it is about to send.
-        val currentJvmArgs = registry.getProcess(failure.processId)?.config?.jvmArgs.orEmpty()
+        val currentJvmArgs =
+            registry
+                .getProcess(failure.processId)
+                ?.config
+                ?.jvmArgs
+                .orEmpty()
 
         val report =
             ProcessFailureReport
