@@ -75,7 +75,11 @@ if ($eofIdx -ge 0) { $block = $block.Substring(0, $eofIdx + "goto :eof".Length) 
 # runs as straight-line code first and recurses.
 $probeBody = @"
 @echo off
-setlocal
+REM Match the real boss.bat top scope: DisableDelayedExpansion so a literal
+REM ! in the call argument survives intact until :urlencode (which sets up
+REM its own DisableDelayedExpansion block and never reads !var!) can hand
+REM the value to PowerShell.
+setlocal DisableDelayedExpansion
 set OUTVAR=
 set MARKER=$marker
 if exist "%MARKER%" del "%MARKER%"
@@ -94,14 +98,20 @@ Set-Content -Path $probe -Value $probeBody -Encoding Ascii
 try {
     $output = & cmd.exe /c $probe 2>&1 | ForEach-Object { "$_" }
 
-    $plain = ($output | Where-Object { $_ -like 'PLAIN:*' }) -replace '^PLAIN:\[?', ''
-    $plain = $plain.TrimEnd(']').Trim()
+    $plain = $output | Where-Object { $_ -like 'PLAIN:*' } | Select-Object -First 1
+    if ($null -eq $plain) {
+        Write-Error 'ASSERTION FAILED: No PLAIN: line captured (probe did not emit the expected output)'
+        exit 1
+    }
+    $plain = ($plain -replace '^PLAIN:\[?', '').TrimEnd(']').Trim()
     # Note: a literal % in the CALL argument collapses one batch-expansion layer
 # before :urlencode sees it (call-time expansion, unchanged by this fix); the
-# injection-relevant characters - quote, bang, space - must survive intact
-# and the space must percent-encode. Quote chars are deliberately not
-# percent-encoded by EscapeDataString (RFC 3986 unreserved), which is fine:
-# the goal is the value never reaching the PS parser as code.
+# injection-relevant characters - quote, bang, space - must survive intact and
+# the space must percent-encode. .NET 4.5+ Uri.EscapeDataString leaves the
+# RFC 3986 unreserved set (A-Z a-z 0-9 - . _ ~) and these six mark characters
+# alone unescaped: ' ( ) ! * - so the literal ' and ! pass through verbatim
+# rather than being percent-encoded. The point of the fix is that they reach
+# PowerShell as data, not as syntax.
 Assert-True ($plain -like "a'b!c*%20e") "mixed quote/bang/space argument survives and encodes (got: $plain)"
 
     # INJECTION_DEAD / INJECTION_OCCURRED is its own bare output line, not a

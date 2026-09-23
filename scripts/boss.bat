@@ -13,7 +13,12 @@ REM   boss folder <path>                # Opens folder in codebase
 REM   boss terminal                     # Opens terminal
 REM   boss terminal -c <command>        # Opens terminal with command
 
-setlocal enabledelayedexpansion
+REM delayed expansion is OFF at the top level: nothing in this script reads
+REM !var!, and EnableDelayedExpansion would let a literal ! in an argument
+REM (e.g. "boss file 'foo!bar.txt'") get eaten by the parser before :urlencode
+REM can hand the value to PowerShell. Functions that need delayed expansion
+REM (currently :detect_and_route) open their own EnableDelayedExpansion scope.
+setlocal DisableDelayedExpansion
 
 REM Check if no arguments provided
 if "%~1"=="" (
@@ -215,7 +220,9 @@ goto :eof
 REM Smart detection for URL, file, or folder
 REM Usage: call :detect_and_route "argument"
 :detect_and_route
-setlocal
+REM Match the parse mode the parent used to provide globally (pre-PR) and
+REM exit with the matching endlocal at each branch below.
+setlocal EnableDelayedExpansion
 set "arg=%~1"
 
 REM Check if it's a URL (has http:// or https://)
