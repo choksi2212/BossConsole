@@ -16,6 +16,7 @@ import ai.rever.boss.ipc.proto.MasteryStatus
 import ai.rever.boss.ipc.proto.MasterySummary
 import ai.rever.boss.ipc.proto.NodeCompleted
 import ai.rever.boss.ipc.proto.NodeFailed
+import ai.rever.boss.ipc.proto.NodeSkipped
 import ai.rever.boss.ipc.proto.NodeStarted
 import ai.rever.boss.mastery.MasteryExecutor
 import io.grpc.Status
@@ -303,7 +304,7 @@ private fun KMasteryDef.toProto(): PMasteryDef {
     return b.build()
 }
 
-private fun KProgress.toProto(executionId: String): PProgress {
+internal fun KProgress.toProto(executionId: String): PProgress {
     val b =
         PProgress
             .newBuilder()
@@ -348,6 +349,16 @@ private fun KProgress.toProto(executionId: String): PProgress {
                     .setNodeId(nodeId)
                     .setErrorMessage(error)
                     .setWillRetry(willRetry)
+                    .build(),
+            )
+        }
+
+        is KProgress.NodeSkipped -> {
+            b.setNodeSkipped(
+                NodeSkipped
+                    .newBuilder()
+                    .setNodeId(nodeId)
+                    .setReason(reason)
                     .build(),
             )
         }

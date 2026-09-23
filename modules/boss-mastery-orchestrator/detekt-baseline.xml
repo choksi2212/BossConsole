@@ -2,7 +2,7 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>LongMethod:MasteryServiceImpl.kt$private fun KProgress.toProto(executionId: String): PProgress</ID>
+    <ID>LongMethod:MasteryServiceImpl.kt$internal fun KProgress.toProto(executionId: String): PProgress</ID>
     <ID>MaxLineLength:MasteryOrchestratorMain.kt$"boss-mastery-orchestrator/src/main/kotlin/ai/rever/boss/mastery/orchestrator/MasteryOrchestratorMain.kt"</ID>
     <ID>MaxLineLength:MasteryOrchestratorMain.kt$"boss-mastery-orchestrator/src/main/kotlin/ai/rever/boss/mastery/orchestrator/MasteryServiceImpl.kt"</ID>
     <ID>MaxLineLength:MasteryOrchestratorMain.kt$"boss-mastery-orchestrator/src/main/kotlin/ai/rever/boss/mastery/orchestrator/ProcessRegistryCapabilityResolver.kt"</ID>

@@ -247,7 +247,7 @@ Streamlined secret creation:
 ## Security Considerations
 
 ### Data Protection
-- **Encrypted storage** via SecretService (AES + base64)
+- **Encrypted storage** via SecretService (server-side pgcrypto, decrypted on the server)
 - **No plaintext** credential storage in memory longer than necessary
 - **Secure transmission** to browser via HTTPS Supabase connection
 

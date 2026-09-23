@@ -250,6 +250,11 @@ sealed class MasteryProgress {
         val willRetry: Boolean,
     ) : MasteryProgress()
 
+    data class NodeSkipped(
+        val nodeId: String,
+        val reason: String,
+    ) : MasteryProgress()
+
     data class Completed(
         val output: Map<String, String>,
         val totalDurationMs: Long,
