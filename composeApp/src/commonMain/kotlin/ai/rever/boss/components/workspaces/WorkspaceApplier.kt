@@ -122,7 +122,8 @@ suspend fun applyWorkspace(
                 // plugin - 15s per apply, every cold start, with nothing to show for it. Drop it
                 // here so the wait only fires for types that will actually be added.
                 it == JupyterTabInfo.TYPE_ID && !splitViewState.tabRegistry.isRegistered(it)
-            }.toSet()
+            }
+            .toSet()
 
     // Ahead of the wait, not after it: this layout is about to build a browser tab, and the wait
     // below is dead time the engine boot can have for free. Without it a first install pays the
@@ -338,6 +339,16 @@ private suspend fun applySplit(
     ctx: ApplyCtx,
     orientation: SplitOrientation,
 ) {
+    // Local so this file stays under detekt's TooManyFunctions budget - the helper has exactly
+    // one caller, and `applySplit` is the only place that needs the second side's leading tab to
+    // refuse the split cleanly when it would be a "ghost" pane.
+    fun firstTab(node: SplitConfig): TabConfig? =
+        when (node) {
+            is SinglePanel -> node.panel.tabs.firstOrNull()
+            is VerticalSplit -> firstTab(node.left)
+            is HorizontalSplit -> firstTab(node.top)
+        }
+
     applySplitSide(
         node = firstSide,
         ctx = ctx,
@@ -345,7 +356,7 @@ private suspend fun applySplit(
     )
 
     val firstSecondTab =
-        getFirstTab(secondSide)
+        firstTab(secondSide)
             ?.let { createTabFromWorkspaceConfig(it, ctx.projectPath, ctx.splitViewState) }
     if (firstSecondTab == null) return
 
@@ -391,13 +402,6 @@ private suspend fun applySplitSide(
         }
     }
 }
-
-private fun getFirstTab(workspaceConfig: SplitConfig): TabConfig? =
-    when (workspaceConfig) {
-        is SinglePanel -> workspaceConfig.panel.tabs.firstOrNull()
-        is VerticalSplit -> getFirstTab(workspaceConfig.left)
-        is HorizontalSplit -> getFirstTab(workspaceConfig.top)
-    }
 
 /**
  * @param resolvedProjectPath the selected project's path, or the no-project default when there
