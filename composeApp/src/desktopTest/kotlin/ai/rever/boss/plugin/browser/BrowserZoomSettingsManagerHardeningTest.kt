@@ -120,7 +120,14 @@ class BrowserZoomSettingsManagerHardeningTest {
         live.writeText("{ broken")
         val renaming = AtomicBoolean(false)
 
-        moveCorruptSettingsAside(live, now = { 1L }, renameFn = { _, _ -> renaming.set(true); false })
+        moveCorruptSettingsAside(
+            live,
+            now = { 1L },
+            renameFn = { _, _ ->
+                renaming.set(true)
+                false
+            },
+        )
 
         assertTrue(renaming.get(), "the injected rename function must have been called")
         assertTrue(live.exists(), "renameTo failure must leave the live file in place")
@@ -263,7 +270,10 @@ class BrowserZoomSettingsManagerHardeningTest {
         val perms = runCatching { Files.getPosixFilePermissions(BrowserZoomSettingsManager.settingsFile.toPath()) }.getOrNull()
         if (perms != null) {
             assertEquals(
-                setOf(java.nio.file.attribute.PosixFilePermission.OWNER_READ, java.nio.file.attribute.PosixFilePermission.OWNER_WRITE),
+                setOf(
+                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                ),
                 perms,
             )
         }
