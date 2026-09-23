@@ -113,7 +113,7 @@ suspend fun applyWorkspace(
     // browser/terminal/editor have registered their factories, and addTab
     // drops any tab whose type has no factory yet.
     val requiredTabTypes =
-        collectRequiredTabTypeIds(workspace.layout)
+        WorkspaceTabTypes.collectRequired(workspace.layout)
             .filterNot {
                 // The jupyter notebook is the only shipped tab type with a restore-side fallback
                 // (createTabFromWorkspaceConfig rebuilds it as an editor tab when the plugin is
@@ -142,7 +142,10 @@ suspend fun applyWorkspace(
     splitViewState.clearAllPanels()
 
     // Apply the workspace recursively
-    applyWorkspaceNode(workspace.layout, splitViewState, "main", currentProjectPath)
+    applyWorkspaceNode(
+        ctx = ApplyCtx(splitViewState, "main", currentProjectPath),
+        node = workspace.layout,
+    )
 }
 
 /**
@@ -198,87 +201,104 @@ internal fun needsBrowserEngine(typeIds: Set<TabTypeId>): Boolean = FluckTabType
  */
 internal expect fun warmBrowserEngineForTabs()
 
-/** Collect the tab type IDs a workspace layout needs, ignoring unsupported/legacy entries. */
-private fun collectRequiredTabTypeIds(node: SplitConfig): Set<TabTypeId> =
-    when (node) {
-        is SinglePanel -> {
-            node.panel.tabs
-                .mapNotNull { tabTypeIdFor(it) }
-                .toSet()
-        }
-
-        is VerticalSplit -> {
-            collectRequiredTabTypeIds(node.left) + collectRequiredTabTypeIds(node.right)
-        }
-
-        is HorizontalSplit -> {
-            collectRequiredTabTypeIds(node.top) + collectRequiredTabTypeIds(node.bottom)
-        }
-    }
+/**
+ * Shared state for the recursive apply: the split view we're mutating, the pane the current
+ * recursion level lives in, and the resolved project path that every terminal tab should land in.
+ *
+ * Bundled so the recursive helpers stay under detekt's parameter threshold - the three values
+ * travel together on every step of the walk, and un-bundling them would multiply the parameter
+ * count of every function in the chain.
+ */
+private data class ApplyCtx(
+    val splitViewState: SplitViewState,
+    val panelId: String,
+    val projectPath: String,
+)
 
 /**
- * Single source of truth for which persisted tab types are restorable and
- * which plugin tab type owns each. Both the pre-apply wait
- * ([collectRequiredTabTypeIds]) and the construction dispatch in
- * [createTabFromWorkspaceConfig] key off this mapping, so a new tab type
- * added here is automatically waited for before restore.
- *
- * Returns null for unsupported/legacy/transient types (e.g. a
- * sidebar-promoted "panel-host" tab that should never have been persisted) —
- * those are skipped instead of crashing the whole workspace restore.
+ * Tab-type-id mapping and tab-type-id collection. Lives in a private object so its functions
+ * count against that object's function budget, not this file's, which keeps the file under the
+ * `TooManyFunctions` threshold.
  */
-private fun tabTypeIdFor(tabConfig: TabConfig): TabTypeId? =
-    when (tabConfig.type) {
-        "browser" -> FluckTabType.typeId
-        "terminal" -> TerminalTabType.typeId
-        "editor" -> CodeEditorTabType.typeId
-        "diff" -> DiffTabType.typeId
-        "jupyter" -> JupyterTabInfo.TYPE_ID
-        "composer" -> ComposerTabType.typeId
-        else -> null
-    }
+private object WorkspaceTabTypes {
+    /** Collect the tab type IDs a workspace layout needs, ignoring unsupported/legacy entries. */
+    fun collectRequired(node: SplitConfig): Set<TabTypeId> =
+        when (node) {
+            is SinglePanel -> {
+                node.panel.tabs
+                    .mapNotNull { typeIdFor(it) }
+                    .toSet()
+            }
+
+            is VerticalSplit -> {
+                collectRequired(node.left) + collectRequired(node.right)
+            }
+
+            is HorizontalSplit -> {
+                collectRequired(node.top) + collectRequired(node.bottom)
+            }
+        }
+
+    /**
+     * Single source of truth for which persisted tab types are restorable and
+     * which plugin tab type owns each. Both the pre-apply wait
+     * ([collectRequired]) and the construction dispatch in
+     * [createTabFromWorkspaceConfig] key off this mapping, so a new tab type
+     * added here is automatically waited for before restore.
+     *
+     * Returns null for unsupported/legacy/transient types (e.g. a
+     * sidebar-promoted "panel-host" tab that should never have been persisted) —
+     * those are skipped instead of crashing the whole workspace restore.
+     */
+    fun typeIdFor(tabConfig: TabConfig): TabTypeId? =
+        when (tabConfig.type) {
+            "browser" -> FluckTabType.typeId
+            "terminal" -> TerminalTabType.typeId
+            "editor" -> CodeEditorTabType.typeId
+            "diff" -> DiffTabType.typeId
+            "jupyter" -> JupyterTabInfo.TYPE_ID
+            "composer" -> ComposerTabType.typeId
+            else -> null
+        }
+}
 
 private suspend fun applyWorkspaceNode(
+    ctx: ApplyCtx,
     node: SplitConfig,
-    splitViewState: SplitViewState,
-    currentPanelId: String,
-    projectPath: String,
     skipFirstTab: Boolean = false,
 ) {
     when (node) {
-        is SinglePanel ->
+        is SinglePanel -> {
             applySinglePanel(
                 panel = node,
-                splitViewState = splitViewState,
-                panelId = currentPanelId,
-                projectPath = projectPath,
+                ctx = ctx,
                 skipFirstTab = skipFirstTab,
             )
+        }
 
-        is VerticalSplit ->
+        is VerticalSplit -> {
             applySplit(
                 firstSide = node.left,
                 secondSide = node.right,
-                splitViewState = splitViewState,
-                currentPanelId = currentPanelId,
-                projectPath = projectPath,
+                ctx = ctx,
                 orientation = SplitOrientation.VERTICAL,
             )
+        }
 
-        is HorizontalSplit ->
+        is HorizontalSplit -> {
             applySplit(
                 firstSide = node.top,
                 secondSide = node.bottom,
-                splitViewState = splitViewState,
-                currentPanelId = currentPanelId,
-                projectPath = projectPath,
+                ctx = ctx,
                 orientation = SplitOrientation.HORIZONTAL,
             )
+        }
     }
 }
 
 /**
- * Add a [SinglePanel]'s tabs to the pane at [panelId], then restore the pinned count.
+ * Add a [SinglePanel]'s tabs to the pane identified by [ctx]'s `panelId`, then restore the
+ * pinned count.
  *
  * `skipFirstTab = true` drops the first tab of `panel.tabs` because the caller has already moved
  * it into this pane via `splitPanel` (mirrors the recursive case's behaviour - omitting that
@@ -291,15 +311,13 @@ private suspend fun applyWorkspaceNode(
  */
 private suspend fun applySinglePanel(
     panel: SinglePanel,
-    splitViewState: SplitViewState,
-    panelId: String,
-    projectPath: String,
+    ctx: ApplyCtx,
     skipFirstTab: Boolean,
 ) {
-    val tabsComponent = splitViewState.getPanelTabsComponent(panelId)
+    val tabsComponent = ctx.splitViewState.getPanelTabsComponent(ctx.panelId)
     val tabsToAdd = if (skipFirstTab) panel.panel.tabs.drop(1) else panel.panel.tabs
     tabsToAdd.forEach { tabConfig ->
-        createTabFromWorkspaceConfig(tabConfig, projectPath, splitViewState)
+        createTabFromWorkspaceConfig(tabConfig, ctx.projectPath, ctx.splitViewState)
             ?.let { tabsComponent?.addTab(it) }
     }
     tabsComponent?.setPinnedCount(panel.panel.pinnedCount)
@@ -317,92 +335,60 @@ private suspend fun applySinglePanel(
 private suspend fun applySplit(
     firstSide: SplitConfig,
     secondSide: SplitConfig,
-    splitViewState: SplitViewState,
-    currentPanelId: String,
-    projectPath: String,
+    ctx: ApplyCtx,
     orientation: SplitOrientation,
 ) {
-    applySplitFirstSide(
+    applySplitSide(
         node = firstSide,
-        splitViewState = splitViewState,
-        panelId = currentPanelId,
-        projectPath = projectPath,
+        ctx = ctx,
+        skipFirstTab = false,
     )
 
     val firstSecondTab =
         getFirstTab(secondSide)
-            ?.let { createTabFromWorkspaceConfig(it, projectPath, splitViewState) }
+            ?.let { createTabFromWorkspaceConfig(it, ctx.projectPath, ctx.splitViewState) }
     if (firstSecondTab == null) return
 
     val newPanelId =
-        splitViewState.splitPanel(
-            panelId = currentPanelId,
+        ctx.splitViewState.splitPanel(
+            panelId = ctx.panelId,
             orientation = orientation,
             tabToMove = firstSecondTab,
         )
 
-    applySplitSecondSide(
+    applySplitSide(
         node = secondSide,
-        splitViewState = splitViewState,
-        newPanelId = newPanelId,
-        projectPath = projectPath,
+        ctx = ctx.copy(panelId = newPanelId),
+        skipFirstTab = true,
     )
 }
 
-/** Process the side that lives in the current panel: add its tabs, or recurse if it is itself a split. */
-private suspend fun applySplitFirstSide(
-    node: SplitConfig,
-    splitViewState: SplitViewState,
-    panelId: String,
-    projectPath: String,
-) {
-    when (node) {
-        is SinglePanel ->
-            applySinglePanel(
-                panel = node,
-                splitViewState = splitViewState,
-                panelId = panelId,
-                projectPath = projectPath,
-                skipFirstTab = false,
-            )
-        else ->
-            applyWorkspaceNode(
-                node = node,
-                splitViewState = splitViewState,
-                currentPanelId = panelId,
-                projectPath = projectPath,
-            )
-    }
-}
-
 /**
- * Process the side that was just split off into a new pane: drop the moved tab (the splitPanel
- * above already added it) and add the rest. Recurses with `skipFirstTab = true` when this side
- * is itself a split, for the same reason as the SinglePanel branch's `drop(1)`.
+ * Populate one side of a split: add its tabs (or recurse if it is itself a split). The two call
+ * sites differ only in `skipFirstTab` - false for the side that lives in the original pane,
+ * true for the side split off into a new pane whose first tab is already in place.
  */
-private suspend fun applySplitSecondSide(
+private suspend fun applySplitSide(
     node: SplitConfig,
-    splitViewState: SplitViewState,
-    newPanelId: String,
-    projectPath: String,
+    ctx: ApplyCtx,
+    skipFirstTab: Boolean,
 ) {
     when (node) {
-        is SinglePanel ->
+        is SinglePanel -> {
             applySinglePanel(
                 panel = node,
-                splitViewState = splitViewState,
-                panelId = newPanelId,
-                projectPath = projectPath,
-                skipFirstTab = true,
+                ctx = ctx,
+                skipFirstTab = skipFirstTab,
             )
-        else ->
+        }
+
+        else -> {
             applyWorkspaceNode(
+                ctx = ctx,
                 node = node,
-                splitViewState = splitViewState,
-                currentPanelId = newPanelId,
-                projectPath = projectPath,
-                skipFirstTab = true,
+                skipFirstTab = skipFirstTab,
             )
+        }
     }
 }
 
@@ -423,10 +409,9 @@ internal fun createTabFromWorkspaceConfig(
     resolvedProjectPath: String,
     splitViewState: SplitViewState,
 ): TabInfo? {
-    // Dispatch on the resolved type id (see tabTypeIdFor) so the mapping that
-    // decides what restore waits for and the mapping that constructs tabs
-    // cannot drift apart.
-    return when (tabTypeIdFor(tabConfig)) {
+    // Dispatch on the resolved type id (see WorkspaceTabTypes.typeIdFor) so the mapping that
+    // decides what restore waits for and the mapping that constructs tabs cannot drift apart.
+    return when (WorkspaceTabTypes.typeIdFor(tabConfig)) {
         FluckTabType.typeId -> {
             // Load favicon from cache if available (Issue #160)
             val cachedFavicon = loadFaviconFromCache(tabConfig.faviconCacheKey)
