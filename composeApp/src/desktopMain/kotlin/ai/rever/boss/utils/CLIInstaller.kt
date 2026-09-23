@@ -598,14 +598,14 @@ actual object CLIInstaller {
                 WinDef.UINT(WM_SETTINGCHANGE.toLong()),
                 WinDef.WPARAM(0L),
                 WinDef.LPARAM(Pointer.nativeValue(mem)),
-                WinDef.UINT(SMTO_ABORTIFHUNG.toLong()),
+                SMTO_ABORTIFHUNG,
                 5000,
                 null,
             )
-        } catch (t: Throwable) {
+        } catch (t: Exception) {
             // The broadcast is best-effort - the registry value is already
             // updated and will be picked up at the next logon or process spawn.
-            logger.debug(LogCategory.SYSTEM, "WM_SETTINGCHANGE broadcast failed", error = t)
+            logger.warn(LogCategory.SYSTEM, "WM_SETTINGCHANGE broadcast failed", error = t)
         }
     }
 
