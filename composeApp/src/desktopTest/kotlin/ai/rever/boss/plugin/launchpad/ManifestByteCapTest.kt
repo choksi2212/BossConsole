@@ -66,10 +66,11 @@ class ManifestByteCapTest {
             assertContains(
                 source,
                 "PluginManifestReader.readManifestContent",
-                message = "Expected $relativePath to call " +
-                    "PluginManifestReader.readManifestContent for its META-INF/boss-plugin/plugin.json read; " +
-                    "an unbounded getInputStream(...).readText() reopens a heap-exhaustion vector " +
-                    "against a zip-bomb plugin.json.",
+                message =
+                    "Expected $relativePath to call " +
+                        "PluginManifestReader.readManifestContent for its META-INF/boss-plugin/plugin.json read; " +
+                        "an unbounded getInputStream(...).readText() reopens a heap-exhaustion vector " +
+                        "against a zip-bomb plugin.json.",
             )
             // The exact unbounded shape the PR replaced - read directly off the
             // JarFile.getInputStream stream. A different shape (e.g. through a
