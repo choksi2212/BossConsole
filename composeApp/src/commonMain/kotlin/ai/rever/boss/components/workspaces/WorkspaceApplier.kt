@@ -113,7 +113,8 @@ suspend fun applyWorkspace(
     // browser/terminal/editor have registered their factories, and addTab
     // drops any tab whose type has no factory yet.
     val requiredTabTypes =
-        WorkspaceTabTypes.collectRequired(workspace.layout)
+        WorkspaceTabTypes
+            .collectRequired(workspace.layout)
             .filterNot {
                 // The jupyter notebook is the only shipped tab type with a restore-side fallback
                 // (createTabFromWorkspaceConfig rebuilds it as an editor tab when the plugin is
@@ -122,8 +123,7 @@ suspend fun applyWorkspace(
                 // plugin - 15s per apply, every cold start, with nothing to show for it. Drop it
                 // here so the wait only fires for types that will actually be added.
                 it == JupyterTabInfo.TYPE_ID && !splitViewState.tabRegistry.isRegistered(it)
-            }
-            .toSet()
+            }.toSet()
 
     // Ahead of the wait, not after it: this layout is about to build a browser tab, and the wait
     // below is dead time the engine boot can have for free. Without it a first install pays the
