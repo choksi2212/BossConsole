@@ -41,6 +41,12 @@ internal fun deleteUserPath(
             check(homeDirectory.toPath() != filePath) {
                 "Access denied: refusing to delete the user home directory"
             }
+            // Walk the link's target chain through the cycle-limited resolver. A loop
+            // (e.g. `home/a -> b`, `home/b -> a`) trips `MAX_SYMLINK_HOPS` and throws
+            // `SecurityException`, refusing the call rather than unlinking one side of
+            // the cycle. A chain that resolves to a real (or missing) path returns
+            // cleanly and the unlink proceeds; only a loop is refused.
+            resolveSymlinksFirst(filePath)
             Files.deleteIfExists(filePath)
             return@runCatching
         }
