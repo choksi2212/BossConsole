@@ -193,17 +193,26 @@ class ApplyTemplateToolTest {
     @Test
     fun `a relative project path is refused`() =
         runBlocking {
-            // Use Browser Only (LOW risk) so the apply_template escalation does NOT
-            // fire on this test - that escalation is covered by the dedicated tests
-            // below. A HIGH template here would route through ASK before reaching
-            // the tool's own path check, and the assertion would have passed even
-            // if the path restriction were removed entirely. Browser Only's only
-            // failure mode is the tool's own path refusal.
+            // fluck-boss review: the previous version used Browser Only, which is
+            // refused earlier for having no placeholders to substitute - so the
+            // assertion passed even when the relative-path check was removed.
+            // Dual Terminal has placeholders (so the no-placeholders refusal does
+            // not run) and is LOW risk (only `cd {projectPath}` commands, no agent
+            // CLI), so the apply_template escalation does NOT fire on this test -
+            // the escalation path is covered by the dedicated tests below. The
+            // explicit error-text assertion makes the regression loud: a test that
+            // passes for the wrong reason (window-resolution timeout, file write,
+            // any other isError) is the bug the review called out.
             val result =
                 invoke(
-                    """{"templateId":"${PredefinedWorkspaces.BROWSER_ONLY_ID}","projectPath":"relative/path"}""",
+                    """{"templateId":"${PredefinedWorkspaces.DUAL_TERMINAL_ID}","projectPath":"relative/path"}""",
                 )
             assertTrue(result.isError)
+            assertTrue(
+                result.text.contains("Path must be absolute") ||
+                    result.text.contains("relative"),
+                "the relative-path check is the one that fired: ${result.text}",
+            )
         }
 
     @Test
