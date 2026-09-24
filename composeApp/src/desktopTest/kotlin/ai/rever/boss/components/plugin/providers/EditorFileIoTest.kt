@@ -49,10 +49,14 @@ class EditorFileIoTest {
 
     @Test
     fun `write preserves an existing file when a sibling temp file cannot be created`() {
+        // POSIX check first, before allocating any temp directory, so Windows
+        // (no PosixFileAttributeView) does not leak a temp dir on the early
+        // return path.
+        if (Files.getFileAttributeView(File(".").toPath(), PosixFileAttributeView::class.java) == null) return
+
         val root = Files.createTempDirectory("editor-file-io-readonly-").toFile()
-        val target = File(root, "source.kt").also { it.writeText("last complete source") }
-        if (Files.getFileAttributeView(root.toPath(), PosixFileAttributeView::class.java) == null) return
         try {
+            val target = File(root, "source.kt").also { it.writeText("last complete source") }
             Files.setPosixFilePermissions(
                 target.toPath(),
                 setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
@@ -61,6 +65,10 @@ class EditorFileIoTest {
                 root.toPath(),
                 setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE),
             )
+            // Guard: root bypasses directory permission bits, so this test's
+            // premise doesn't hold when the suite runs as root. Skip cleanly
+            // rather than asserting a false negative.
+            if (root.canWrite()) return
 
             assertFalse(provider.writeFileContent(target.absolutePath, "replacement"))
             assertEquals("last complete source", target.readText())
@@ -117,29 +125,25 @@ class EditorFileIoTest {
     }
 
     @Test
-    fun `write refuses a symlink at the delete root without following it`() {
+    fun `write through a symlink updates the real target and keeps the link in place`() {
         val root = Files.createTempDirectory("editor-file-io-symlink-").toFile()
         try {
-            val targetDir = File(root, "real-dir").apply { mkdirs() }
-            val targetCanary = File(targetDir, "untouched.txt").apply { writeText("keep") }
+            val real = File(root, "real.txt").apply { writeText("old") }
             val link = File(root, "link")
-            if (runCatching { Files.createSymbolicLink(link.toPath(), targetDir.toPath()) }.isFailure) return
+            if (runCatching { Files.createSymbolicLink(link.toPath(), real.toPath()) }.isFailure) return
 
-            // The save refuses with IOException - the link is left in place, the target
-            // tree is untouched. We use the editor write through the provider so the
-            // refusal reaches the caller.
-            val outcome = provider.writeFileContent(link.absolutePath, "replacement")
-            assertFalse(outcome, "writing through a symlink at the target path must refuse")
+            // The save resolves through the symlink to its real path and stages
+            // beside that, so the real inode is updated and the link itself is
+            // preserved (the previous direct writeText already followed the link
+            // transparently; Files.move would otherwise replace the link with a
+            // regular file and lose the original inode).
+            assertTrue(provider.writeFileContent(link.absolutePath, "new"))
 
+            assertEquals("new", real.readText(), "the real file behind the link must hold the new content")
             assertTrue(
                 Files.isSymbolicLink(link.toPath()),
-                "the symlink must still be there after a refused save",
+                "the symlink must still be there after writing through it",
             )
-            assertTrue(
-                targetCanary.exists(),
-                "the canary inside the symlink target must NOT be touched",
-            )
-            assertEquals("keep", targetCanary.readText())
         } finally {
             root.deleteRecursively()
         }
