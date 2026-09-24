@@ -4,6 +4,7 @@ import java.io.File
 import java.io.IOException
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
@@ -110,24 +111,26 @@ private val NEW_FILE_DEFAULT_PERMISSIONS: Set<PosixFilePermission> =
  *   the save did.
  * - **New file**: applies [NEW_FILE_DEFAULT_PERMISSIONS] (0644) so the new
  *   file is readable by the user's other tools and not owner-only by accident.
- * - **Symlink target**: refuses with [IOException] before any write happens,
- *   so resolving a symlink never silently rewrites a different inode.
+ * - **Symlink target**: resolves the link to its real path with `toRealPath()`
+ *   and stages the temp file beside THAT path, so the move lands on the real
+ *   inode and the link itself is preserved. The previous direct write
+ *   followed the link transparently; `Files.move` with `REPLACE_EXISTING`
+ *   would otherwise replace the link with a regular file and lose the
+ *   original inode. Falling back to the original path when `toRealPath()`
+ *   cannot resolve keeps a broken link unblocked.
  * - **Hard-linked target** (POSIX `nlink` > 1): refuses for the same reason -
  *   any write would split the file across inodes, and the user did not ask
  *   for that. In-place write has the same outcome, so refusal is the only
  *   honest answer.
  *
- * @throws IOException if the target is a symlink, has hard links > 1, or the
- *   atomic move failed.
+ * @throws IOException if the target has hard links > 1, or the atomic move
+ *   failed.
  */
 fun File.atomicWriteTextPreserving(text: String) {
     parentFile?.mkdirs()
     val target = this
     val targetPath = target.toPath()
     if (Files.exists(targetPath)) {
-        if (Files.isSymbolicLink(targetPath)) {
-            throw IOException("Refusing to overwrite symlink: $target")
-        }
         runCatching {
             val nlink = Files.getAttribute(targetPath, "unix:nlink") as? Long
             if (nlink != null && nlink > 1) {
@@ -135,11 +138,24 @@ fun File.atomicWriteTextPreserving(text: String) {
             }
         }
     }
-    val tmp = File.createTempFile("$name.", ".tmp", parentFile)
+    // Resolve through any symlink so the staged temp is a sibling of the real
+    // inode and the move lands on it. Files.move with REPLACE_EXISTING replaces
+    // the link itself when given the link path, so a save through a symlink
+    // would otherwise lose the original inode. Falling back to the original
+    // path on a failed realPath keeps a broken-link target unblocked.
+    val resolvedPath: Path =
+        if (Files.exists(targetPath)) {
+            runCatching { targetPath.toRealPath() }.getOrNull() ?: targetPath
+        } else {
+            targetPath
+        }
+    val resolvedTarget = resolvedPath.toFile()
+    resolvedTarget.parentFile?.mkdirs()
+    val tmp = File.createTempFile("$name.", ".tmp", resolvedTarget.parentFile)
     try {
-        applyPermissionsForReplace(tmp, targetPath)
+        applyPermissionsForReplace(tmp, resolvedPath)
         tmp.writeText(text)
-        atomicMoveFrom(tmp)
+        resolvedTarget.atomicMoveFrom(tmp)
     } finally {
         // No-op when the move took it away; cleans up on failure paths.
         tmp.delete()
@@ -155,7 +171,7 @@ fun File.atomicWriteTextPreserving(text: String) {
  */
 private fun applyPermissionsForReplace(
     newFile: File,
-    existingTarget: java.nio.file.Path,
+    existingTarget: Path,
 ) {
     val view =
         runCatching {

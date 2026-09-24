@@ -152,20 +152,18 @@ class AtomicFileWriteTest {
     }
 
     @Test
-    fun `atomicWriteTextPreserving refuses a symlink at the target path`() {
-        val targetDir = File(tempDir, "real-dir").apply { mkdirs() }
-        val targetCanary = File(targetDir, "untouched.txt").apply { writeText("keep") }
+    fun `atomicWriteTextPreserving writes through a symlink to the real target`() {
+        val target = File(tempDir, "real.txt").apply { writeText("old") }
         val link = File(tempDir, "link")
-        if (runCatching { Files.createSymbolicLink(link.toPath(), targetDir.toPath()) }.isFailure) return
+        if (runCatching { Files.createSymbolicLink(link.toPath(), target.toPath()) }.isFailure) return
 
-        val ex = runCatching { link.atomicWriteTextPreserving("replacement") }
+        link.atomicWriteTextPreserving("new")
+
+        assertEquals("new", target.readText(), "the real file behind the link must hold the new content")
         assertTrue(
-            ex.isFailure,
-            "atomicWriteTextPreserving on a symlink must refuse rather than walk the target",
+            Files.isSymbolicLink(link.toPath()),
+            "the symlink must still be there after writing through it",
         )
-        assertTrue(Files.isSymbolicLink(link.toPath()), "the symlink must still be there after the refusal")
-        assertTrue(targetCanary.exists(), "the canary inside the target must NOT be touched")
-        assertEquals("keep", targetCanary.readText())
     }
 
     @Test
