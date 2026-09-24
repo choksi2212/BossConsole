@@ -650,8 +650,8 @@ object UpdateInstaller {
      * Install JAR update (Linux/other platforms)
      * JAR files can be replaced while running, so no restart needed
      */
-    private suspend fun installJarUpdate(downloadFile: File): InstallResult {
-        return withContext(Dispatchers.IO) {
+    private suspend fun installJarUpdate(downloadFile: File): InstallResult =
+        withContext(Dispatchers.IO) {
             try {
                 logger.info(LogCategory.SYSTEM, "Starting JAR update installation")
                 validateDownloadFile(downloadFile, ".jar")
@@ -669,7 +669,6 @@ object UpdateInstaller {
                 InstallResult.Error(e.message ?: "Refused to update JAR")
             }
         }
-    }
 
     /**
      * Drives the four-step swap. Returns null when every step succeeded so the
@@ -714,20 +713,23 @@ object UpdateInstaller {
 
     private fun resolveJarSwapPaths(): JarSwapPaths? {
         val currentJar = getCurrentJarPath()
-        if (currentJar == null) {
-            logger.error(LogCategory.SYSTEM, "Could not determine current JAR path")
-            return null
+        val parent = currentJar?.parentFile
+        return when {
+            currentJar == null -> {
+                logger.error(LogCategory.SYSTEM, "Could not determine current JAR path")
+                null
+            }
+            parent == null -> {
+                logger.error(LogCategory.SYSTEM, "Current JAR has no parent directory")
+                null
+            }
+            else ->
+                JarSwapPaths(
+                    live = currentJar,
+                    backup = File(parent, "${currentJar.name}.backup"),
+                    staged = File(parent, "${currentJar.name}.part"),
+                )
         }
-        val parent = currentJar.parentFile
-        if (parent == null) {
-            logger.error(LogCategory.SYSTEM, "Current JAR has no parent directory")
-            return null
-        }
-        return JarSwapPaths(
-            live = currentJar,
-            backup = File(parent, "${currentJar.name}.backup"),
-            staged = File(parent, "${currentJar.name}.part"),
-        )
     }
 
     /**
