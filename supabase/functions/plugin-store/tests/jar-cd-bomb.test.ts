@@ -1,4 +1,7 @@
-import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts"
+import {
+  assertEquals,
+  assertStringIncludes,
+} from "https://deno.land/std@0.224.0/assert/mod.ts"
 import { extractManifestFromRemoteJar } from "../services/github.ts"
 
 /**
@@ -139,12 +142,16 @@ Deno.test("a plugin.json entry declaring a multi-GB compressedSize is refused be
   }) as typeof fetch
   try {
     let threw = false
+    let msg = ""
     try {
       await extractManifestFromRemoteJar("https://evil.example/x.jar")
-    } catch {
+    } catch (e) {
       threw = true
+      msg = e instanceof Error ? e.message : String(e)
     }
     assertEquals(threw, true, "the oversized entry must fail the extraction")
+    // The declared-size entry guard itself must fire, not a later clamp.
+    assertStringIncludes(msg, "compressed bytes, above the 524288-byte manifest bound")
     // No fetch may ever span anywhere near the declared 2GB.
     assertEquals(maxRangeSpan < 5 * 1024 * 1024, true, `largest requested span was ${maxRangeSpan}`)
   } finally {
@@ -162,15 +169,16 @@ Deno.test("a small compressed entry declaring a huge uncompressedSize is refused
   globalThis.fetch = fakeFetchWithJar(body, 0) as typeof fetch
   try {
     let threw = false
+    let msg = ""
     try {
       await extractManifestFromRemoteJar("https://evil.example/deflate.jar")
-    } catch {
-      // The declared-size refusal fires before any inflate; a malformed tail
-      // failing even earlier is also acceptable - what must NOT happen is a
-      // multi-GB buffer or a successful parse of the crafted entry.
+    } catch (e) {
       threw = true
+      msg = e instanceof Error ? e.message : String(e)
     }
     assertEquals(threw, true, "the deflate-bomb entry must fail the extraction")
+    // The declared-uncompressed-size guard must fire before any inflate.
+    assertStringIncludes(msg, "uncompressed bytes, above the 524288-byte manifest bound")
   } finally {
     globalThis.fetch = originalFetch
   }

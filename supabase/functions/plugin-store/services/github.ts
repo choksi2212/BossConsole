@@ -742,8 +742,11 @@ export async function extractManifestFromRemoteJar(
       }
       const ds = new DecompressionStream("deflate-raw")
       const writer = ds.writable.getWriter()
-      writer.write(fileData)
-      writer.close()
+      // Detach the writer promises: cancelling the readable half errors the
+      // writable half, and an unhandled rejection here would tear down the
+      // isolate on exactly the bomb input this guard exists for.
+      writer.write(fileData).catch(() => {})
+      writer.close().catch(() => {})
       const reader = ds.readable.getReader()
       const chunks: Uint8Array[] = []
       let len = 0
