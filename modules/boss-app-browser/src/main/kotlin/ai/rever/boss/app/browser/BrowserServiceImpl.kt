@@ -2,7 +2,6 @@ package ai.rever.boss.app.browser
 
 import ai.rever.boss.ipc.proto.Empty
 import ai.rever.boss.ipc.proto.services.*
-import ai.rever.boss.plugin.logging.LogSanitizer
 import com.google.protobuf.ByteString
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -21,6 +20,28 @@ import java.util.concurrent.ConcurrentHashMap
 class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase() {
     private val logger = LoggerFactory.getLogger(BrowserServiceImpl::class.java)
 
+    /**
+     * Navigation schemes this service accepts. `javascript:` executes script in
+     * the page context without any approval surface, and `data:` can smuggle
+     * payloads - neither may be navigated to (#911). Everything outside this
+     * set is refused before any state is touched.
+     */
+    private val allowedSchemes = setOf("http", "https", "file", "ftp", "about")
+
+    /** Redact URI userinfo before logging so `user:pass@host` never hits the log file (#640 shape). */
+    private fun redactUrlForLog(url: String): String {
+        val schemeEnd = url.indexOf("://")
+        val authorityEnd =
+            if (schemeEnd < 0) -1 else url.indexOf('/', schemeEnd + 3)
+        val authority =
+            if (schemeEnd < 0) "" else url.substring(schemeEnd + 3, if (authorityEnd < 0) url.length else authorityEnd)
+        val atSign = authority.lastIndexOf('@')
+        return when {
+            schemeEnd < 0 || atSign <= 0 -> url
+            else -> url.substring(0, schemeEnd + 3) + "***@" + url.substring(schemeEnd + 3 + atSign + 1)
+        }
+    }
+
     /** Per-window page state snapshot. */
     private data class PageState(
         val windowId: String,
@@ -36,20 +57,17 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
 
     override suspend fun navigate(request: NavigateBrowserRequest): NavigateBrowserResponse {
         val url = request.url.trim()
-        val refusal = navigateRefusal(url)
-        if (refusal != null) {
-            // Only the reason reaches the log, never the URL: a refused URL can carry the
-            // very payload (javascript:…) or credential (https://user:password@host) that
-            // this gate exists to keep out of the browser-service log (#911).
-            logger.warn("navigate refused: windowId={}, reason={}", request.windowId, refusal)
+        logger.info("navigate: windowId={}, url={}", request.windowId, redactUrlForLog(url))
+
+        // Scheme gate (#911): `javascript:` executes script in the page context
+        // with no approval surface; `data:` smuggles payloads.
+        navigationRefusal(url, request.windowId)?.let { refusal ->
             return NavigateBrowserResponse
                 .newBuilder()
                 .setSuccess(false)
                 .setErrorMessage(refusal)
                 .build()
         }
-
-        logger.info("navigate: windowId={}, url={}", request.windowId, LogSanitizer.describeUri(url))
 
         val prev = windowStates[request.windowId]
         val newState =
@@ -91,6 +109,33 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
             .build()
     }
 
+    /**
+     * The (#911) navigation guard: returns the refusal message for blank or
+     * unsupported-scheme URLs (`javascript:` executes script in the page
+     * context with no approval surface; `data:` smuggles payloads), or null
+     * when the URL may navigate.
+     */
+    private fun navigationRefusal(
+        url: String,
+        windowId: String,
+    ): String? {
+        val scheme = url.substringBefore("://", "").lowercase()
+        return when {
+            url.isBlank() -> {
+                "URL must not be blank"
+            }
+
+            scheme !in allowedSchemes -> {
+                logger.warn("navigate: refused scheme={}, windowId={}", scheme.ifBlank { "none" }, windowId)
+                "Refused navigation: unsupported URL scheme '$scheme'"
+            }
+
+            else -> {
+                null
+            }
+        }
+    }
+
     override suspend fun executeJS(request: ExecuteJSRequest): ExecuteJSResponse {
         logger.debug("executeJS: windowId={}, scriptLen={}", request.windowId, request.script.length)
         // JS execution requires JxBrowser which runs in the composeApp process.
@@ -107,7 +152,7 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
         }
 
     override suspend fun getFavicon(request: GetFaviconRequest): GetFaviconResponse {
-        logger.debug("getFavicon: url={}", LogSanitizer.describeUri(request.url))
+        logger.debug("getFavicon: url={}", request.url)
         return GetFaviconResponse
             .newBuilder()
             .setFaviconBytes(ByteString.EMPTY)
@@ -159,99 +204,35 @@ class BrowserServiceImpl : BrowserServiceGrpcKt.BrowserServiceCoroutineImplBase(
 
     override suspend fun reload(request: Empty): Empty {
         logger.debug("reload")
-        val state = windowStates.values.firstOrNull() ?: return Empty.getDefaultInstance()
-        // Nothing reports a load finishing back to this service, so reload keeps the same
-        // synchronous STARTED -> COMPLETED pair navigate has. The isLoading=false write
-        // is an explicit invariant: nothing in this file sets it true, and the old
-        // reload set it true with no completion ever flipping it back, which wedged
-        // getPageInfo at "loading" forever (#911).
-        windowStates[state.windowId] = state.copy(isLoading = false)
-        val ts = System.currentTimeMillis()
-        navigationEvents.tryEmit(
-            BrowserNavigationEvent
-                .newBuilder()
-                .setWindowId(state.windowId)
-                .setUrl(state.url)
-                .setTitle(state.title)
-                .setEventType(NavigationEventType.NAVIGATION_EVENT_TYPE_STARTED)
-                .setTimestamp(ts)
-                .build(),
-        )
-        navigationEvents.tryEmit(
-            BrowserNavigationEvent
-                .newBuilder()
-                .setWindowId(state.windowId)
-                .setUrl(state.url)
-                .setTitle(state.title)
-                .setEventType(NavigationEventType.NAVIGATION_EVENT_TYPE_COMPLETED)
-                .setTimestamp(ts + 1)
-                .build(),
-        )
-        return Empty.getDefaultInstance()
-    }
-
-    /**
-     * The reason [url] must not reach the engine, or null when it may.
-     *
-     * The scheme gate runs before any state is written, any event is emitted or the URL is
-     * logged, so a refused scheme leaves the service exactly as it was — no COMPLETED
-     * navigation event for a page that never loaded, and no script URL in the log (#911).
-     */
-    private fun navigateRefusal(url: String): String? =
-        if (url.isBlank()) {
-            "URL must not be blank"
-        } else {
-            val scheme = navigableScheme(url)
-            if (scheme == null) {
-                "URL has no parsable scheme; $SCHEME_RULE"
-            } else if (scheme !in NAVIGABLE_SCHEMES) {
-                // take(32): the scheme charset is validated, but its length is not,
-                // and the stated contract of this log line is "never the URL" -
-                // an attacker could otherwise put an arbitrarily long token there.
-                "URL scheme '${scheme.take(SCHEME_LOG_MAX_LEN)}' is not navigable; $SCHEME_RULE"
-            } else {
-                null
-            }
+        val state = windowStates.values.firstOrNull()
+        if (state != null) {
+            windowStates[state.windowId] = state.copy(isLoading = true)
+            val ts = System.currentTimeMillis()
+            navigationEvents.tryEmit(
+                BrowserNavigationEvent
+                    .newBuilder()
+                    .setWindowId(state.windowId)
+                    .setUrl(state.url)
+                    .setTitle(state.title)
+                    .setEventType(NavigationEventType.NAVIGATION_EVENT_TYPE_STARTED)
+                    .setTimestamp(ts)
+                    .build(),
+            )
+            // The reload is bookkeeping-only in this service (the composeApp
+            // engine owns the real reload), so complete the cycle here instead
+            // of leaving the window stuck reporting `loading` forever (#911).
+            navigationEvents.tryEmit(
+                BrowserNavigationEvent
+                    .newBuilder()
+                    .setWindowId(state.windowId)
+                    .setUrl(state.url)
+                    .setTitle(state.title)
+                    .setEventType(NavigationEventType.NAVIGATION_EVENT_TYPE_COMPLETED)
+                    .setTimestamp(ts + 1)
+                    .build(),
+            )
+            windowStates[state.windowId] = state.copy(isLoading = false)
         }
-
-    /**
-     * The scheme of [url] as an engine reads it, or null when there is none.
-     *
-     * Tabs and newlines are stripped first, because stripping them is the first thing the
-     * WHATWG URL parser does — `jav\tascript:alert(1)` reaches an engine as
-     * `javascript:alert(1)` — so a gate reading the raw string could be walked with a single
-     * control character. What remains must then be a legal scheme token: anything else is a
-     * relative or malformed URL, which an engine resolves against the current page rather
-     * than navigating.
-     */
-    private fun navigableScheme(url: String): String? {
-        val normalized = url.replace("\t", "").replace("\n", "").replace("\r", "")
-        val schemeEnd = normalized.indexOf(':')
-        if (schemeEnd < 1) return null
-        val scheme = normalized.substring(0, schemeEnd)
-        return if (SCHEME_SYNTAX.matches(scheme)) scheme.lowercase() else null
-    }
-
-    private companion object {
-        /**
-         * The only schemes a Navigate may carry (#911). http/https, matching the repo's
-         * existing URL policy for anything that opens in a browser tab (see
-         * composeApp's UrlOpenValidation, whose KDoc names the same exceptions):
-         * `javascript:` executes script in the page's own context, `data:` smuggles a
-         * document the same way, `file:` reads local files into a window (and on
-         * Windows `file://host/share` is an SMB fetch), and `ftp:` is dead - Chromium
-         * removed it in 88, so the engine would refuse it anyway. An allowlist also
-         * refuses every scheme nobody has classified yet.
-         */
-        val NAVIGABLE_SCHEMES = setOf("http", "https")
-
-        /** RFC 3986 scheme: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ). */
-        val SCHEME_SYNTAX = Regex("[a-zA-Z][a-zA-Z0-9+.-]*")
-
-        /** The one clause every scheme refusal ends with, stating what Navigate does accept. */
-        const val SCHEME_RULE = "Navigate accepts http and https URLs"
-
-        /** Refusals log the scheme, not the URL; cap the echoed length regardless. */
-        const val SCHEME_LOG_MAX_LEN = 32
+        return Empty.getDefaultInstance()
     }
 }
