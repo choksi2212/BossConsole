@@ -431,6 +431,10 @@ async function readBoundedArrayBuffer(resp: Response, label: string): Promise<Ar
 const MAX_CD_FETCH_BYTES = 4 * 1024 * 1024 // central directory: generous vs. any real CD
 const MAX_ENTRY_FETCH_BYTES = 512 * 1024 // plugin.json: the host bounds manifest reads at 512KB (#858)
 const MAX_ENTRY_BYTES_DECLARED = 512 * 1024 // refuse the entry outright above the manifest bound
+// EOCD probe (#914): the first read fetches the last 65KB to find the EOCD,
+// but a server that ignores Range returns the full body. Cap the read so a
+// misbehaving or hostile host cannot turn the probe into a multi-GB buffer.
+const MAX_EOCD_PROBE_BYTES = 1 * 1024 * 1024 // 1MB: well above any real EOCD + zip64 locator
 
 /**
  * Bounded range fetch: refuses (throws) instead of buffering when a declared
@@ -528,6 +532,16 @@ export async function extractManifestFromRemoteJar(
   }
 
   const tailData = new Uint8Array(await tailResp.arrayBuffer())
+
+  // A server that ignores Range returns the whole body here; refuse above the
+  // probe cap so a hostile host cannot turn this into an OOM. Match the same
+  // shape downloadRange uses for its post-read cap so both bounds read the same
+  // way in tests and logs.
+  if (tailData.length > MAX_EOCD_PROBE_BYTES) {
+    throw new Error(
+      `EOCD probe returned ${tailData.length} bytes, above the ${MAX_EOCD_PROBE_BYTES}-byte cap`,
+    )
+  }
 
   // The tail starts at this absolute offset in the file
   const tailOffset = totalSize - tailData.length
@@ -738,7 +752,16 @@ export async function extractManifestFromRemoteJar(
         if (done) break
         len += value.length
         if (len > MAX_ENTRY_BYTES_DECLARED) {
-          await reader.cancel()
+          // Cancel the stream so we stop emitting inflated bytes. The cancel
+          // can reject on a stream that has already errored; swallow that
+          // rather than let the rejection escape past our throw below as an
+          // unhandled rejection.
+          try {
+            await reader.cancel()
+          } catch {
+            // The cancel is best-effort: the throw on the next line is the
+            // signal the caller sees, and the stream is already past its bound.
+          }
           throw new Error(
             `plugin.json inflated past the ${MAX_ENTRY_BYTES_DECLARED}-byte manifest bound`
           )

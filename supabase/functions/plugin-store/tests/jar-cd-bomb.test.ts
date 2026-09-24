@@ -29,16 +29,34 @@ function eocd(cdOffset: number, cdSize: number, entries = 1): number[] {
   ]
 }
 
-/** A CD entry for plugin.json with a declared compressedSize. */
-function cdEntry(compressedSize: number): number[] {
+/**
+ * A CD entry for plugin.json with the declared sizes and a method byte.
+ *
+ * Fixed header is 46 bytes (sig 4 + 15 fields totalling 42); every field the
+ * parser reads (method at +10, compressedSize at +20, uncompressedSize at +24,
+ * name-len at +28, local-offset at +42) must line up with those offsets, or
+ * the crafted sizes never reach the cap checks at all and the tests exercise
+ * nothing.
+ */
+function cdEntry(
+  compressedSize: number,
+  uncompressedSize?: number,
+  method: number = 0,
+): number[] {
   const name = Array.from(new TextEncoder().encode("META-INF/boss-plugin/plugin.json"))
+  const uncomp = uncompressedSize ?? compressedSize
   return [
-    ...u32(0x02014b50), ...u16(20), ...u16(0), ...u16(0), // sig, made-by, method=0, time
-    ...u16(0), ...u16(0), ...u32(0), ...u32(compressedSize), // crc, comp size
-    ...u32(compressedSize), ...u16(name.length), ...u16(0), ...u16(0), // uncomp, name len, extra, comment
-    ...u16(0), ...u16(0), ...u32(0), // disk, int attrs, ext attrs
-    ...u32(0), // local header offset
-    ...name,
+    ...u32(0x02014b50), // central-dir signature
+    ...u16(20), ...u16(20), ...u16(0), // made-by, version-needed, flags
+    ...u16(method), // method (read at offset +10)
+    ...u16(0), ...u16(0), ...u32(0), // time, date, crc32
+    ...u32(compressedSize), // compressed (read at +20)
+    ...u32(uncomp), // uncompressed (read at +24)
+    ...u16(name.length), // name-len (read at +28)
+    ...u16(0), ...u16(0), // extra-len, comment-len
+    ...u16(0), ...u16(0), ...u32(0), // disk-start, int-attrs, ext-attrs
+    ...u32(0), // local header offset (read at +42)
+    ...name, // filename (read at +46)
   ]
 }
 
@@ -64,31 +82,37 @@ function fakeFetchWithJar(body: number[], tailBytes: number) {
 
 Deno.test("a central directory declaring a multi-GB size is refused, not fetched", async () => {
   const evilCdSize = 2 * 1024 * 1024 * 1024 // 2GB in the CD header
-  // Layout: [CD entry][EOCD pointing at it with the evil size]
+  // Layout: [CD entry][padding > 65KB][EOCD pointing at the CD with evil size].
+  // The padding pushes the CD out of the 65KB tail window so the parser takes
+  // the downloadRange path; the 2GB span then trips MAX_CD_FETCH_BYTES.
   const entry = cdEntry(10)
   const cdOffset = 0
+  const padding = new Array(70_000).fill(0)
   const eocdBytes = eocd(cdOffset, evilCdSize)
-  const body = [...entry, ...eocdBytes]
+  const body = [...entry, ...padding, ...eocdBytes]
 
   const originalFetch = globalThis.fetch
   globalThis.fetch = fakeFetchWithJar(body, 0) as typeof fetch
   try {
     let threw = false
+    let msg = ""
     try {
       await extractManifestFromRemoteJar("https://evil.example/x.jar")
     } catch (e) {
-      // The refusal can surface as our cap error or a downstream parse error
-      // after the tail-only path; what must NOT happen is a 2GB fetch.
       threw = true
-      const msg = String((e as Error)?.message ?? e)
-      assertEquals(
-        msg.includes("cap") || msg.includes("Refusing") || msg.includes("EOCD") ||
-          msg.includes("manifest") || msg.includes("not found") || msg.includes("Failed"),
-        true,
-        `expected a bounded failure, got: ${msg}`,
-      )
+      msg = String((e as Error)?.message ?? e)
     }
     assertEquals(threw, true, "the oversized CD must fail the extraction")
+    // Asserting on the specific cap message (not a bag of substrings) makes
+    // removing the span check a regression: without it, the parser walks a
+    // truncated CD and exits with "manifest not found".
+    assertEquals(
+      msg.startsWith(
+        "Refusing a 2147483648-byte range fetch above the 4194304-byte cap",
+      ),
+      true,
+      `expected the cdSize cap message, got: ${msg}`,
+    )
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -128,21 +152,9 @@ Deno.test("a plugin.json entry declaring a multi-GB compressedSize is refused be
   }
 })
 
-function cdEntryWithUncompressed(compressedSize: number, uncompressedSize: number): number[] {
-  const name = Array.from(new TextEncoder().encode("META-INF/boss-plugin/plugin.json"))
-  return [
-    ...u32(0x02014b50), ...u16(20), ...u16(8), ...u16(0), ...u16(0),
-    ...u16(0), ...u16(0), ...u32(0), ...u32(compressedSize),
-    ...u32(uncompressedSize), ...u16(name.length), ...u16(0), ...u16(0),
-    ...u16(0), ...u16(0), ...u32(0),
-    ...u32(0),
-    ...name,
-  ]
-}
-
 Deno.test("a small compressed entry declaring a huge uncompressedSize is refused before inflating", async () => {
   const evilUncompressed = 2 * 1024 * 1024 * 1024 // 2GB declared inflate target
-  const entry = cdEntryWithUncompressed(100, evilUncompressed)
+  const entry = cdEntry(100, evilUncompressed, 8) // method=8 = deflate
   const eocdBytes = eocd(0, entry.length)
   const body = [...entry, ...eocdBytes]
 
