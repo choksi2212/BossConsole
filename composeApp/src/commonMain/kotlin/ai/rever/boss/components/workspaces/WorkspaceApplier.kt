@@ -283,6 +283,7 @@ private suspend fun applyWorkspaceNode(
                 secondSide = node.right,
                 ctx = ctx,
                 orientation = SplitOrientation.VERTICAL,
+                skipFirstTab = skipFirstTab,
             )
         }
 
@@ -292,6 +293,7 @@ private suspend fun applyWorkspaceNode(
                 secondSide = node.bottom,
                 ctx = ctx,
                 orientation = SplitOrientation.HORIZONTAL,
+                skipFirstTab = skipFirstTab,
             )
         }
     }
@@ -301,10 +303,11 @@ private suspend fun applyWorkspaceNode(
  * Add a [SinglePanel]'s tabs to the pane identified by [ctx]'s `panelId`, then restore the
  * pinned count.
  *
- * `skipFirstTab = true` drops the first tab of `panel.tabs` because the caller has already moved
- * it into this pane via `splitPanel` (mirrors the recursive case's behaviour - omitting that
- * mirror silently duplicated the moved tab in any template whose right/bottom side was itself a
- * split, which is what made Build show up twice in Project Studio's bottom-left).
+ * `skipFirstTab = true` drops the first tab of `panel.tabs` because the caller has already
+ * placed it in this pane via `splitPanel` - either this split's own secondSide copy, or the
+ * outer split's copy that propagated down through `applyWorkspaceNode`'s split branches.
+ * Without it, any template whose right/bottom side is itself a split duplicated the moved tab
+ * in the inner firstSide - which is what made Build show up twice in Project Studio's bottom-left.
  *
  * `setPinnedCount` is the only place pinning is restored, and it is clamped internally: a tab
  * whose type no longer resolves comes back as null above, so fewer tabs can land than were
@@ -325,8 +328,21 @@ private suspend fun applySinglePanel(
 }
 
 /**
- * Apply a split: populate the first side in the current pane, then split to a new pane for the
- * second side and populate that.
+ * Apply a split: split the current pane into the requested orientation first, so the OUTER
+ * split's orientation is the one that ends up at the root of the resulting tree, then populate
+ * the original (first) side and the new (second) side in turn.
+ *
+ * Splitting first is what makes a template like Project Studio - `HS(top = VS, bottom = VS)` -
+ * render as four panes arranged in a 2x2 instead of as a single vertical split with the
+ * PLAN/NOTES editor spanning the full height of the right column. Applying `firstSide` first
+ * would build the inner top VS at the root, and the subsequent split would be nested inside
+ * that VS's left panel, so the rendered tree looked nothing like the template the user picked.
+ *
+ * `skipFirstTab` propagates from an outer secondSide whose splitPanel already moved the first
+ * tab into this pane: `applyWorkspaceNode` forwards it through both split branches so an inner
+ * split sees the pane as already occupied and does not duplicate the moved tab when it lands
+ * its own first side. The second side of THIS split always passes `skipFirstTab = true` -
+ * splitPanel just copied its leading tab into the new pane.
  *
  * Resolves the second side's first tab up front so a legacy/unsupported tab type refuses the
  * split cleanly - `splitPanel(tabToMove = null)` would otherwise create an empty "ghost" pane.
@@ -338,6 +354,7 @@ private suspend fun applySplit(
     secondSide: SplitConfig,
     ctx: ApplyCtx,
     orientation: SplitOrientation,
+    skipFirstTab: Boolean = false,
 ) {
     // Local so this file stays under detekt's TooManyFunctions budget - the helper has exactly
     // one caller, and `applySplit` is the only place that needs the second side's leading tab to
@@ -349,17 +366,23 @@ private suspend fun applySplit(
             is HorizontalSplit -> firstTab(node.top)
         }
 
-    applySplitSide(
-        node = firstSide,
-        ctx = ctx,
-        skipFirstTab = false,
-    )
-
     val firstSecondTab =
         firstTab(secondSide)
             ?.let { createTabFromWorkspaceConfig(it, ctx.projectPath, ctx.splitViewState) }
-    if (firstSecondTab == null) return
 
+    if (firstSecondTab == null) {
+        // No second side to split off - land firstSide directly in the current pane. Splitting
+        // here would create an empty "ghost" pane that nothing else would fill.
+        applySplitSide(
+            node = firstSide,
+            ctx = ctx,
+            skipFirstTab = skipFirstTab,
+        )
+        return
+    }
+
+    // Split off the new pane first so the OUTER split's orientation ends up at the root of the
+    // resulting tree; applying firstSide first would put the inner firstSide at the root.
     val newPanelId =
         ctx.splitViewState.splitPanel(
             panelId = ctx.panelId,
@@ -367,6 +390,14 @@ private suspend fun applySplit(
             tabToMove = firstSecondTab,
         )
 
+    // The original pane now lives on the firstSide half of the outer split.
+    applySplitSide(
+        node = firstSide,
+        ctx = ctx,
+        skipFirstTab = skipFirstTab,
+    )
+
+    // The new pane already holds the second side's leading tab.
     applySplitSide(
         node = secondSide,
         ctx = ctx.copy(panelId = newPanelId),
