@@ -44,24 +44,34 @@ class BossConfigProcessTest {
         val argumentsFile = directory.resolve("config-probe.args")
         Files.writeString(
             argumentsFile,
-            "\"-Duser.home=$quotedHome\"\n-DBOSS_LOG_LEVEL=from-system-property\n-cp\n\"$quotedClasspath\"\n${BossConfigProcessProbe::class.java.name}\n",
+            listOf(
+                "\"-Duser.home=$quotedHome\"",
+                "-DBOSS_LOG_LEVEL=from-system-property",
+                "-cp",
+                "\"$quotedClasspath\"",
+                BossConfigProcessProbe::class.java.name,
+            ).joinToString("\n", postfix = "\n"),
         )
         val process =
-            ProcessBuilder(javaExecutable, "@${argumentsFile.toAbsolutePath()}").directory(directory.toFile()).apply {
-                environment()["BOSS_BROWSER_SWIPE_NAV"] = "from-environment"
-                environment().remove("BOSS_MODE")
-                environment().remove("SUPABASE_URL")
-                environment().remove("SUPABASE_FUNCTION_URL")
-            }.start()
+            ProcessBuilder(javaExecutable, "@${argumentsFile.toAbsolutePath()}")
+                .directory(directory.toFile())
+                .apply {
+                    environment()["BOSS_BROWSER_SWIPE_NAV"] = "from-environment"
+                    environment().remove("BOSS_MODE")
+                    environment().remove("SUPABASE_URL")
+                    environment().remove("SUPABASE_FUNCTION_URL")
+                }.start()
         val stdout = process.inputStream.bufferedReader().readText()
         val stderr = process.errorStream.bufferedReader().readText()
         assertTrue(process.waitFor(20, TimeUnit.SECONDS), "config probe must finish")
         assertEquals(0, process.exitValue(), stderr)
-        val rows = Json.parseToJsonElement(stdout.trim()).jsonObject.getValue("rows").jsonArray
-        val sources = rows.associate { row ->
-            val fields = row.jsonObject
-            fields.getValue("key").jsonPrimitive.content to fields.getValue("source").jsonPrimitive.content
-        }
+        val payload = Json.parseToJsonElement(stdout.trim()).jsonObject
+        val rows = payload.getValue("rows").jsonArray
+        val sources =
+            rows.associate { row ->
+                val fields = row.jsonObject
+                fields.getValue("key").jsonPrimitive.content to fields.getValue("source").jsonPrimitive.content
+            }
         assertEquals("environment", sources["BOSS_BROWSER_SWIPE_NAV"])
         assertEquals("system property", sources["BOSS_LOG_LEVEL"])
         assertEquals("env_vars file", sources["BOSS_MODE"])
@@ -77,12 +87,19 @@ object BossConfigProcessProbe {
         configureHeadlessLogging()
         createBossCLI().parse(
             listOf(
-                "config", "show", "--json",
-                "--key", "BOSS_BROWSER_SWIPE_NAV",
-                "--key", "BOSS_LOG_LEVEL",
-                "--key", "BOSS_MODE",
-                "--key", "SUPABASE_URL",
-                "--key", "SUPABASE_FUNCTION_URL",
+                "config",
+                "show",
+                "--json",
+                "--key",
+                "BOSS_BROWSER_SWIPE_NAV",
+                "--key",
+                "BOSS_LOG_LEVEL",
+                "--key",
+                "BOSS_MODE",
+                "--key",
+                "SUPABASE_URL",
+                "--key",
+                "SUPABASE_FUNCTION_URL",
             ),
         )
     }
