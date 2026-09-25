@@ -63,7 +63,7 @@ object BossConfigProcessProbe {
         configureHeadlessLogging()
         createBossCLI().parse(
             listOf(
-                "config", "--json",
+                "config", "show", "--json",
                 "--key", "BOSS_BROWSER_SWIPE_NAV",
                 "--key", "BOSS_LOG_LEVEL",
                 "--key", "BOSS_MODE",

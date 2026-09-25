@@ -3,6 +3,7 @@ package ai.rever.boss.cli
 import ai.rever.boss.config.ConfigLoader
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.Context
+import com.github.ajalt.clikt.core.NoOpCliktCommand
 import com.github.ajalt.clikt.core.ProgramResult
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.multiple
@@ -38,7 +39,12 @@ import java.util.Properties
  * keys that did not resolve.
  */
 @Suppress("LongMethod", "CyclomaticComplexMethod")
-class BossConfigCommand : CliktCommand(name = "config") {
+class BossConfigCommand : NoOpCliktCommand(name = "config") {
+    override fun help(context: Context) = "BOSS configuration commands"
+}
+
+@Suppress("LongMethod", "CyclomaticComplexMethod")
+class BossConfigShowCommand : CliktCommand(name = "show") {
     override fun help(context: Context) = "Inspects resolved BOSS configuration with per-key source attribution"
 
     private val show = ConfigShow()
