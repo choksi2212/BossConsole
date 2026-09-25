@@ -83,8 +83,7 @@ class BossPluginReportCommand : CliktCommand(name = "report") {
  */
 object PluginReportMarkdown {
     /** Manifest strings are untrusted, even when they came from a readable jar. */
-    private fun singleLine(value: String): String =
-        value.map { if (it.isISOControl()) ' ' else it }.joinToString("")
+    private fun singleLine(value: String): String = value.map { if (it.isISOControl()) ' ' else it }.joinToString("")
 
     private fun code(value: String): String {
         val content = singleLine(value)
@@ -96,16 +95,14 @@ object PluginReportMarkdown {
     private fun text(value: String): String =
         buildString {
             for (char in singleLine(value)) {
-                when (char) {
-                    '&' -> append("&amp;")
-                    '<' -> append("&lt;")
-                    '>' -> append("&gt;")
-                    '\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!', '|' -> {
-                        append('\\')
-                        append(char)
-                    }
-                    else -> append(char)
-                }
+                append(
+                    when (char) {
+                        '&' -> "&amp;"
+                        '<' -> "&lt;"
+                        '>' -> "&gt;"
+                        else -> if (char in "\\`*_{}[]()#+-.!|") "\\$char" else char.toString()
+                    },
+                )
             }
         }
 
