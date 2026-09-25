@@ -5,8 +5,11 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.io.TempDir
+import java.io.File
+import java.net.URLClassLoader
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -24,17 +27,26 @@ class BossConfigProcessTest {
             directory.resolve("boss-build-config.properties"),
             "SUPABASE_FUNCTION_URL=https://embedded.invalid\n",
         )
+        val urls =
+            generateSequence(javaClass.classLoader) { it.parent }
+                .filterIsInstance<URLClassLoader>()
+                .flatMap { it.getURLs().asSequence() }
+                .map { File(it.toURI()).path }
+                .toList()
         val javaExecutable = Path.of(System.getProperty("java.home"), "bin", "java").toString()
-        val classpath = directory.toString() + java.io.File.pathSeparator + System.getProperty("java.class.path")
+        val classpath =
+            (listOf(directory.toString()) + urls + System.getProperty("java.class.path").split(File.pathSeparator))
+                .distinct()
+                .joinToString(File.pathSeparator)
+        val quotedClasspath = classpath.replace("\\", "\\\\").replace("\"", "\\\"")
+        val quotedHome = directory.toString().replace("\\", "\\\\").replace("\"", "\\\"")
+        val argumentsFile = directory.resolve("config-probe.args")
+        Files.writeString(
+            argumentsFile,
+            "\"-Duser.home=$quotedHome\"\n-DBOSS_LOG_LEVEL=from-system-property\n-cp\n\"$quotedClasspath\"\n${BossConfigProcessProbe::class.java.name}\n",
+        )
         val process =
-            ProcessBuilder(
-                javaExecutable,
-                "-Duser.home=$directory",
-                "-DBOSS_LOG_LEVEL=from-system-property",
-                "-cp",
-                classpath,
-                BossConfigProcessProbe::class.java.name,
-            ).directory(directory.toFile()).apply {
+            ProcessBuilder(javaExecutable, "@${argumentsFile.toAbsolutePath()}").directory(directory.toFile()).apply {
                 environment()["BOSS_BROWSER_SWIPE_NAV"] = "from-environment"
                 environment().remove("BOSS_MODE")
                 environment().remove("SUPABASE_URL")
@@ -42,7 +54,8 @@ class BossConfigProcessTest {
             }.start()
         val stdout = process.inputStream.bufferedReader().readText()
         val stderr = process.errorStream.bufferedReader().readText()
-        assertEquals(0, process.waitFor(), stderr)
+        assertTrue(process.waitFor(20, TimeUnit.SECONDS), "config probe must finish")
+        assertEquals(0, process.exitValue(), stderr)
         val rows = Json.parseToJsonElement(stdout.trim()).jsonObject.getValue("rows").jsonArray
         val sources = rows.associate { row ->
             val fields = row.jsonObject
