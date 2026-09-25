@@ -141,4 +141,30 @@ class BossPluginReportTest {
         // No "> " block-quote line should appear when description is blank.
         assertFalse(md.lines().any { it.startsWith("> ") })
     }
+
+    @Test
+    fun `manifest text cannot create markdown sections or table columns`() {
+        val md =
+            PluginReportMarkdown.render(
+                manifest(
+                    pluginId = "bad`id\n## Forged section",
+                    displayName = "name\n- [x] approved",
+                    version = "1.0`\n# forged",
+                    apiVersion = "1|2",
+                    mainClass = "Main`class",
+                    author = "author\n## approved",
+                    license = "license`text",
+                    description = "safe\n## Forged section | <script>alert(1)</script>",
+                    permissions = listOf("filesystem", "unknown`\n- [x] accepted"),
+                    mcpTools = listOf(tool("read`\n| forged", "read | <script>\n- [x] accepted")),
+                ),
+            )
+        assertEquals(1, md.lines().count { it.startsWith("# Plugin report") })
+        assertEquals(0, md.lines().count { it.startsWith("## Forged section") })
+        assertEquals(0, md.lines().count { it.startsWith("- [x]") })
+        assertEquals(1, md.lines().count { it.startsWith("| ``read") })
+        assertTrue(md.contains("read \\| &lt;script&gt;"))
+        assertTrue(md.contains("safe \\#\\# Forged section \\| &lt;script&gt;"))
+        assertFalse(md.contains("\n| forged"))
+    }
 }

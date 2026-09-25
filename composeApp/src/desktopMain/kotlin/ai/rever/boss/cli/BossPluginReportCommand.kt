@@ -82,6 +82,33 @@ class BossPluginReportCommand : CliktCommand(name = "report") {
  * source.
  */
 object PluginReportMarkdown {
+    /** Manifest strings are untrusted, even when they came from a readable jar. */
+    private fun singleLine(value: String): String =
+        value.map { if (it.isISOControl()) ' ' else it }.joinToString("")
+
+    private fun code(value: String): String {
+        val content = singleLine(value)
+        val fence = "`".repeat((Regex("`+").findAll(content).maxOfOrNull { it.value.length } ?: 0) + 1)
+        val padding = if (content.startsWith('`') || content.endsWith('`')) " " else ""
+        return "$fence$padding$content$padding$fence"
+    }
+
+    private fun text(value: String): String =
+        buildString {
+            for (char in singleLine(value)) {
+                when (char) {
+                    '&' -> append("&amp;")
+                    '<' -> append("&lt;")
+                    '>' -> append("&gt;")
+                    '\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!', '|' -> {
+                        append('\\')
+                        append(char)
+                    }
+                    else -> append(char)
+                }
+            }
+        }
+
     private val permissionDescriptions: Map<String, String> =
         mapOf(
             "network" to "Read or open network sockets to remote hosts",
@@ -100,17 +127,17 @@ object PluginReportMarkdown {
 
     fun render(manifest: PluginManifest): String =
         buildString {
-            appendLine("# Plugin report — `${manifest.pluginId}`")
+            appendLine("# Plugin report — ${code(manifest.pluginId)}")
             appendLine()
-            appendLine("- Plugin id:    `${manifest.pluginId}`")
-            appendLine("- Display name: `${manifest.displayName}`")
-            appendLine("- Version:      `${manifest.version}`")
-            appendLine("- API version:  `${manifest.apiVersion}` (host: `${HostMeta.CURRENT_API_VERSION}`)")
-            appendLine("- Main class:   `${manifest.mainClass}`")
-            if (manifest.author.isNotBlank()) appendLine("- Author:       `${manifest.author}`")
-            if (manifest.license.isNotBlank()) appendLine("- License:      `${manifest.license}`")
+            appendLine("- Plugin id:    ${code(manifest.pluginId)}")
+            appendLine("- Display name: ${code(manifest.displayName)}")
+            appendLine("- Version:      ${code(manifest.version)}")
+            appendLine("- API version:  ${code(manifest.apiVersion)} (host: `${HostMeta.CURRENT_API_VERSION}`)")
+            appendLine("- Main class:   ${code(manifest.mainClass)}")
+            if (manifest.author.isNotBlank()) appendLine("- Author:       ${code(manifest.author)}")
+            if (manifest.license.isNotBlank()) appendLine("- License:      ${code(manifest.license)}")
             if (manifest.description.isNotBlank()) appendLine()
-            if (manifest.description.isNotBlank()) appendLine("> ${manifest.description}")
+            if (manifest.description.isNotBlank()) appendLine("> ${text(manifest.description)}")
             appendLine()
 
             appendLine("## Permissions")
@@ -121,7 +148,7 @@ object PluginReportMarkdown {
                 for (p in manifest.requiredPermissions) {
                     val canonical = if (PluginPermission.isValid(p)) "canonical" else "**UNRECOGNISED**"
                     val desc = permissionDescriptions[p] ?: "(no description for this permission id)"
-                    appendLine("- `$p` — $canonical — $desc")
+                    appendLine("- ${code(p)} — $canonical — $desc")
                 }
             }
             appendLine()
@@ -135,7 +162,7 @@ object PluginReportMarkdown {
                 appendLine("| --- | --- | --- |")
                 for (t in manifest.mcpTools) {
                     val admin = if (t.adminOnly) "yes" else "no"
-                    appendLine("| `${t.name}` | ${t.description} | $admin |")
+                    appendLine("| ${code(t.name)} | ${text(t.description)} | $admin |")
                 }
             }
             appendLine()
