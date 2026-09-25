@@ -55,6 +55,7 @@ class BossConfigCommand : CliktCommand(name = "config") {
     ).multiple()
 
     override fun run() {
+        val sources = ConfigLoader.sourceSnapshot()
         val keys =
             if (key.isEmpty()) {
                 show.trackedKeys
@@ -67,6 +68,9 @@ class BossConfigCommand : CliktCommand(name = "config") {
                 includeAll = all,
                 envProvider = System::getenv,
                 syspropProvider = System::getProperty,
+                envVarsProps = sources.envVars,
+                localProps = sources.local,
+                embeddedProps = sources.embedded,
             )
         renderAndExit(report, json)
     }
